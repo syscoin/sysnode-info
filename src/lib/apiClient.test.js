@@ -75,6 +75,44 @@ describe('createApiClient — CSRF attachment', () => {
   });
 });
 
+describe('createApiClient — no global Content-Type (Codex round 3 P2)', () => {
+  // A global Content-Type would convert cross-origin GETs into non-
+  // simple CORS preflights and break /auth/me on boot.
+  test('GET requests carry no Content-Type from client defaults', async () => {
+    const client = createApiClient({
+      baseURL: 'http://test',
+      readCsrf: () => null,
+    });
+    const adapter = new MockAdapter(client);
+    adapter.onGet('/auth/me').reply(200, {});
+
+    await client.get('/auth/me');
+    const headers = adapter.history.get[0].headers || {};
+    // Neither the per-request slot nor common should inject it.
+    expect(headers['Content-Type']).toBeUndefined();
+    // Axios also exposes common defaults on the instance — they must
+    // not contain Content-Type either.
+    expect(
+      client.defaults.headers &&
+        client.defaults.headers.common &&
+        client.defaults.headers.common['Content-Type']
+    ).toBeUndefined();
+  });
+
+  test('POST with a JSON body still gets Content-Type from axios body inference', async () => {
+    const client = createApiClient({
+      baseURL: 'http://test',
+      readCsrf: () => null,
+    });
+    const adapter = new MockAdapter(client);
+    adapter.onPost('/auth/login').reply(200, {});
+
+    await client.post('/auth/login', { email: 'a@b.com', password: 'p' });
+    const ct = adapter.history.post[0].headers['Content-Type'] || '';
+    expect(ct.toLowerCase()).toMatch(/^application\/json/);
+  });
+});
+
 describe('createApiClient — 401 handling', () => {
   test('invokes onAuthLost for non-auth 401s', async () => {
     const onAuthLost = jest.fn();

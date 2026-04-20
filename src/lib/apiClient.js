@@ -71,13 +71,23 @@ export function createApiClient({
   readCsrf = readCsrfCookie,
   onAuthLost,
 } = {}) {
+  // Do NOT set a global `Content-Type` here. Axios places headers from
+  // `create({ headers })` into its `common` bag, which is merged into
+  // EVERY request — including GETs with no body. Cross-origin deployments
+  // (REACT_APP_API_BASE pointing off-origin) treat any GET with a custom
+  // Content-Type as a non-simple CORS request and must first preflight
+  // it, so `/auth/me` on boot would fail outright if the API's OPTIONS
+  // response didn't whitelist Content-Type. Axios already sets the JSON
+  // content-type for POST/PUT/PATCH automatically when the body is an
+  // object, so dropping the global here loses nothing.
+  //
+  // (Codex round 3 P2.)
   const instance = axios.create({
     baseURL,
     withCredentials: true,
     timeout: 20000,
     headers: {
       Accept: 'application/json, text/plain, */*',
-      'Content-Type': 'application/json;charset=UTF-8',
     },
   });
 
