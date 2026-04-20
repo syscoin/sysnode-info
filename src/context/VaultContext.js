@@ -42,6 +42,20 @@ import { decryptEnvelope } from '../lib/crypto/envelope';
 //
 //   isAuthenticated=true  -> auto-run load() once
 //   isAuthenticated=false -> hard-reset to idle, wipe the DataKey
+//
+// Concurrency model:
+//
+// The auth-triggered auto-load and Login's fire-and-forget
+// `unlockWithMaster(master)` race by construction — both get scheduled
+// immediately after AuthContext flips isAuthenticated=true. A naive
+// implementation lets both call `vaultService.load()` and bump the gen
+// counter, so the later-landing LOCKED write clobbers the earlier
+// UNLOCKED write (or vice versa). We coalesce them with a single-flight
+// `load()`: concurrent callers share one in-flight promise, and callers
+// that find a usable snapshot already in state short-circuit without
+// hitting the network at all. That also gives us offline unlock: once
+// the blob is cached in state, `unlockWithMaster` decrypts from it
+// instead of re-GETing.
 // ---------------------------------------------------------------------------
 
 const VaultContext = createContext(null);
@@ -61,6 +75,17 @@ function blankState() {
     etag: null,
     blob: null,
     data: null,
+  };
+}
+
+function snapshotOf(s) {
+  return {
+    status: s.status,
+    saltV: s.saltV,
+    etag: s.etag,
+    blob: s.blob,
+    data: s.data,
+    error: s.error,
   };
 }
 
@@ -84,6 +109,17 @@ export function VaultProvider({
   const genRef = useRef(0);
   const mountedRef = useRef(true);
 
+  // Synchronous mirror of `state`, updated inside the setStateInner
+  // callback so that async code can read the latest committed snapshot
+  // before React schedules the next render. Needed for the cache
+  // short-circuit in load(): after doLoad() resolves, unlockWithMaster
+  // must see LOCKED, not the pre-commit LOADING.
+  const stateRef = useRef(blankState());
+
+  // Single-flight guard for doLoad(). When non-null, concurrent callers
+  // of load() await this promise instead of starting a second GET.
+  const inflightLoadRef = useRef(null);
+
   useEffect(
     () => () => {
       mountedRef.current = false;
@@ -96,89 +132,132 @@ export function VaultProvider({
     return genRef.current;
   }, []);
 
-  const safeSet = useCallback((updater, myGen) => {
+  // commit(patch, myGen): merge `patch` over the latest committed state
+  // and write it. `patch` is a plain object — NOT a function — because
+  // we need a single deterministic `next` to mirror into stateRef. Any
+  // "functional update" logic must read stateRef.current explicitly
+  // before calling commit().
+  const commit = useCallback((patch, myGen) => {
     if (!mountedRef.current) return;
     if (typeof myGen === 'number' && myGen !== genRef.current) return;
-    setStateInner((prev) =>
-      typeof updater === 'function' ? updater(prev) : updater
-    );
+    const next = { ...stateRef.current, ...patch };
+    stateRef.current = next;
+    setStateInner(next);
   }, []);
 
   const reset = useCallback(() => {
     bumpGen();
     dkRef.current = null;
-    safeSet(blankState(), genRef.current);
-  }, [bumpGen, safeSet]);
+    // Abandon any in-flight load. Its late safeSet will be dropped by
+    // the gen check, but clearing the ref ensures the next login's
+    // load() doesn't coalesce onto a pre-logout snapshot.
+    inflightLoadRef.current = null;
+    const blank = blankState();
+    stateRef.current = blank;
+    if (mountedRef.current) setStateInner(blank);
+  }, [bumpGen]);
 
   // -----------------------------------------------------------------------
-  // load()  — GET /vault, land in empty/locked/error.
+  // doLoad() — actual GET /vault, writes LOADING -> {EMPTY|LOCKED|ERROR},
+  // returns the resulting snapshot. Callers must not invoke this
+  // directly; use load() so concurrent calls coalesce.
   // -----------------------------------------------------------------------
-  const load = useCallback(async () => {
+  const doLoad = useCallback(async () => {
     const myGen = bumpGen();
-    safeSet((s) => ({ ...s, status: LOADING, error: null }), myGen);
+    commit({ status: LOADING, error: null }, myGen);
     try {
       const out = await vaultService.load();
       if (out.empty) {
-        safeSet(
-          {
-            status: EMPTY,
-            error: null,
-            saltV: null,
-            etag: null,
-            blob: null,
-            data: null,
-          },
-          myGen
-        );
-        return { status: EMPTY };
-      }
-      safeSet(
-        (s) => ({
-          ...s,
-          status: LOCKED,
+        const snap = {
+          status: EMPTY,
           error: null,
-          saltV: out.saltV,
-          etag: out.etag,
-          blob: out.blob,
+          saltV: null,
+          etag: null,
+          blob: null,
           data: null,
-        }),
-        myGen
-      );
-      return { status: LOCKED, saltV: out.saltV, etag: out.etag };
+        };
+        commit(snap, myGen);
+        return snap;
+      }
+      const snap = {
+        status: LOCKED,
+        error: null,
+        saltV: out.saltV,
+        etag: out.etag,
+        blob: out.blob,
+        data: null,
+      };
+      commit(snap, myGen);
+      return snap;
     } catch (err) {
-      safeSet(
-        (s) => ({
-          ...s,
+      commit(
+        {
           status: ERROR,
           error: (err && err.code) || 'vault_load_failed',
-        }),
+        },
         myGen
       );
       throw err;
     }
-  }, [vaultService, bumpGen, safeSet]);
+  }, [vaultService, bumpGen, commit]);
+
+  // -----------------------------------------------------------------------
+  // load() — single-flight + cache-aware wrapper around doLoad().
+  //
+  // Returns a snapshot {status, saltV, etag, blob, data, error}. Three
+  // paths:
+  //
+  //  1. stateRef already holds a usable snapshot (EMPTY/LOCKED/UNLOCKED)
+  //     -> return it synchronously, no network call. This is what makes
+  //     post-login unlock work offline once the blob has been cached.
+  //
+  //  2. A prior doLoad() is still in flight -> await its promise. This
+  //     is what prevents the auth-effect load and Login's
+  //     unlockWithMaster from racing: both resolve to the same snapshot
+  //     and only one commits intermediate LOADING/LOCKED writes.
+  //
+  //  3. Neither: start a new doLoad(), park the promise in
+  //     inflightLoadRef, clear the ref on settle.
+  // -----------------------------------------------------------------------
+  const load = useCallback(() => {
+    const s = stateRef.current;
+    if (s.status === LOCKED || s.status === UNLOCKED || s.status === EMPTY) {
+      return Promise.resolve(snapshotOf(s));
+    }
+    if (inflightLoadRef.current) return inflightLoadRef.current;
+
+    const p = doLoad();
+    inflightLoadRef.current = p;
+    // .finally clears the slot whether doLoad resolved or rejected.
+    // The identity check handles the edge case where reset() has
+    // already nulled the ref during the await (post-logout): we don't
+    // want to null a newer inflight promise belonging to the next
+    // session.
+    p.catch(() => {}).then(() => {
+      if (inflightLoadRef.current === p) inflightLoadRef.current = null;
+    });
+    return p;
+  }, [doLoad]);
 
   // -----------------------------------------------------------------------
   // Internal: actually perform the decrypt, once we have master + the
   // server blob in hand. Both unlock and unlockWithMaster route through
   // here so the decryption branch is tested once.
   // -----------------------------------------------------------------------
-  const decryptWithMaster = useCallback(
-    async (master, snapshot) => {
-      const vaultKey = await deriveVaultKey(master, snapshot.saltV);
-      const { data, dk } = await decryptEnvelope(snapshot.blob, vaultKey);
-      dkRef.current = dk;
-      return data;
-    },
-    []
-  );
+  const decryptWithMaster = useCallback(async (master, snapshot) => {
+    const vaultKey = await deriveVaultKey(master, snapshot.saltV);
+    const { data, dk } = await decryptEnvelope(snapshot.blob, vaultKey);
+    dkRef.current = dk;
+    return data;
+  }, []);
 
   // -----------------------------------------------------------------------
   // unlockWithMaster(master)
   //
-  // Used by the Login flow to avoid re-running PBKDF2. If the vault hasn't
-  // been loaded yet, we fetch it first. If the vault is empty, this is a
-  // no-op (nothing to decrypt) and we land in EMPTY.
+  // Used by the Login flow to avoid re-running PBKDF2. Routes through
+  // load() so that (a) a concurrent auth-triggered load coalesces onto
+  // the same GET rather than racing, and (b) we re-use any already-
+  // cached blob instead of making a round-trip we don't need.
   // -----------------------------------------------------------------------
   const unlockWithMaster = useCallback(
     async (master) => {
@@ -188,46 +267,31 @@ export function VaultProvider({
         throw e;
       }
 
-      // We need a saltV + blob. Rather than trying to read the latest
-      // `state` from a stale closure, always fetch via the service and
-      // work from that snapshot. It's one extra GET on the refresh path
-      // but keeps the concurrency story simple (and the service is
-      // trivially mockable in tests).
-      const myGen = bumpGen();
-      safeSet((s) => ({ ...s, status: LOADING, error: null }), myGen);
       let snapshot;
       try {
-        snapshot = await vaultService.load();
+        snapshot = await load();
       } catch (err) {
-        safeSet(
-          (s) => ({
-            ...s,
-            status: ERROR,
-            error: (err && err.code) || 'vault_load_failed',
-          }),
-          myGen
-        );
+        // load() has already captured the error into state; surface it
+        // to the caller (Login swallows, Account re-renders with the
+        // error copy).
         throw err;
       }
 
-      if (snapshot.empty) {
-        safeSet(
-          {
-            status: EMPTY,
-            error: null,
-            saltV: null,
-            etag: null,
-            blob: null,
-            data: null,
-          },
-          myGen
-        );
+      if (snapshot.status === EMPTY) {
         return { status: EMPTY };
       }
+      if (snapshot.status !== LOCKED && snapshot.status !== UNLOCKED) {
+        const e = new Error(snapshot.error || 'vault_not_ready');
+        e.code = snapshot.error || 'vault_not_ready';
+        throw e;
+      }
 
+      // Re-bump gen now that load() has settled, so concurrent ops that
+      // bumped during the await don't invalidate our UNLOCKED write.
+      const myGen = bumpGen();
       try {
         const data = await decryptWithMaster(master, snapshot);
-        safeSet(
+        commit(
           {
             status: UNLOCKED,
             error: null,
@@ -242,7 +306,7 @@ export function VaultProvider({
       } catch (err) {
         // Keep the server blob cached so a subsequent correct unlock
         // doesn't need to re-GET; land in LOCKED with the failure code.
-        safeSet(
+        commit(
           {
             status: LOCKED,
             error: (err && err.code) || 'unlock_failed',
@@ -256,7 +320,7 @@ export function VaultProvider({
         throw err;
       }
     },
-    [vaultService, bumpGen, safeSet, decryptWithMaster]
+    [load, bumpGen, commit, decryptWithMaster]
   );
 
   // -----------------------------------------------------------------------
@@ -292,15 +356,11 @@ export function VaultProvider({
   // -----------------------------------------------------------------------
   const lock = useCallback(() => {
     dkRef.current = null;
+    const s = stateRef.current;
+    if (s.status !== UNLOCKED && s.status !== LOCKED) return;
     const myGen = bumpGen();
-    safeSet(
-      (s) => {
-        if (s.status !== UNLOCKED && s.status !== LOCKED) return s;
-        return { ...s, status: LOCKED, data: null, error: null };
-      },
-      myGen
-    );
-  }, [bumpGen, safeSet]);
+    commit({ status: LOCKED, data: null, error: null }, myGen);
+  }, [bumpGen, commit]);
 
   // -----------------------------------------------------------------------
   // Auth lifecycle hooks.
@@ -310,11 +370,15 @@ export function VaultProvider({
   // would tie this effect to every state.* update and cause a re-GET on
   // every transition. React's exhaustive-deps warning is suppressed with
   // a targeted comment.
+  //
+  // The auto-load is safe alongside Login.js's fire-and-forget
+  // unlockWithMaster: load() is single-flight, so whichever of the two
+  // fires first kicks off the GET and the other coalesces onto it.
   // -----------------------------------------------------------------------
   useEffect(() => {
     if (isAuthenticated) {
       load().catch(() => {
-        // Swallowed: `load()` has already captured the error into state.
+        // Swallowed: load() has already captured the error into state.
       });
     } else {
       reset();

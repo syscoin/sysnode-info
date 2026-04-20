@@ -392,3 +392,146 @@ describe('VaultProvider — lock + logout', () => {
     expect(last.saltV).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex review round 1 — concurrency regressions.
+//
+// P1 (race): the auth-effect load() and Login's fire-and-forget
+// unlockWithMaster(master) both ran to completion unconditionally, and
+// whichever bumped gen last invalidated the other's commit — so the
+// UNLOCKED write could land as a no-op and the user would see LOCKED
+// despite decryption having succeeded.
+//
+// P2 (cache): unlockWithMaster unconditionally re-GETed /vault even when
+// state already held a fresh blob/saltV, so offline relock-then-unlock
+// failed with a load error instead of decrypting from cache.
+//
+// Both fix to the same code path (single-flight, cache-aware load()).
+// ---------------------------------------------------------------------------
+describe('VaultProvider — load() single-flight + cache (Codex round 1)', () => {
+  test('auth-effect load and unlockWithMaster coalesce onto one GET and land in UNLOCKED (P1)', async () => {
+    const { master, saltV, blob, data } = await makeEncryptedBlobFor({});
+
+    // Gate vaultService.load on a resolver we control so we can
+    // deterministically order the two callers regardless of React /
+    // microtask scheduling.
+    let resolveLoad;
+    const loadGate = new Promise((resolve) => {
+      resolveLoad = resolve;
+    });
+    const vaultService = {
+      load: jest.fn().mockImplementation(() => loadGate),
+      save: jest.fn(),
+    };
+
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+
+    // The auth-effect has fired and issued load(); it's parked on the
+    // gate. Simulate Login's fire-and-forget unlockWithMaster racing in
+    // before the GET resolves.
+    await waitFor(() => expect(last.status).toBe(STATUS.LOADING));
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+
+    let unlockErr = null;
+    const unlockPromise = last
+      .unlockWithMaster(master)
+      .catch((e) => {
+        unlockErr = e;
+      });
+
+    // Critical invariant: the concurrent unlock must NOT issue a second
+    // GET — it must coalesce onto the in-flight promise. Without that,
+    // the second call bumps gen and the first caller's LOCKED write is
+    // dropped (or vice versa).
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveLoad({ empty: false, saltV, blob, etag: 'E' });
+      await unlockPromise;
+    });
+
+    expect(unlockErr).toBeNull();
+    expect(last.status).toBe(STATUS.UNLOCKED);
+    expect(last.data).toEqual(data);
+    // Still only one GET total: unlockWithMaster reused the in-flight
+    // result instead of firing its own.
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+  });
+
+  test('unlockWithMaster reuses the cached snapshot after initial load (P2)', async () => {
+    const { master, saltV, blob, data } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, saltV, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+
+    // Simulate "user is now offline": subsequent GETs would reject.
+    // With a proper cache-aware unlock, this reject never fires because
+    // unlockWithMaster must decrypt from the cached blob.
+    vaultService.load.mockImplementation(() => {
+      throw new Error('network should not have been touched');
+    });
+
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    expect(last.status).toBe(STATUS.UNLOCKED);
+    expect(last.data).toEqual(data);
+    // One total GET, from the initial auto-load.
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+  });
+
+  test('lock() followed by unlockWithMaster decrypts from cache without a re-GET (P2)', async () => {
+    const { master, saltV, blob, data } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, saltV, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+    act(() => last.lock());
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+
+    vaultService.load.mockClear();
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    expect(last.status).toBe(STATUS.UNLOCKED);
+    expect(last.data).toEqual(data);
+    // Re-unlock from LOCKED must not hit the network.
+    expect(vaultService.load).not.toHaveBeenCalled();
+  });
+});
