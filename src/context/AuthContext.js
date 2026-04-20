@@ -50,28 +50,49 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
     []
   );
 
-  const safeSet = useCallback((fn) => {
-    if (mountedRef.current) fn();
+  // Request-generation counter. Every async operation that would change
+  // auth state (refresh / login / logout / handleAuthLost) captures the
+  // counter value at its START and only writes state if the value is
+  // unchanged at its END. Any newer operation bumps the counter, which
+  // atomically invalidates all in-flight older operations.
+  //
+  // This fixes the slow-network race originally caught in PR review
+  // (Codex round 1 P1): a mount-time /auth/me that takes several seconds
+  // to return 401 would otherwise kick a freshly-logged-in user back to
+  // /login when its failure path unconditionally forced ANONYMOUS.
+  const genRef = useRef(0);
+  const nextGen = useCallback(() => {
+    genRef.current += 1;
+    return genRef.current;
+  }, []);
+
+  const safeSet = useCallback((fn, myGen) => {
+    if (!mountedRef.current) return;
+    // If `myGen` is supplied, this write is scoped to a particular async
+    // operation and must no-op once a newer operation has started.
+    if (typeof myGen === 'number' && myGen !== genRef.current) return;
+    fn();
   }, []);
 
   const refresh = useCallback(async () => {
+    const myGen = nextGen();
     try {
       const { user: u } = await authService.me();
       safeSet(() => {
         setUser(u);
         setStatus(AUTHENTICATED);
-      });
+      }, myGen);
       return u;
     } catch (err) {
       safeSet(() => {
         setUser(null);
         setStatus(ANONYMOUS);
-      });
+      }, myGen);
       // 401 is expected (no session) — don't re-throw that.
       if (err.status === 401) return null;
       throw err;
     }
-  }, [authService, safeSet]);
+  }, [authService, safeSet, nextGen]);
 
   useEffect(() => {
     refresh().catch(() => {
@@ -81,6 +102,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
 
   const login = useCallback(
     async ({ email, password }) => {
+      const myGen = nextGen();
       const res = await authService.login(email, password);
       // /auth/login returns the shallow user; hit /auth/me to pick up
       // emailVerified + notificationPrefs in one canonical shape.
@@ -89,17 +111,17 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         safeSet(() => {
           setUser(me.user);
           setStatus(AUTHENTICATED);
-        });
+        }, myGen);
         return me;
       } catch (_) {
         safeSet(() => {
           setUser(res.user);
           setStatus(AUTHENTICATED);
-        });
+        }, myGen);
         return { user: res.user };
       }
     },
-    [authService, safeSet]
+    [authService, safeSet, nextGen]
   );
 
   const register = useCallback(
@@ -113,6 +135,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
   );
 
   const logout = useCallback(async () => {
+    const myGen = nextGen();
     try {
       await authService.logout();
     } catch (err) {
@@ -125,19 +148,20 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       safeSet(() => {
         setUser(null);
         setStatus(ANONYMOUS);
-      });
+      }, myGen);
     }
-  }, [authService, safeSet]);
+  }, [authService, safeSet, nextGen]);
 
   // Called from the apiClient's 401 interceptor when a non-auth request
   // comes back unauthorized — the cookie has almost certainly expired.
   // Pages react by showing "session expired, please log in".
   const handleAuthLost = useCallback(() => {
+    const myGen = nextGen();
     safeSet(() => {
       setUser(null);
       setStatus(ANONYMOUS);
-    });
-  }, [safeSet]);
+    }, myGen);
+  }, [safeSet, nextGen]);
 
   const value = useMemo(
     () => ({

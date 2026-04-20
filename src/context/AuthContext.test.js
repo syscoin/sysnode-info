@@ -134,6 +134,63 @@ test('logout transitions authenticated -> anonymous even if network fails', asyn
   );
 });
 
+test('stale mount-time /auth/me 401 cannot overwrite a newer successful login (Codex round 1 P1)', async () => {
+  // Reproduce the slow-network race: /auth/me on mount lags behind the
+  // user's login click. The mount's 401 arrives LATER than the login
+  // success and must not demote us back to anonymous.
+  let rejectMe;
+  const mePending = new Promise((_resolve, reject) => {
+    rejectMe = reject;
+  });
+  const service = makeService({
+    // First call: the slow mount-time probe. Leave it pending — we'll
+    // reject it manually mid-test.
+    me: jest
+      .fn()
+      .mockReturnValueOnce(mePending)
+      // Second call: the login-driven me() lookup. Resolves immediately.
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'user@example.com', emailVerified: true },
+      }),
+    login: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com' },
+      expiresAt: 1,
+    }),
+  });
+
+  render(
+    <AuthProvider authService={service}>
+      <HookProbe />
+    </AuthProvider>
+  );
+
+  // We're still booting — the mount /auth/me has not resolved yet.
+  expect(screen.getByTestId('status')).toHaveTextContent('booting');
+
+  // User clicks login. It completes quickly (both authService.login and
+  // the login-scoped authService.me()).
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+  );
+
+  // NOW the slow mount-time /auth/me finally rejects with 401. The old
+  // refresh() MUST NOT flip us back to anonymous — a newer operation
+  // (login) has already claimed the generation counter.
+  await act(async () => {
+    rejectMe(Object.assign(new Error('unauth'), { status: 401 }));
+    await flush();
+  });
+
+  // Give any spurious writes a chance to land before we assert.
+  await flush();
+  expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  expect(screen.getByTestId('email')).toHaveTextContent('user@example.com');
+});
+
 test('useAuth throws outside provider', () => {
   function Bare() {
     useAuth();
