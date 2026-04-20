@@ -157,6 +157,7 @@ export function formatShortDate(dateValue) {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
+    timeZone: 'UTC',
   }).format(date);
 }
 
@@ -199,9 +200,10 @@ export function formatDayMonth(dateValue) {
     return String(dateValue || 'TBD');
   }
 
-  const day = date.getDate();
+  const day = date.getUTCDate();
   const month = new Intl.DateTimeFormat('en-AU', {
     month: 'long',
+    timeZone: 'UTC',
   }).format(date);
 
   return `${day}${getOrdinalSuffix(day)} ${month}`;
