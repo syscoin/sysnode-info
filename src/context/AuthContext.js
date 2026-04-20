@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 
 import { authService as defaultAuthService } from '../lib/authService';
+import { setAuthLostHandler } from '../lib/apiClient';
 
 // AuthContext shape:
 //
@@ -162,6 +163,16 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       setStatus(ANONYMOUS);
     }, myGen);
   }, [safeSet, nextGen]);
+
+  // Register ourselves as the default apiClient's auth-loss handler so
+  // that 401s on protected endpoints (e.g. /vault) reach us even when
+  // call sites use the shared singleton instead of injecting a client.
+  // Clear the slot on unmount so stale providers never fire. (Codex
+  // round 2 P2.)
+  useEffect(() => {
+    setAuthLostHandler(handleAuthLost);
+    return () => setAuthLostHandler(null);
+  }, [handleAuthLost]);
 
   const value = useMemo(
     () => ({

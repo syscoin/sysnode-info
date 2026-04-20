@@ -1,5 +1,11 @@
 import MockAdapter from 'axios-mock-adapter';
-import { createApiClient, readCsrfCookie, toApiError } from './apiClient';
+import {
+  apiClient,
+  createApiClient,
+  readCsrfCookie,
+  setAuthLostHandler,
+  toApiError,
+} from './apiClient';
 
 function setCookie(value) {
   Object.defineProperty(document, 'cookie', {
@@ -116,6 +122,67 @@ describe('createApiClient — 401 handling', () => {
     await expect(client.get('/vault')).rejects.toMatchObject({
       status: 401,
     });
+  });
+});
+
+describe('default apiClient singleton — setAuthLostHandler wiring (Codex round 2 P2)', () => {
+  afterEach(() => {
+    setAuthLostHandler(null);
+  });
+
+  test('routes non-auth 401s to the registered handler', async () => {
+    const handler = jest.fn();
+    setAuthLostHandler(handler);
+
+    const adapter = new MockAdapter(apiClient);
+    adapter.onGet('/vault').reply(401, { error: 'unauthorized' });
+
+    await expect(apiClient.get('/vault')).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    adapter.restore();
+  });
+
+  test('no-ops when no handler is registered (slot cleared)', async () => {
+    setAuthLostHandler(null);
+    const adapter = new MockAdapter(apiClient);
+    adapter.onGet('/vault').reply(401, { error: 'unauthorized' });
+
+    // Should reject cleanly without throwing from the interceptor.
+    await expect(apiClient.get('/vault')).rejects.toMatchObject({
+      status: 401,
+    });
+    adapter.restore();
+  });
+
+  test('ignores /auth/* 401s (credential errors, not session loss)', async () => {
+    const handler = jest.fn();
+    setAuthLostHandler(handler);
+    const adapter = new MockAdapter(apiClient);
+    adapter.onPost('/auth/login').reply(401, { error: 'invalid_credentials' });
+
+    await expect(apiClient.post('/auth/login', {})).rejects.toMatchObject({
+      code: 'invalid_credentials',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    adapter.restore();
+  });
+
+  test('the latest registered handler wins (AuthProvider remount semantics)', async () => {
+    const first = jest.fn();
+    const second = jest.fn();
+    setAuthLostHandler(first);
+    setAuthLostHandler(second);
+
+    const adapter = new MockAdapter(apiClient);
+    adapter.onGet('/vault').reply(401);
+    await expect(apiClient.get('/vault')).rejects.toBeDefined();
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+    adapter.restore();
   });
 });
 

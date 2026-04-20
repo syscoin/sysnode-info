@@ -116,8 +116,32 @@ export function createApiClient({
   return instance;
 }
 
+// Mutable slot for the global auth-loss handler.
+//
+// The default singleton `apiClient` is created at module import time —
+// long before any React component (and therefore before AuthContext)
+// has mounted. If we baked `onAuthLost` into that `createApiClient()`
+// call directly, the closure would capture `undefined` and every 401
+// on a protected endpoint (e.g. `/vault`) would be silently dropped,
+// leaving the UI in a stale "authenticated" state until the user did
+// something that hit /auth/me. (Codex round 2 P2.)
+//
+// Instead, the singleton's onAuthLost is a thunk that reads this slot
+// at error-dispatch time. AuthProvider registers its handler via
+// `setAuthLostHandler` once it mounts; the slot is cleared on
+// unmount so stale providers can't fire.
+let globalAuthLost = null;
+
+export function setAuthLostHandler(fn) {
+  globalAuthLost = typeof fn === 'function' ? fn : null;
+}
+
 // Default module-level client, used by simple call sites. Tests and pages
 // that want to inject a mock should call `createApiClient` directly.
-export const apiClient = createApiClient();
+export const apiClient = createApiClient({
+  onAuthLost: function dispatchAuthLost(err) {
+    if (typeof globalAuthLost === 'function') globalAuthLost(err);
+  },
+});
 
 export { readCsrfCookie, toApiError };
