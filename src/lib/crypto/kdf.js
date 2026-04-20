@@ -53,15 +53,22 @@ function toHex(buffer) {
   return out;
 }
 
+// Strict hex-to-bytes. `parseInt(x, 16)` tolerates partial parses — e.g.
+// `parseInt('Ax', 16) === 10` — which would silently coerce a malformed
+// saltV into a valid byte and produce a subtly wrong vault key. We guard
+// the ENTIRE input against `^[0-9a-fA-F]*$` up front so any non-hex
+// character anywhere throws, rather than leaking as an opaque AES-GCM
+// decrypt failure downstream. (Codex round 2 P2.)
 function fromHex(hex) {
   if (typeof hex !== 'string' || hex.length % 2 !== 0) {
     throw new Error('invalid hex');
   }
+  if (!/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error('invalid hex');
+  }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i += 1) {
-    const byte = parseInt(hex.substr(i * 2, 2), 16);
-    if (Number.isNaN(byte)) throw new Error('invalid hex');
-    out[i] = byte;
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
   }
   return out;
 }

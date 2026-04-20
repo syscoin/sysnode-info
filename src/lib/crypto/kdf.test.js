@@ -113,6 +113,22 @@ describe('kdf.deriveVaultKey', () => {
     expect(new TextDecoder().decode(pt)).toBe('hello vault');
   });
 
+  test('rejects non-hex saltV instead of silently coercing partial parses (Codex round 2 P2)', async () => {
+    const master = new Uint8Array(32).fill(1);
+    // `Ax...` would parseInt to 10 (0xA) on the first two chars; the strict
+    // regex pre-check in fromHex must throw instead.
+    await expect(
+      deriveVaultKey(master, 'A'.repeat(62) + 'xx')
+    ).rejects.toThrow(/invalid hex/i);
+    // Odd-length hex: structurally malformed length.
+    await expect(deriveVaultKey(master, 'abc')).rejects.toThrow(/invalid hex/i);
+    // Trailing non-hex char inside a 2-char byte window (the exact case
+    // parseInt would otherwise silently coerce to 0xA).
+    await expect(deriveVaultKey(master, 'A0'.repeat(31) + 'AZ')).rejects.toThrow(
+      /invalid hex/i
+    );
+  });
+
   test('different saltV values yield different keys (sanity)', async () => {
     const master = new Uint8Array(32).fill(5);
     const saltA = '11'.repeat(32);
