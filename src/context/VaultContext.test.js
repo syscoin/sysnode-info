@@ -500,6 +500,192 @@ describe('VaultProvider — load() single-flight + cache (Codex round 1)', () =>
     expect(vaultService.load).toHaveBeenCalledTimes(1);
   });
 
+  test('resets and refetches when authenticated identity changes without logout (P1 round 2)', async () => {
+    const blobA = await makeEncryptedBlobFor({
+      password: 'pw-a',
+      email: 'a@example.com',
+      data: { keys: [{ label: 'A' }] },
+    });
+    const blobB = await makeEncryptedBlobFor({
+      password: 'pw-b',
+      email: 'b@example.com',
+      data: { keys: [{ label: 'B' }] },
+    });
+
+    // AuthContext.me is the only way userId changes mid-session (login
+    // while authenticated triggers a fresh me() call). We wire the
+    // authService to return user A first, then user B on the second
+    // me() call, and have login() return user B.
+    const meResults = [
+      {
+        user: {
+          id: 1,
+          email: 'a@example.com',
+          emailVerified: true,
+          notificationPrefs: {},
+        },
+      },
+      {
+        user: {
+          id: 2,
+          email: 'b@example.com',
+          emailVerified: true,
+          notificationPrefs: {},
+        },
+      },
+    ];
+    const me = jest.fn().mockImplementation(() => {
+      const next = meResults.shift();
+      return Promise.resolve(next || meResults[meResults.length] || me.lastResult);
+    });
+    const login = jest.fn().mockResolvedValue({
+      user: {
+        id: 2,
+        email: 'b@example.com',
+        emailVerified: true,
+        notificationPrefs: {},
+      },
+      master: blobB.master,
+    });
+    const authService = {
+      me,
+      login,
+      logout: jest.fn().mockResolvedValue({}),
+      register: jest.fn(),
+      verifyEmail: jest.fn(),
+    };
+
+    const load = jest
+      .fn()
+      .mockResolvedValueOnce({
+        empty: false,
+        saltV: blobA.saltV,
+        blob: blobA.blob,
+        etag: 'Ea',
+      })
+      .mockResolvedValueOnce({
+        empty: false,
+        saltV: blobB.saltV,
+        blob: blobB.blob,
+        etag: 'Eb',
+      });
+    const vaultService = { load, save: jest.fn() };
+
+    let last;
+    let authSnapshot;
+    function AuthObserver() {
+      // eslint-disable-next-line global-require
+      const { useAuth } = require('./AuthContext');
+      authSnapshot = useAuth();
+      return null;
+    }
+    render(
+      <AuthProvider authService={authService}>
+        <AuthObserver />
+        <VaultProvider vaultService={vaultService}>
+          <VaultObserver onValue={(v) => (last = v)} />
+        </VaultProvider>
+      </AuthProvider>
+    );
+
+    // Settle user A's session with their vault LOCKED.
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    expect(last.etag).toBe('Ea');
+    await act(async () => {
+      await last.unlockWithMaster(blobA.master);
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+    expect(last.data).toEqual(blobA.data);
+
+    // Simulate user switching accounts without logging out first.
+    // AuthContext.login will flip user.id from 1 to 2 while
+    // isAuthenticated stays true. The VaultProvider must detect the
+    // identity change and drop user A's cached blob.
+    await act(async () => {
+      await authSnapshot.login({
+        email: 'b@example.com',
+        password: 'pw-b',
+      });
+    });
+
+    await waitFor(() => expect(last.etag).toBe('Eb'));
+    expect(last.status).toBe(STATUS.LOCKED);
+    expect(last.data).toBeNull();
+    // Critical: user A's DataKey must have been wiped. Without the
+    // identity-change reset, the prior UNLOCKED snapshot would still
+    // hold A's dk in dkRef.
+    expect(last._hasDataKeyForTest()).toBe(false);
+
+    // And unlocking with user B's master succeeds against B's blob.
+    await act(async () => {
+      await last.unlockWithMaster(blobB.master);
+    });
+    expect(last.status).toBe(STATUS.UNLOCKED);
+    expect(last.data).toEqual(blobB.data);
+    // vaultService.load called exactly twice: once per identity.
+    expect(vaultService.load).toHaveBeenCalledTimes(2);
+  });
+
+  test('stale unlock (reset mid-decrypt) does not leak DataKey into dkRef (P2 round 2)', async () => {
+    const { master, saltV, blob } = await makeEncryptedBlobFor({});
+
+    // Gate the envelope crypto by gating vaultService.load: we have
+    // unlock start, then trigger a reset while the snapshot await is
+    // still in flight, then resolve the load. The resulting decrypt
+    // lands AFTER the reset has bumped gen; its gen-check must fire
+    // and the DataKey must never be stashed.
+    let resolveLoad;
+    const gate = new Promise((r) => {
+      resolveLoad = r;
+    });
+    const vaultService = {
+      load: jest.fn().mockImplementation(() => gate),
+      save: jest.fn(),
+    };
+
+    const authService = authedAuthService();
+    let last;
+    let authSnapshot;
+    function AuthObserver() {
+      // eslint-disable-next-line global-require
+      const { useAuth } = require('./AuthContext');
+      authSnapshot = useAuth();
+      return null;
+    }
+    render(
+      <AuthProvider authService={authService}>
+        <AuthObserver />
+        <VaultProvider vaultService={vaultService}>
+          <VaultObserver onValue={(v) => (last = v)} />
+        </VaultProvider>
+      </AuthProvider>
+    );
+
+    // Effect has fired auto-load; it's parked on the gate.
+    await waitFor(() => expect(last.status).toBe(STATUS.LOADING));
+
+    // Kick off unlockWithMaster; it will coalesce onto the in-flight
+    // load and await the same gate. Logout before resolving the gate
+    // to simulate mid-unlock auth loss.
+    const unlockPromise = last.unlockWithMaster(master).catch(() => {});
+
+    await act(async () => {
+      await authSnapshot.logout();
+    });
+
+    // Now let the GET resolve. The coalesced unlock will read the
+    // snapshot, run decryptWithMaster, and reach the gen check. The
+    // check must fire — state already reset to IDLE — and the DK must
+    // be dropped.
+    await act(async () => {
+      resolveLoad({ empty: false, saltV, blob, etag: 'E' });
+      await unlockPromise;
+    });
+
+    expect(last.status).toBe(STATUS.IDLE);
+    expect(last._hasDataKeyForTest()).toBe(false);
+  });
+
   test('lock() followed by unlockWithMaster decrypts from cache without a re-GET (P2)', async () => {
     const { master, saltV, blob, data } = await makeEncryptedBlobFor({});
     const vaultService = {
