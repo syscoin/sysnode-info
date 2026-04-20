@@ -115,6 +115,11 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       // with the pre-login gen intact, so the mount refresh still
       // lands the correct (anonymous) state.
       const res = await authService.login(email, password);
+      // `master` is the PBKDF2 output for password+email. We do not
+      // store it in React state — it stays on the stack, flows through
+      // to the caller's return value (Login page → VaultContext
+      // auto-unlock), and is dropped after one tick.
+      const master = res && res.master;
       const myGen = nextGen();
       // /auth/login returns the shallow user; hit /auth/me to pick up
       // emailVerified + notificationPrefs in one canonical shape.
@@ -124,7 +129,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
           setUser(me.user);
           setStatus(AUTHENTICATED);
         }, myGen);
-        return me;
+        return { ...me, master };
       } catch (err) {
         // 401 here means the Set-Cookie from /auth/login didn't stick
         // — browser SameSite/secure policy, cross-origin third-party
@@ -153,7 +158,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
           setUser(res.user);
           setStatus(AUTHENTICATED);
         }, myGen);
-        return { user: res.user };
+        return { user: res.user, master };
       }
     },
     [authService, safeSet, nextGen]

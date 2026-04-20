@@ -28,7 +28,7 @@ describe('authService.register', () => {
 });
 
 describe('authService.login', () => {
-  test('returns user payload on success', async () => {
+  test('returns user payload AND a master key on success', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/auth/login').reply(200, {
       user: { id: 1, email: 'user@example.com' },
@@ -37,6 +37,24 @@ describe('authService.login', () => {
     const res = await service.login('user@example.com', 'hunter22a');
     expect(res.user).toEqual({ id: 1, email: 'user@example.com' });
     expect(res.expiresAt).toBe(123456);
+    // master MUST be surfaced to the caller so the VaultContext can
+    // auto-unlock without re-running PBKDF2.
+    expect(res.master).toBeInstanceOf(Uint8Array);
+    expect(res.master).toHaveLength(32);
+  }, 20000);
+
+  test('master is NOT sent to the server on login', async () => {
+    const { service, adapter } = makeService();
+    let captured;
+    adapter.onPost('/auth/login').reply((config) => {
+      captured = JSON.parse(config.data);
+      return [200, { user: { id: 1, email: 'x@y.com' } }];
+    });
+    await service.login('x@y.com', 'hunter22a');
+    // Only email + authHash should travel the wire — never master or
+    // password.
+    expect(Object.keys(captured).sort()).toEqual(['authHash', 'email']);
+    expect(captured.authHash).toMatch(/^[0-9a-f]{64}$/);
   }, 20000);
 
   test('surfaces invalid_credentials code on 401', async () => {

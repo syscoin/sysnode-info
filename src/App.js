@@ -18,6 +18,7 @@ import VerifyEmail from './pages/VerifyEmail';
 import Account from './pages/Account';
 
 import { AuthProvider } from './context/AuthContext';
+import { VaultProvider } from './context/VaultContext';
 
 function ScrollToTop() {
   const location = useLocation();
@@ -35,25 +36,27 @@ function ScrollToTop() {
 export default function App() {
   return (
     <AuthProvider>
-      <div className="site-shell">
-        <ScrollToTop />
-        <Header />
-        <Switch>
-          <Route path="/" component={Home} exact />
-          <Route path="/network" component={Network} />
-          <Route path="/stats" render={() => <Redirect to="/network" />} />
-          <Route path="/setup" component={Setup} />
-          <Route path="/governance" component={Governance} />
-          <Route path="/learn" component={Learn} />
-          <Route path="/about" render={() => <Redirect to="/learn" />} />
-          <Route path="/login" component={Login} />
-          <Route path="/register" component={Register} />
-          <Route path="/verify-email" component={VerifyEmail} />
-          <PrivateRoute path="/account" component={Account} />
-          <Route component={Error} />
-        </Switch>
-        <Footer />
-      </div>
+      <VaultProvider>
+        <div className="site-shell">
+          <ScrollToTop />
+          <Header />
+          <Switch>
+            <Route path="/" component={Home} exact />
+            <Route path="/network" component={Network} />
+            <Route path="/stats" render={() => <Redirect to="/network" />} />
+            <Route path="/setup" component={Setup} />
+            <Route path="/governance" component={Governance} />
+            <Route path="/learn" component={Learn} />
+            <Route path="/about" render={() => <Redirect to="/learn" />} />
+            <Route path="/login" component={Login} />
+            <Route path="/register" component={Register} />
+            <Route path="/verify-email" component={VerifyEmail} />
+            <PrivateRoute path="/account" component={Account} />
+            <Route component={Error} />
+          </Switch>
+          <Footer />
+        </div>
+      </VaultProvider>
     </AuthProvider>
   );
 }
