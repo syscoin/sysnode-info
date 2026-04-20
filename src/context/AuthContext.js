@@ -125,7 +125,30 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
           setStatus(AUTHENTICATED);
         }, myGen);
         return me;
-      } catch (_) {
+      } catch (err) {
+        // 401 here means the Set-Cookie from /auth/login didn't stick
+        // — browser SameSite/secure policy, cross-origin third-party
+        // cookie blocking, etc. Pretending we're authenticated just
+        // unlocks protected routes that the very next server call
+        // will 401 on. Propagate as a real auth failure instead of
+        // falling back to the shallow login response. (Codex round 4
+        // P1.)
+        if (err && err.status === 401) {
+          safeSet(() => {
+            setUser(null);
+            setStatus(ANONYMOUS);
+          }, myGen);
+          const wrapped = new Error('session_not_established');
+          wrapped.code = 'session_not_established';
+          wrapped.status = 401;
+          wrapped.cause = err;
+          throw wrapped;
+        }
+        // Transient failure (5xx / network blip) on the follow-up me()
+        // — login definitely succeeded server-side, and the cookie is
+        // in flight. Fall back to the shallow user from /auth/login so
+        // the UI doesn't punish the user for a hiccup on a best-effort
+        // hydration call.
         safeSet(() => {
           setUser(res.user);
           setStatus(AUTHENTICATED);

@@ -16,6 +16,8 @@ const ERROR_COPY = {
     'The sysnode server is temporarily unavailable. Please try again in a moment.',
   invalid_body:
     'Please enter a valid email and password.',
+  session_not_established:
+    "Your sign-in went through, but your browser didn't keep the session cookie. If you're using strict / third-party-cookie blocking for this site, allow it for sysnode and try again.",
 };
 
 function errorToCopy(code) {

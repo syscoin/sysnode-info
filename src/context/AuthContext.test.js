@@ -246,6 +246,110 @@ test('failed login does not strand the UI in booting when mount refresh is still
   );
 });
 
+test('login rejects when follow-up /auth/me returns 401 (cookie did not stick) — Codex round 4 P1', async () => {
+  // authService.login succeeds — credentials were valid. But the browser
+  // never persisted the Set-Cookie (cross-origin + third-party-cookie
+  // block), so the very next /auth/me comes back 401. AuthContext MUST
+  // treat that as a real auth failure and stay anonymous rather than
+  // unlock protected routes from the shallow login response.
+  const service = makeService({
+    me: jest
+      .fn()
+      // Mount refresh: 401 (no session yet).
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      )
+      // Post-login rehydrate: ALSO 401.
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      ),
+    login: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com' },
+      expiresAt: 1,
+    }),
+  });
+
+  let capturedError = null;
+
+  function Probe() {
+    const auth = useAuth();
+    return (
+      <div>
+        <span data-testid="status">{auth.status}</span>
+        <button
+          type="button"
+          onClick={() =>
+            auth
+              .login({ email: 'a@b.com', password: 'pw' })
+              .catch((e) => {
+                capturedError = e;
+              })
+          }
+        >
+          login
+        </button>
+      </div>
+    );
+  }
+
+  render(
+    <AuthProvider authService={service}>
+      <Probe />
+    </AuthProvider>
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+  );
+
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+
+  expect(screen.getByTestId('status')).toHaveTextContent('anonymous');
+  expect(capturedError).not.toBeNull();
+  expect(capturedError.code).toBe('session_not_established');
+  expect(capturedError.status).toBe(401);
+});
+
+test('login tolerates a 5xx/network blip on follow-up /auth/me (Codex round 4 P1)', async () => {
+  // Transient hiccup on the best-effort hydrate call must still land
+  // AUTHENTICATED using the shallow user the server already returned.
+  const service = makeService({
+    me: jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error('oops'), { status: 503 })
+      ),
+    login: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com' },
+      expiresAt: 1,
+    }),
+  });
+
+  render(
+    <AuthProvider authService={service}>
+      <HookProbe />
+    </AuthProvider>
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+  );
+
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+  );
+  expect(screen.getByTestId('email')).toHaveTextContent('user@example.com');
+});
+
 test('useAuth throws outside provider', () => {
   function Bare() {
     useAuth();
