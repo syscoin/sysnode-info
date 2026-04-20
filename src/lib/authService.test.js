@@ -28,19 +28,33 @@ describe('authService.register', () => {
 });
 
 describe('authService.login', () => {
-  test('returns user payload AND a master key on success', async () => {
+  test('returns user payload (with saltV) AND a master key on success', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/auth/login').reply(200, {
-      user: { id: 1, email: 'user@example.com' },
+      user: {
+        id: 1,
+        email: 'user@example.com',
+        emailVerified: true,
+        saltV: 'ab'.repeat(32),
+      },
       expiresAt: 123456,
     });
     const res = await service.login('user@example.com', 'hunter22a');
-    expect(res.user).toEqual({ id: 1, email: 'user@example.com' });
+    expect(res.user).toEqual({
+      id: 1,
+      email: 'user@example.com',
+      emailVerified: true,
+      saltV: 'ab'.repeat(32),
+    });
     expect(res.expiresAt).toBe(123456);
     // master MUST be surfaced to the caller so the VaultContext can
     // auto-unlock without re-running PBKDF2.
     expect(res.master).toBeInstanceOf(Uint8Array);
     expect(res.master).toHaveLength(32);
+    // saltV round-trips to the caller unchanged. VaultContext needs it
+    // in sync with `user` so the two auth-triggered effects agree on
+    // identity.
+    expect(res.user.saltV).toBe('ab'.repeat(32));
   }, 20000);
 
   test('master is NOT sent to the server on login', async () => {
@@ -95,13 +109,22 @@ describe('authService.verifyEmail', () => {
 });
 
 describe('authService.me / logout', () => {
-  test('me returns user when authed', async () => {
+  test('me returns user with saltV on rehydration', async () => {
     const { service, adapter } = makeService();
     adapter.onGet('/auth/me').reply(200, {
-      user: { id: 1, email: 'u@e.com', emailVerified: true, notificationPrefs: {} },
+      user: {
+        id: 1,
+        email: 'u@e.com',
+        emailVerified: true,
+        notificationPrefs: {},
+        saltV: 'cd'.repeat(32),
+      },
     });
     const res = await service.me();
     expect(res.user.email).toBe('u@e.com');
+    // Rehydration path must carry saltV too — otherwise a page reload
+    // on a logged-in user would silently leave the vault unusable.
+    expect(res.user.saltV).toBe('cd'.repeat(32));
   });
 
   test('logout returns ok', async () => {

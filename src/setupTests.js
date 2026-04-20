@@ -4,6 +4,15 @@
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom/extend-expect';
 
+// Bump jest's default 5s test timeout to 20s. The auth/vault crypto
+// layer runs real PBKDF2 (600k SHA-512 iterations) in jsdom, so a
+// single unlock / derive cycle can take a couple of seconds under
+// load — and when multiple jest workers contend for the host CPU
+// (CI or a developer laptop doing anything else), the default
+// timeout is dramatically under-spec. Individual tests that need
+// more time still raise it locally; this is the baseline.
+jest.setTimeout(20000);
+
 // TextEncoder / TextDecoder polyfill:
 // jsdom 16 (bundled with react-scripts 5) doesn't expose these as globals.
 // The auth/vault crypto layer needs them for UTF-8 <-> bytes round-trips.
