@@ -43,6 +43,12 @@ export default function VerifyEmail() {
   // across in-app token changes (different token, different ref value,
   // new redeem fires).
   const lastSubmittedTokenRef = useRef(null);
+  // Monotonic request counter. Each dispatch captures the counter at
+  // its start; the .then/.catch only applies setStatus if the counter
+  // hasn't advanced in the meantime. Prevents a late response from a
+  // previous token from overwriting the status for whichever token is
+  // currently on screen. (Codex round 4 P2.)
+  const reqIdRef = useRef(0);
 
   useEffect(
     function runVerification() {
@@ -57,12 +63,15 @@ export default function VerifyEmail() {
         return;
       }
 
+      const myReqId = (reqIdRef.current += 1);
       setStatus(STATUS_BOOTING);
       verifyEmail(token)
         .then(function onVerified() {
+          if (myReqId !== reqIdRef.current) return;
           setStatus(STATUS_OK);
         })
         .catch(function onFailed(err) {
+          if (myReqId !== reqIdRef.current) return;
           setStatus(statusFromError(err));
         });
     },
