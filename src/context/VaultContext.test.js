@@ -342,6 +342,62 @@ describe('VaultProvider — unlock({password,email}) (reload path)', () => {
       })
     ).rejects.toMatchObject({ code: 'password_required' });
   });
+
+  test('unlockWithMaster defers saltV gate so Login auto-unlock can race auth hydration (Codex round 2 P1)', async () => {
+    // Real-world scenario:
+    //   1. Login's login() resolves. AuthContext queues setUser(...).
+    //   2. Login's .then (same microtask) calls
+    //      vault.unlockWithMaster(master).
+    //   3. React has NOT yet committed the AuthProvider re-render,
+    //      so the captured unlockWithMaster callback sees
+    //      userSaltV = null at call time.
+    //
+    // Pre-fix the saltV check ran synchronously at the top of the
+    // callback and threw, cancelling the auto-unlock. The fix
+    // defers the check until after `await load()` — by then React
+    // has had a chance to commit the AuthProvider update and
+    // populate userSaltVRef.current via the render-body assignment.
+    //
+    // Minimal regression assertion: with anonymous auth (saltV
+    // will stay null forever), unlockWithMaster still invokes
+    // vaultService.load() before rejecting. Pre-fix, load() would
+    // have zero calls because the saltV check short-circuited.
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: anonymousAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.IDLE));
+
+    const master = new Uint8Array(32);
+    master[0] = 1;
+
+    // unlockWithMaster must NOT throw missing_salt_v synchronously.
+    // It should enter load() first — that's what gives a real
+    // Login-initiated call its opportunity to observe a newly
+    // committed saltV.
+    let rejection;
+    await act(async () => {
+      rejection = await last
+        .unlockWithMaster(master)
+        .then(() => null, (err) => err);
+    });
+
+    expect(rejection).toBeTruthy();
+    expect(rejection.code).toBe('missing_salt_v');
+    // The critical behavioural assertion: the synchronous gate is
+    // gone, so load() had a chance to run (and in the real race it
+    // would have yielded long enough for React to flush the user
+    // hydration).
+    expect(vaultService.load).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('VaultProvider — lock + logout', () => {
@@ -1067,6 +1123,62 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
     });
     expect(last.status).toBe(STATUS.UNLOCKED);
     expect(last.isSaving).toBe(false);
+  });
+
+  test('EMPTY first-write that races and loses (vault_stale) reconciles to LOCKED (Codex round 2 P2)', async () => {
+    // Two tabs both started from EMPTY and raced their first PUT
+    // with If-Match: '*'. This tab loses — vaultService.save rejects
+    // with vault_stale. Without reconciliation we'd stay EMPTY
+    // forever, and every retry keeps hitting If-Match: '*' on an
+    // existing blob. The fix kicks off a force-refetch so state
+    // advances EMPTY → LOCKED using the winning tab's blob.
+    const { blob } = await makeEncryptedBlobFor({});
+    const staleErr = Object.assign(new Error('stale'), {
+      code: 'vault_stale',
+    });
+    const vaultService = {
+      // load() has TWO calls:
+      //   1. the auto-load on auth (returns empty)
+      //   2. the reconciliation kicked off by the save catch
+      //      (returns the winning tab's blob)
+      load: jest
+        .fn()
+        .mockResolvedValueOnce({ empty: true })
+        .mockResolvedValueOnce({ empty: false, blob, etag: 'E1' }),
+      save: jest.fn().mockRejectedValue(staleErr),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+
+    let caught;
+    await act(async () => {
+      try {
+        await last.save(
+          { version: 1, keys: [] },
+          { password: 'correct horse battery' }
+        );
+      } catch (err) {
+        caught = err;
+      }
+    });
+    expect(caught).toBeTruthy();
+    expect(caught.code).toBe('vault_stale');
+
+    // Reconciliation load was dispatched (fire-and-forget) and
+    // advanced the state machine EMPTY → LOCKED using the winning
+    // tab's etag. That unblocks the user from the permanent-EMPTY
+    // trap: the Account card now renders the unlock form and a
+    // retry proceeds through the update path with a valid etag.
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    expect(vaultService.load).toHaveBeenCalledTimes(2);
+    expect(last.etag).toBe('E1');
   });
 
   test('lock() mid-flight wins: save completion does not re-expose plaintext (Codex P1)', async () => {

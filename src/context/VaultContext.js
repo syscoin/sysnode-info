@@ -134,6 +134,26 @@ export function VaultProvider({
   const userSaltV = user && typeof user.saltV === 'string' ? user.saltV : null;
   const userEmail = user && typeof user.email === 'string' ? user.email : null;
 
+  // Latest-value refs for saltV / email.
+  //
+  // Login's fire-and-forget auto-unlock calls vault.unlockWithMaster()
+  // in the same microtask that AuthContext finishes login() — React
+  // has NOT committed the AuthProvider re-render yet, so the
+  // `vault.unlockWithMaster` Login captured was built against the
+  // pre-login `userSaltV = null`. A synchronous saltV check at the
+  // top of unlockWithMaster() therefore always rejects, defeating the
+  // auto-unlock and landing the user on a LOCKED Account page.
+  //
+  // By mirroring saltV/email into refs (assigned during render, which
+  // React allows for this "latest value" pattern) and reading the ref
+  // AFTER the first `await` inside unlockWithMaster, we give React a
+  // chance to flush the AuthContext update first. If saltV is still
+  // null after the flush, the check is legitimate.
+  const userSaltVRef = useRef(userSaltV);
+  const userEmailRef = useRef(userEmail);
+  userSaltVRef.current = userSaltV;
+  userEmailRef.current = userEmail;
+
   const [state, setStateInner] = useState(blankState);
 
   // DataKey bytes while unlocked. Stored in refs rather than state so a
@@ -303,24 +323,36 @@ export function VaultProvider({
         e.code = 'master_key_required';
         throw e;
       }
-      if (!userSaltV) {
-        // No saltV on the authenticated user object: either AuthContext
-        // hasn't hydrated yet, or the backend regressed and dropped
-        // saltV from /auth/me. Fail loudly rather than deriving with
-        // an empty salt (which would produce a deterministic wrong
-        // vaultKey and then an opaque envelope_decrypt_failed).
-        const e = new Error('missing_salt_v');
-        e.code = 'missing_salt_v';
-        throw e;
-      }
 
       const startingSession = sessionGenRef.current;
 
+      // NOTE: saltV check deferred to AFTER `await load()` so Login's
+      // synchronous fire-and-forget unlockWithMaster() — invoked in
+      // the same microtask that AuthContext resolves login() — has a
+      // chance to observe the freshly-committed `user.saltV`. Reading
+      // userSaltVRef.current (updated during render) guarantees we
+      // see the latest value once React has flushed the
+      // AuthProvider update, which happens before load()'s network
+      // I/O resolves. See the ref declarations at the top of
+      // VaultProvider for the full rationale (Codex round 2 P1).
       let snapshot;
       try {
         snapshot = await load();
       } catch (err) {
         throw err;
+      }
+
+      const saltV = userSaltVRef.current;
+      if (!saltV) {
+        // Still no saltV after the async yield: either AuthContext
+        // failed to hydrate (anonymous session) or the backend
+        // regressed and dropped saltV from /auth/me. Fail loudly
+        // rather than deriving with an empty salt (which would
+        // produce a deterministic wrong vaultKey and then an opaque
+        // envelope_decrypt_failed).
+        const e = new Error('missing_salt_v');
+        e.code = 'missing_salt_v';
+        throw e;
       }
 
       if (snapshot.status === EMPTY) {
@@ -336,7 +368,7 @@ export function VaultProvider({
 
       let decrypted;
       try {
-        decrypted = await decryptWithMaster(master, snapshot, userSaltV);
+        decrypted = await decryptWithMaster(master, snapshot, saltV);
       } catch (err) {
         // Decryption failed. Invariant preservation:
         //   (1) LOCKED must never retain keys. decryptWithMaster never
@@ -394,7 +426,10 @@ export function VaultProvider({
       );
       return { status: UNLOCKED };
     },
-    [load, bumpGen, commit, decryptWithMaster, wipeKeys, userSaltV]
+    // userSaltV is intentionally NOT in deps — we read it via
+    // userSaltVRef.current after an async yield so the callback
+    // identity is stable across saltV changes.
+    [load, bumpGen, commit, decryptWithMaster, wipeKeys]
   );
 
   // -----------------------------------------------------------------------
@@ -494,19 +529,20 @@ export function VaultProvider({
             e.code = 'password_required';
             throw e;
           }
-          const email = opts.email || userEmail;
+          const email = opts.email || userEmailRef.current;
           if (!email) {
             const e = new Error('email_required');
             e.code = 'email_required';
             throw e;
           }
-          if (!userSaltV) {
+          const saltV = userSaltVRef.current;
+          if (!saltV) {
             const e = new Error('missing_salt_v');
             e.code = 'missing_salt_v';
             throw e;
           }
           const master = await deriveMaster(opts.password, email);
-          vaultKey = await deriveVaultKey(master, userSaltV);
+          vaultKey = await deriveVaultKey(master, saltV);
           dk = generateDataKey();
           ifMatch = '*';
         } else {
@@ -586,16 +622,37 @@ export function VaultProvider({
         // owns the error surface.
         const myGen = bumpGen();
         await finish({}, myGen);
+
+        // Codex round 2 P2 — EMPTY first-write lost a race.
+        //
+        // When two tabs / devices bootstrap from EMPTY concurrently
+        // and both try their first PUT with If-Match: '*', only one
+        // wins; the loser gets a 412 / vault_stale. Without
+        // reconciliation the loser's client stays in EMPTY, retries
+        // keep using If-Match: '*' against an existing blob, and the
+        // user is permanently stuck at "add your first key".
+        //
+        // Force-advance the state machine: call doLoad() directly
+        // (bypassing load()'s cache short-circuit, which would no-op
+        // because status is still EMPTY) so we pick up the other
+        // writer's blob and transition EMPTY → LOCKED. The import
+        // modal's catch surfaces the stale error to the user; the
+        // Account card then renders the "unlock" form so they can
+        // retry through the update path with the correct etag.
+        if (isEmpty && err && err.code === 'vault_stale') {
+          // fire-and-forget: doLoad commits its own state (LOADING
+          // → LOCKED / EMPTY / ERROR) and any load failure becomes
+          // ERROR, which the status card handles.
+          doLoad().catch(() => {});
+        }
         throw err;
       }
     },
-    [
-      bumpGen,
-      commit,
-      vaultService,
-      userSaltV,
-      userEmail,
-    ]
+    // userSaltV / userEmail are intentionally not in deps: the
+    // EMPTY→UNLOCKED branch reads them through refs (see the
+    // ref-declaration comment at the top of the provider) so the
+    // callback identity stays stable.
+    [bumpGen, commit, doLoad, vaultService]
   );
 
   // -----------------------------------------------------------------------
