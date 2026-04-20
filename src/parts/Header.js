@@ -1,40 +1,80 @@
-import React, { Component } from 'react';
-import { Link } from 'react-router-dom';
-import { withTranslation } from "react-i18next";
+import React, { useEffect, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 
-var publicurl=process.env.PUBLIC_URL;
-class Header extends Component {
-    render() {
-        const { t } = this.props;
-        return(
-            <header className="header_wrap fixed-top">
-            <div className="container">
-                <nav className="navbar navbar-expand-lg">
-                    <Link className="navbar-brand page-scroll animation" to="/" data-animation="fadeInDown" data-animation-delay="1s">
-                        <img className="logo_light" src={publicurl+'/assets/images/logo.png'} alt="logo" />
-                    </Link>
-                    <button className="navbar-toggler animation" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation" data-animation="fadeInDown" data-animation-delay="1.1s">
-                        <span className="navbar-toggler-icon"></span>
-                        <span className="navbar-toggler-icon"></span>
-                        <span className="navbar-toggler-icon"></span>
-                    </button>
-                    <div className="collapse navbar-collapse" id="navbarSupportedContent">
-                        <ul className="navbar-nav ml-auto">
-                            <li className="dropdown animation" data-animation="fadeInDown" data-animation-delay="1.1s">
-                                <Link className="nav-link" to="/">{t('header.home')}</Link>
-                            </li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.3s"><Link className="nav-link" to="/about">{t('header.about')}</Link></li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.3s"><Link className="nav-link" to="/stats">{t('header.stats')}</Link></li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.6s"><a className="nav-link" rel="noopener noreferrer" href="https://docs.syscoin.org/docs/guides/sentrynode_setup/" target="_blank">{t('header.setup')}</a></li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.5s"><Link className="nav-link" to="/check">{t('header.check')}</Link></li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.5s"><Link className="nav-link" to="/governance">{t('header.governance')}</Link></li>
-                            <li className="animation" data-animation="fadeInDown" data-animation-delay="1.6s"><a className="nav-link" rel="noopener noreferrer" href="https://support.syscoin.org/" target="_blank">{t('header.support')}</a></li>
-                        </ul>
-                    </div>
-                </nav>
-            </div>
-        </header>
-        )
-    }
+import { EXTERNAL_LINKS, NAV_LINKS } from '../data/navigation';
+
+export default function Header() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+
+  useEffect(
+    function closeMenuOnRouteChange() {
+      setMenuOpen(false);
+    },
+    [location.pathname]
+  );
+
+  return (
+    <header className="site-header">
+      <div className="site-wrap site-header__inner">
+        <NavLink exact to="/" className="site-brand" aria-label="Sysnode home">
+          <span className="site-brand__text">SYSNODE</span>
+        </NavLink>
+
+        <button
+          type="button"
+          className="site-header__toggle"
+          aria-expanded={menuOpen}
+          aria-controls="primary-navigation"
+          onClick={function toggleMenu() {
+            setMenuOpen(!menuOpen);
+          }}
+        >
+          <span className="visually-hidden">Toggle navigation</span>
+          <span />
+          <span />
+        </button>
+
+        <div
+          id="primary-navigation"
+          className={menuOpen ? 'site-header__nav is-open' : 'site-header__nav'}
+        >
+          <nav className="site-nav" aria-label="Primary">
+            {NAV_LINKS.map(function renderLink(link) {
+              return (
+                <NavLink
+                  key={link.to}
+                  exact={link.exact}
+                  to={link.to}
+                  className="site-nav__link"
+                  activeClassName="is-active"
+                >
+                  {link.label}
+                </NavLink>
+              );
+            })}
+          </nav>
+
+          <div className="site-header__actions">
+            <a
+              className="button button--ghost"
+              href={EXTERNAL_LINKS.docs}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Official Docs
+            </a>
+            <a
+              className="button button--ghost"
+              href={EXTERNAL_LINKS.support}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Syscoin Support
+            </a>
+          </div>
+        </div>
+      </div>
+    </header>
+  );
 }
-export default withTranslation()(Header);

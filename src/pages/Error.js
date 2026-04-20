@@ -1,30 +1,37 @@
-import React, { Component } from 'react';
-import MetaTags from 'react-meta-tags';
-import { withTranslation } from "react-i18next";
-export class Error extends Component {
-    render() {
-        const { t } = this.props;
-        return(
-            <main className="aboutpage">
-   <MetaTags>
-      <title>{t('error.meta.title')}</title>
-      <meta name="keywords" content={t('error.meta.keywords')} />
-      <meta name="description" content={t('error.meta.description')} />
-   </MetaTags>
-   <section className="section_governance">
-      <div className="container">
-         <div className="row">
-            <div className="col-12 col-sm-12">
-               <div className="custom__about__left text-white text-center text-lg-left">
-                  <h3 className="text-white text-center">{t('error.title')}</h3>
-               </div>
-            </div>
-         </div>
-      </div>
-   </section>
-</main>
-        )
-    }
-}
+import React from 'react';
+import { Link } from 'react-router-dom';
 
-export default withTranslation()(Error);
+import PageMeta from '../components/PageMeta';
+
+export default function ErrorPage() {
+  return (
+    <main className="page-main">
+      <PageMeta
+        title="Page not found"
+        description="This Sysnode page could not be found. Return to the overview, network dashboard, governance, learn, or setup pages."
+      />
+
+      <section className="page-hero">
+        <div className="site-wrap">
+          <div className="panel error-panel">
+            <p className="eyebrow">404</p>
+            <h1>That page is not here.</h1>
+            <p className="page-hero__copy">
+              The route you tried does not exist in the refreshed Sysnode experience.
+              Use one of the links below to get back on track.
+            </p>
+
+            <div className="hero__actions">
+              <Link className="button button--primary" to="/">
+                Go to overview
+              </Link>
+              <Link className="button button--ghost" to="/network">
+                Open dashboard
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}

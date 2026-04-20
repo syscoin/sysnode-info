@@ -1,31 +1,43 @@
-import React, { Component } from 'react';
-class Footer extends Component {
-    render() {
-        return(
-        <footer className="footer">
-            <div className="container">
-                <div className="row">
-                <div className="col-12 col-lg-6 text-center text-lg-left order-2 order-lg-1 small">
-                        <span className="copyright"><a className="nav-link" rel="noopener noreferrer" href="https://github.com/bigpoppa-sys/sysnode-info" target="_blank">An Open Source Community Project - BigPoppa</a></span>
-                    </div> 
-                    <div className="col-md-auto text-center text-lg-right order-2 order-lg-1">
-                        <ul className="list-inline mb-0 social__icon">
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://www.facebook.com/Syscoin/" target="_blank"><i className="fa fa-facebook"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://twitter.com/syscoin" target="_blank"><i className="fa fa-twitter"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://www.instagram.com/syscoin_org/" target="_blank"><i className="fa fa-instagram"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://github.com/syscoin" target="_blank"><i className="fa fa-github"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://discord.gg/d73qTF9" target="_blank"><i className="fa fa-discord"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://t.me/Syscoin_Official" target="_blank"><i className="fa fa-paper-plane"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://bitcointalk.org/index.php?topic=1466445.0" target="_blank"><i className="fa fa-bitcoin"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://www.reddit.com/r/SysCoin/" target="_blank"><i className="fa fa-reddit"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://bitcoinwisdom.io/markets/binance/sysbtc" target="_blank"><i className="fa fa-line-chart"></i></a></li>
-                            <li className="list-inline-item"><a className="nav-link" rel="noopener noreferrer" href="https://www.linkedin.com/company/syscoin/" target="_blank"><i className="fa fa-linkedin"></i></a></li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </footer>
-        )
-    }
+import React from 'react';
+
+import { EXTERNAL_LINKS } from '../data/navigation';
+
+export default function Footer() {
+  return (
+    <footer className="site-footer">
+      <div className="site-wrap site-footer__inner">
+        <div className="site-footer__copy">
+          <p>Open-source for Syscoin Sentry Node operators.</p>
+          <span>Built for clearer decisions across monitoring, rewards, governance, and setup.</span>
+        </div>
+
+        <nav className="site-footer__links" aria-label="Footer">
+          <a
+            href={EXTERNAL_LINKS.github}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+          <a
+            href={EXTERNAL_LINKS.docs}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Docs
+          </a>
+          <a
+            href={EXTERNAL_LINKS.support}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Support
+          </a>
+          <a href={EXTERNAL_LINKS.discord} target="_blank" rel="noopener noreferrer">
+            Discord
+          </a>
+        </nav>
+      </div>
+    </footer>
+  );
 }
-export default Footer;

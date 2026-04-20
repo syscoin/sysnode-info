@@ -1,13 +1,87 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');
+
+:root {
+  --bg: #f4f7fb;
+  --bg-soft: #ebf1f8;
+  --bg-accent: #f7fbff;
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-strong: rgba(248, 251, 255, 0.98);
+  --panel-muted: #f4f8fc;
+  --panel-outline: rgba(44, 74, 117, 0.12);
+  --text: #17253f;
+  --muted: #63748d;
+  --line: rgba(44, 74, 117, 0.11);
+  --accent: #1e78ff;
+  --accent-strong: #125ac4;
+  --accent-soft: rgba(30, 120, 255, 0.1);
+  --accent-mint: #14b8a6;
+  --accent-warm: #f3b356;
+  --danger: #e56b55;
+  --shadow: 0 20px 54px rgba(28, 49, 84, 0.1);
+  --radius-lg: 28px;
+  --radius-md: 20px;
+  --max-width: 1180px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  min-width: 320px;
+  color-scheme: light;
+  background:
+    radial-gradient(circle at top left, rgba(30, 120, 255, 0.09), transparent 30%),
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.09), transparent 24%),
+    linear-gradient(180deg, #fbfdff 0%, #f5f8fc 48%, #edf3f9 100%);
+  color: var(--text);
+  font: 16px/1.6 'IBM Plex Sans', 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(31, 61, 105, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 61, 105, 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.48), transparent 85%);
+  opacity: 0.35;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+strong {
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
 }
