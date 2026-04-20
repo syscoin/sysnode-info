@@ -170,21 +170,42 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
   );
 
   const logout = useCallback(async () => {
-    const myGen = nextGen();
+    // Do NOT unconditionally claim local sign-out on server failure.
+    //
+    // The earlier "swallow the error and force ANONYMOUS" design meant
+    // that if the /auth/logout call failed (server 500, network blip,
+    // CORS hiccup) we'd tell the user they were signed out while their
+    // session cookie was still valid — so a reload would silently
+    // re-authenticate them. On a shared / kiosk machine that's a real
+    // footgun: the user walks away believing the session is dead.
+    // (Codex round 5 P2.)
+    //
+    // Split the cases:
+    //   401 / 404           -> session is ALREADY gone server-side
+    //                          (e.g. expired cookie). Clear locally.
+    //   anything else       -> surface `logout_failed` so the caller
+    //                          can prompt retry and the UI stays in
+    //                          AUTHENTICATED until the server confirms.
     try {
       await authService.logout();
     } catch (err) {
-      // The server call failed, but locally we're definitively signed out
-      // (cookies will be dropped by the redirect anyway). Swallow and log
-      // rather than surface a misleading "logout failed" to the user.
-      // eslint-disable-next-line no-console
-      console.warn('[AuthContext] logout request failed', err && err.message);
-    } finally {
-      safeSet(() => {
-        setUser(null);
-        setStatus(ANONYMOUS);
-      }, myGen);
+      const alreadyGone =
+        err && (err.status === 401 || err.status === 404);
+      if (!alreadyGone) {
+        const wrapped = new Error('logout_failed');
+        wrapped.code = 'logout_failed';
+        wrapped.status = (err && err.status) || 0;
+        wrapped.cause = err;
+        throw wrapped;
+      }
+      // fall through to clear locally — server confirmed there was
+      // nothing to sign out of.
     }
+    const myGen = nextGen();
+    safeSet(() => {
+      setUser(null);
+      setStatus(ANONYMOUS);
+    }, myGen);
   }, [authService, safeSet, nextGen]);
 
   // Called from the apiClient's 401 interceptor when a non-auth request

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useHistory } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
@@ -7,11 +7,29 @@ import { useAuth } from '../context/AuthContext';
 export default function Account() {
   const { user, logout } = useAuth();
   const history = useHistory();
+  const [signOutError, setSignOutError] = useState(null);
+  const [signingOut, setSigningOut] = useState(false);
 
-  function onSignOut() {
-    logout().finally(function always() {
+  async function onSignOut() {
+    // The AuthContext now surfaces `logout_failed` when the server call
+    // fails on anything other than 401/404 (session already gone). In
+    // that case the session cookie is still valid server-side, so we
+    // must NOT redirect to /login — doing so would tell the user they
+    // were signed out while a reload would restore the session.
+    setSignOutError(null);
+    setSigningOut(true);
+    try {
+      await logout();
       history.replace('/login');
-    });
+    } catch (err) {
+      setSignOutError(
+        err && err.code === 'logout_failed'
+          ? "We couldn't end your session on the server. Please retry, or close this browser window to be safe."
+          : 'Sign out failed. Please retry.'
+      );
+    } finally {
+      setSigningOut(false);
+    }
   }
 
   return (
@@ -52,12 +70,23 @@ export default function Account() {
               </div>
             </dl>
 
+            {signOutError ? (
+              <div
+                className="auth-alert auth-alert--error"
+                role="alert"
+                data-testid="signout-error"
+              >
+                {signOutError}
+              </div>
+            ) : null}
+
             <button
               type="button"
               className="button button--ghost"
               onClick={onSignOut}
+              disabled={signingOut}
             >
-              Sign out
+              {signingOut ? 'Signing out…' : 'Sign out'}
             </button>
           </div>
         </div>

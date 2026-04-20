@@ -30,7 +30,18 @@ function HookProbe() {
       >
         login
       </button>
-      <button type="button" onClick={() => auth.logout()}>logout</button>
+      <button
+        type="button"
+        onClick={() =>
+          auth.logout().catch(() => {
+            // Tests that care about the error branch use a dedicated
+            // probe that captures the rejection; this one just swallows
+            // to avoid unhandled-rejection noise from the harness.
+          })
+        }
+      >
+        logout
+      </button>
     </div>
   );
 }
@@ -116,12 +127,12 @@ test('login transitions anonymous -> authenticated', async () => {
   expect(service.login).toHaveBeenCalledWith('a@b.com', 'pw');
 });
 
-test('logout transitions authenticated -> anonymous even if network fails', async () => {
+test('logout: server success clears local state (happy path)', async () => {
   const service = makeService({
     me: jest.fn().mockResolvedValue({
       user: { id: 1, email: 'user@example.com', emailVerified: true },
     }),
-    logout: jest.fn().mockRejectedValue(new Error('boom')),
+    logout: jest.fn().mockResolvedValue({ status: 'ok' }),
   });
   render(
     <AuthProvider authService={service}>
@@ -140,6 +151,95 @@ test('logout transitions authenticated -> anonymous even if network fails', asyn
   await waitFor(() =>
     expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
   );
+});
+
+test('logout: 401/404 on server = session already gone, clear locally (Codex round 5 P2)', async () => {
+  // Server says we have no session to sign out of — that's idempotent
+  // with our local expectation (signed out), so clearing is correct.
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com', emailVerified: true },
+    }),
+    logout: jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('no session'), { status: 401 })
+      ),
+  });
+  render(
+    <AuthProvider authService={service}>
+      <HookProbe />
+    </AuthProvider>
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+  );
+
+  await act(async () => {
+    screen.getByText('logout').click();
+    await flush();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+  );
+});
+
+test('logout: transient server failure keeps AUTHENTICATED and rejects with logout_failed (Codex round 5 P2)', async () => {
+  // 5xx / network error — session cookie is almost certainly still
+  // valid. Pretending we're anonymous while a reload would restore
+  // the session is dangerous on shared machines.
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com', emailVerified: true },
+    }),
+    logout: jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('boom'), { status: 503 })
+      ),
+  });
+
+  let capturedError = null;
+
+  function Probe() {
+    const auth = useAuth();
+    return (
+      <div>
+        <span data-testid="status">{auth.status}</span>
+        <button
+          type="button"
+          onClick={() =>
+            auth.logout().catch((e) => {
+              capturedError = e;
+            })
+          }
+        >
+          logout
+        </button>
+      </div>
+    );
+  }
+
+  render(
+    <AuthProvider authService={service}>
+      <Probe />
+    </AuthProvider>
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+  );
+
+  await act(async () => {
+    screen.getByText('logout').click();
+    await flush();
+  });
+
+  // Still authenticated — we refuse to claim local sign-out on failure.
+  expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  expect(capturedError).not.toBeNull();
+  expect(capturedError.code).toBe('logout_failed');
+  expect(capturedError.status).toBe(503);
 });
 
 test('stale mount-time /auth/me 401 cannot overwrite a newer successful login (Codex round 1 P1)', async () => {
