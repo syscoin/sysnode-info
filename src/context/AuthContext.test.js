@@ -450,6 +450,107 @@ test('login tolerates a 5xx/network blip on follow-up /auth/me (Codex round 4 P1
   expect(screen.getByTestId('email')).toHaveTextContent('user@example.com');
 });
 
+test('login returns the master key from authService so callers can auto-unlock vault', async () => {
+  // Contract: AuthContext.login forwards `master` from authService.login
+  // through its own return value. VaultContext (in a sibling provider)
+  // relies on this to skip a second round of PBKDF2 after login.
+  const mockMaster = new Uint8Array(32).fill(7);
+  const service = makeService({
+    login: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com' },
+      expiresAt: 1,
+      master: mockMaster,
+    }),
+    me: jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      )
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'user@example.com', emailVerified: true },
+      }),
+  });
+
+  let captured;
+  function Probe() {
+    const auth = useAuth();
+    return (
+      <button
+        type="button"
+        onClick={async () => {
+          captured = await auth.login({ email: 'a@b.com', password: 'pw' });
+        }}
+      >
+        login
+      </button>
+    );
+  }
+
+  render(
+    <AuthProvider authService={service}>
+      <Probe />
+    </AuthProvider>
+  );
+  await flush();
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+
+  expect(captured).toBeDefined();
+  expect(captured.master).toBe(mockMaster);
+  expect(captured.user).toBeDefined();
+});
+
+test('login tolerates 5xx on /auth/me and still forwards master', async () => {
+  // Companion to the transient-me hiccup test: master must still reach
+  // the caller on the shallow-user fallback path.
+  const mockMaster = new Uint8Array(32).fill(3);
+  const service = makeService({
+    me: jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      )
+      .mockRejectedValueOnce(
+        Object.assign(new Error('boom'), { status: 503 })
+      ),
+    login: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'user@example.com' },
+      expiresAt: 1,
+      master: mockMaster,
+    }),
+  });
+
+  let captured;
+  function Probe() {
+    const auth = useAuth();
+    return (
+      <button
+        type="button"
+        onClick={async () => {
+          captured = await auth.login({ email: 'a@b.com', password: 'pw' });
+        }}
+      >
+        login
+      </button>
+    );
+  }
+
+  render(
+    <AuthProvider authService={service}>
+      <Probe />
+    </AuthProvider>
+  );
+  await flush();
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+  expect(captured.master).toBe(mockMaster);
+  expect(captured.user).toEqual({ id: 1, email: 'user@example.com' });
+});
+
 test('useAuth throws outside provider', () => {
   function Bare() {
     useAuth();

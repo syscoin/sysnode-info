@@ -28,12 +28,22 @@ export function createAuthService(client = defaultClient) {
   }
 
   async function login(email, password) {
-    const { authHash } = await deriveLoginKeys(password, email);
+    // We surface `master` back to the caller so the Login page can hand
+    // it straight to the VaultContext for auto-unlock — otherwise the
+    // vault would have to re-run PBKDF2-600k after a successful login
+    // just to derive the same bytes we already have in hand. `master` is
+    // transient: the AuthContext does not persist it anywhere; the
+    // VaultContext derives vaultKey from it inside a non-extractable
+    // CryptoKey and drops the raw bytes immediately after.
+    //
+    // NEVER log or JSON-stringify the returned object into anything
+    // persistent — it contains raw key material until it's been consumed.
+    const { authHash, master } = await deriveLoginKeys(password, email);
     const res = await client.post('/auth/login', {
       email: email.trim(),
       authHash,
     });
-    return res.data;
+    return { ...res.data, master };
   }
 
   async function logout() {
