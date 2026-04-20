@@ -1069,6 +1069,65 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
     expect(last.isSaving).toBe(false);
   });
 
+  test('lock() mid-flight wins: save completion does not re-expose plaintext (Codex P1)', async () => {
+    // Scenario: user is UNLOCKED, starts a save, then clicks lock
+    // before the PUT resolves. The server write still succeeds, but
+    // the client must honour the lock — no plaintext payload, no
+    // refs, status stays LOCKED.
+    const { master, blob } = await makeEncryptedBlobFor({});
+    let releaseSave;
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, blob, etag: 'E0' }),
+      save: jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseSave = () => resolve({ etag: 'E1' });
+          })
+      ),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+    let savePromise;
+    await act(async () => {
+      savePromise = last.save({ k: 1 });
+      await waitFor(() =>
+        expect(vaultService.save).toHaveBeenCalledTimes(1)
+      );
+    });
+    expect(last.isSaving).toBe(true);
+
+    await act(async () => {
+      last.lock();
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+
+    await act(async () => {
+      releaseSave();
+      await expect(savePromise).rejects.toMatchObject({
+        code: 'vault_locked_during_save',
+      });
+    });
+
+    expect(last.status).toBe(STATUS.LOCKED);
+    expect(last.data).toBeNull();
+    expect(last.isSaving).toBe(false);
+    expect(last.error).toBeNull();
+  });
+
   test('save() from LOCKED throws vault_not_ready without touching the service', async () => {
     const { blob } = await makeEncryptedBlobFor({});
     const vaultService = {

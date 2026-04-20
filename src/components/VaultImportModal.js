@@ -76,6 +76,16 @@ export default function VaultImportModal({ open, onClose }) {
 
   const pasteRef = useRef(null);
 
+  // Latest-`saving` ref. The ESC keydown handler is registered in an
+  // effect keyed only on `open` so the listener isn't churned on every
+  // keystroke; reading `saving` through a ref guarantees that ESC
+  // observes the *current* saving state rather than whatever value was
+  // captured at effect-setup time.
+  const savingRef = useRef(false);
+  useEffect(() => {
+    savingRef.current = saving;
+  }, [saving]);
+
   const requiresPassword = vault.isEmpty;
 
   // Validation is pure / cheap (a few thousand rows takes <10ms), so
@@ -106,7 +116,9 @@ export default function VaultImportModal({ open, onClose }) {
       if (pasteRef.current) pasteRef.current.focus();
     }, 0);
     function onKey(e) {
-      if (e.key === 'Escape' && !saving) {
+      // Read saving via ref so the guard always sees the current value
+      // even though this handler is only registered once per `open`.
+      if (e.key === 'Escape' && !savingRef.current) {
         onClose();
       }
     }
@@ -115,10 +127,7 @@ export default function VaultImportModal({ open, onClose }) {
       clearTimeout(t);
       window.removeEventListener('keydown', onKey);
     };
-    // We intentionally don't re-run on `saving` / `onClose` churn; the
-    // ESC guard reads the latest `saving` via closure each keystroke.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, onClose]);
 
   const onSave = useCallback(
     async function onSave() {

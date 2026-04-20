@@ -548,6 +548,18 @@ export function VaultProvider({
           throw e;
         }
 
+        // If the user called lock() while the PUT was in flight, the
+        // refs have already been wiped and the status moved to
+        // LOCKED. Honour that — don't re-expose plaintext or
+        // re-install keys. The server has persisted the new blob
+        // (that's fine); the next unlock will GET the fresh blob and
+        // matching etag, so nothing to track here.
+        if (stateRef.current.status === LOCKED) {
+          const e = new Error('vault_locked_during_save');
+          e.code = 'vault_locked_during_save';
+          throw e;
+        }
+
         const myGen = bumpGen();
         if (isEmpty) {
           // Only install keys on the EMPTY→UNLOCKED promotion. For

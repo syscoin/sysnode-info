@@ -240,6 +240,38 @@ describe('VaultImportModal — dismiss', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
+  test('ESC does NOT close while a save is in flight (Codex P2)', async () => {
+    // Manually-released save promise so we can observe the "saving"
+    // window and press ESC while it's true.
+    let releaseSave;
+    const vault = unlockedVault({
+      save: jest.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseSave = () => resolve();
+          })
+      ),
+    });
+    const { onClose } = mount({ vault });
+    pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+    // Wait until vault.save has been invoked — that's the modal's
+    // `saving` window opening.
+    await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
+
+    // Press ESC mid-flight. The keydown listener was registered when
+    // the modal opened (saving=false at that time); the fix ensures
+    // the handler reads the *current* saving value via a ref so this
+    // ESC is a no-op.
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Finish the save; modal closes normally.
+    await waitFor(() => {}); // settle pending acts
+    releaseSave();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
   test('Cancel button triggers onClose', async () => {
     const { onClose } = mount({ vault: unlockedVault() });
     await userEvent.click(screen.getByTestId('vault-import-cancel'));
