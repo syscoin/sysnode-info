@@ -322,21 +322,38 @@ export function VaultProvider({
       try {
         decrypted = await decryptWithMaster(master, snapshot);
       } catch (err) {
-        // Decryption itself failed. decryptWithMaster never touched
-        // dkRef, so no key material to wipe. Land in LOCKED with the
-        // failure code (subject to the gen check so a mid-flight
-        // logout still wins).
-        commit(
-          {
-            status: LOCKED,
-            error: (err && err.code) || 'unlock_failed',
-            saltV: snapshot.saltV,
-            etag: snapshot.etag,
-            blob: snapshot.blob,
-            data: null,
-          },
-          myGen
-        );
+        // Decryption failed. Two invariants to preserve here:
+        //
+        //  1. LOCKED must never retain a DataKey. decryptWithMaster
+        //     itself never touched dkRef, but the vault may have been
+        //     UNLOCKED with a PRIOR dk when this attempt started (e.g.
+        //     a second unlock attempt with a bad master against an
+        //     already-unlocked vault). Landing in LOCKED without
+        //     wiping dkRef would leave that stale dk resident while
+        //     the UI/status said locked. (Codex round 3 P2.)
+        //
+        //  2. Don't stomp a concurrent winning unlock. If another op
+        //     has advanced gen/session while we were decrypting, the
+        //     dk currently in dkRef belongs to THAT op and we must
+        //     leave both it and state untouched.
+        if (
+          mountedRef.current &&
+          sessionGenRef.current === startingSession &&
+          myGen === genRef.current
+        ) {
+          dkRef.current = null;
+          commit(
+            {
+              status: LOCKED,
+              error: (err && err.code) || 'unlock_failed',
+              saltV: snapshot.saltV,
+              etag: snapshot.etag,
+              blob: snapshot.blob,
+              data: null,
+            },
+            myGen
+          );
+        }
         throw err;
       }
 

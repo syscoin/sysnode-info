@@ -1,6 +1,13 @@
 import React from 'react';
 import { render, act, waitFor } from '@testing-library/react';
 
+// Tests that drive a full PBKDF2-SHA512 @ 600k iterations (the real
+// KDF, not a mock — we want to prove end-to-end crypto correctness)
+// can take 10+ seconds in jsdom under parallel Jest workers. Give
+// those tests enough headroom that they aren't the source of flakes
+// when the suite is run alongside the other 15 files.
+const PBKDF2_TIMEOUT_MS = 30000;
+
 import { AuthProvider } from './AuthContext';
 import { VaultProvider, useVault, __testing } from './VaultContext';
 import {
@@ -291,7 +298,7 @@ describe('VaultProvider — unlock({password,email}) (reload path)', () => {
     });
     expect(last.status).toBe(STATUS.UNLOCKED);
     expect(last.data).toEqual(data);
-  });
+  }, PBKDF2_TIMEOUT_MS);
 
   test('rejects an empty password', async () => {
     const { saltV, blob } = await makeEncryptedBlobFor({});
@@ -683,6 +690,48 @@ describe('VaultProvider — load() single-flight + cache (Codex round 1)', () =>
     });
 
     expect(last.status).toBe(STATUS.IDLE);
+    expect(last._hasDataKeyForTest()).toBe(false);
+  });
+
+  test('failed unlock from an UNLOCKED vault wipes dkRef before landing in LOCKED (P2 round 3)', async () => {
+    const { master, saltV, blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, saltV, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+
+    // First unlock: correct master -> UNLOCKED with dk in memory.
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+    expect(last._hasDataKeyForTest()).toBe(true);
+
+    // Second unlock against the SAME live session with a bad master.
+    // The decryption branch will throw; the catch branch must wipe
+    // the prior dk out of dkRef before committing LOCKED.
+    let caught;
+    await act(async () => {
+      try {
+        await last.unlockWithMaster(new Uint8Array(32).fill(7));
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toMatchObject({ code: 'envelope_decrypt_failed' });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    expect(last.error).toBe('envelope_decrypt_failed');
     expect(last._hasDataKeyForTest()).toBe(false);
   });
 
