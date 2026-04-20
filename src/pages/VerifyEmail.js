@@ -27,24 +27,37 @@ export default function VerifyEmail() {
   const location = useLocation();
   const [status, setStatus] = useState(STATUS_BOOTING);
 
-  // Protect against StrictMode double-invoke in dev — each token is
-  // single-use on the server, so firing twice burns the redeem path and
-  // flips status into STATUS_BAD on the second run even when the first
-  // one succeeded.
-  const firedRef = useRef(false);
+  // We dedupe by the token value itself rather than a one-shot boolean.
+  //
+  // A one-shot guard protects against StrictMode's intentional effect
+  // double-invoke (each token is single-use server-side, so double
+  // redeem would burn a still-valid link). But it ALSO locks the page
+  // to whatever token it first saw — in a same-tab SPA navigation from
+  // `/verify-email?token=A` to `?token=B` the effect re-fires with
+  // fresh `location.search`, and a never-reset boolean would skip the
+  // new redemption silently, leaving stale status on screen until a
+  // hard reload. (Codex round 1 P2.)
+  //
+  // Keying the guard on the token value gives us StrictMode safety
+  // (second invoke with the same token is a no-op) AND correctness
+  // across in-app token changes (different token, different ref value,
+  // new redeem fires).
+  const lastSubmittedTokenRef = useRef(null);
 
   useEffect(
     function runVerification() {
-      if (firedRef.current) return;
-      firedRef.current = true;
-
       const params = new URLSearchParams(location.search);
       const token = (params.get('token') || '').trim();
+
+      if (lastSubmittedTokenRef.current === token) return;
+      lastSubmittedTokenRef.current = token;
+
       if (!/^[0-9a-f]{64}$/.test(token)) {
         setStatus(STATUS_BAD);
         return;
       }
 
+      setStatus(STATUS_BOOTING);
       verifyEmail(token)
         .then(function onVerified() {
           setStatus(STATUS_OK);
