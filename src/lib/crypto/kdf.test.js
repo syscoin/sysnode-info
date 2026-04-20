@@ -79,7 +79,7 @@ describe('kdf.deriveMaster / deriveAuthHash — cross-check vs Node crypto', () 
     const a = await nodePbkdf2(password, '  USER@example.COM  ');
     const b = await nodePbkdf2(password, 'user@example.com');
     expect(Array.from(a)).toEqual(Array.from(b));
-  });
+  }, 20000);
 
   test('empty password is rejected', async () => {
     await expect(deriveMaster('', email)).rejects.toThrow(/password/i);

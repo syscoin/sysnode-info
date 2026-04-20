@@ -18,10 +18,26 @@ import axios from 'axios';
 //      redirect to /login) without every caller having to handle the
 //      case individually.
 
+// Default API base URL.
+//
+// DO NOT fall back to `window.location.origin`. The sysnode-info SPA
+// and the sysnode-backend are hosted on different origins — the SPA
+// server only serves static files, it does not proxy /auth/* anywhere
+// — so defaulting to the current browser origin makes login, register,
+// and session hydration silently hit the wrong host and fail unless
+// an operator remembers to set `REACT_APP_API_BASE`. (Codex round 5
+// P1.)
+//
+// Priority:
+//   1. REACT_APP_API_BASE (build-time override for bespoke deployments)
+//   2. Production builds → https://syscoin.dev (same host as the legacy
+//      public client in `./api.js`, which is where sysnode-backend is
+//      reachable)
+//   3. Development builds → http://localhost:3001 (backend dev server)
 const DEFAULT_BASE =
   process.env.REACT_APP_API_BASE ||
-  (typeof window !== 'undefined' && window.location && window.location.origin
-    ? window.location.origin
+  (process.env.NODE_ENV === 'production'
+    ? 'https://syscoin.dev'
     : 'http://localhost:3001');
 
 const STATE_CHANGING = /^(POST|PUT|PATCH|DELETE)$/i;
