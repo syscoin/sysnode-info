@@ -2,10 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { EXTERNAL_LINKS, NAV_LINKS } from '../data/navigation';
+import { useAuth } from '../context/AuthContext';
 
 export default function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const { isAuthenticated, isBooting } = useAuth();
 
   useEffect(
     function closeMenuOnRouteChange() {
@@ -64,14 +66,23 @@ export default function Header() {
             >
               Official Docs
             </a>
-            <a
-              className="button button--ghost"
-              href={EXTERNAL_LINKS.support}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Syscoin Support
-            </a>
+            {/* Auth chip: render nothing while the initial /auth/me call
+                is in flight so the button doesn't flash "Sign in" for a
+                split second on reload when the user is in fact signed
+                in. Covered by Header.test.js. */}
+            {isBooting ? null : isAuthenticated ? (
+              <NavLink
+                to="/account"
+                className="button button--primary"
+                activeClassName="is-active"
+              >
+                Account
+              </NavLink>
+            ) : (
+              <NavLink to="/login" className="button button--primary">
+                Sign in
+              </NavLink>
+            )}
           </div>
         </div>
       </div>
