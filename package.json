@@ -8,6 +8,9 @@
     "npm": ">=10"
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@noble/secp256k1": "^2.3.0",
+    "@scure/base": "^1.2.6",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
@@ -25,10 +28,16 @@
     "dev": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:ci": "react-scripts test --watchAll=false --maxWorkers=50%",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
     "extends": "react-app"
+  },
+  "jest": {
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@noble|@scure)/)"
+    ]
   },
   "browserslist": {
     "production": [

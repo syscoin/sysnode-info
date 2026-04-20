@@ -14,8 +14,8 @@ import { setAuthLostHandler } from '../lib/apiClient';
 // AuthContext shape:
 //
 //   status: 'booting' | 'anonymous' | 'authenticated'
-//   user:   null | { id, email, emailVerified, notificationPrefs }
-//   login({ email, password })       -> resolves to { user } on success
+//   user:   null | { id, email, emailVerified, notificationPrefs, saltV }
+//   login({ email, password })       -> resolves to { user, master } on success
 //   register({ email, password })    -> { status: 'verification_sent' }
 //   verifyEmail(token)               -> { status: 'verified' }
 //   logout()                         -> null

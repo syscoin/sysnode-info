@@ -20,7 +20,28 @@ describe('vaultService.load', () => {
     expect(out).toEqual({ empty: true });
   });
 
-  test('returns saltV/blob/etag when present', async () => {
+  test('returns blob/etag/updatedAt when present (saltV no longer carried here)', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/vault').reply(200, {
+      blob: 'AAAA',
+      etag: 'abc',
+      updatedAt: 1700000000,
+    });
+    const out = await service.load();
+    expect(out.empty).toBe(false);
+    expect(out.blob).toBe('AAAA');
+    expect(out.etag).toBe('abc');
+    expect(out.updatedAt).toBe(1700000000);
+    // saltV belongs to the user identity, not the vault row (migration
+    // 004). Making sure it doesn't accidentally leak from the legacy
+    // GET response into the service output.
+    expect(out.saltV).toBeUndefined();
+  });
+
+  test('tolerates legacy servers that still echo saltV', async () => {
+    // Belt-and-suspenders: a pre-004 backend could still return saltV
+    // in the body. The client ignores it (saltV is now sourced from
+    // /auth/me), but MUST NOT break if the field is present.
     const { service, adapter } = makeService();
     adapter.onGet('/vault').reply(200, {
       saltV: 'aa'.repeat(32),
@@ -30,15 +51,15 @@ describe('vaultService.load', () => {
     });
     const out = await service.load();
     expect(out.empty).toBe(false);
-    expect(out.saltV).toBe('aa'.repeat(32));
     expect(out.blob).toBe('AAAA');
     expect(out.etag).toBe('abc');
-    expect(out.updatedAt).toBe(1700000000);
   });
 
   test('raises invalid_vault_response when server shape is broken', async () => {
     const { service, adapter } = makeService();
-    adapter.onGet('/vault').reply(200, { saltV: '', blob: 'x', etag: 'e' });
+    // No blob at all — load() must refuse rather than return a shape
+    // the caller will crash on later.
+    adapter.onGet('/vault').reply(200, { etag: 'e' });
     await expect(service.load()).rejects.toMatchObject({
       code: 'invalid_vault_response',
     });
@@ -55,7 +76,7 @@ describe('vaultService.load', () => {
 });
 
 describe('vaultService.save', () => {
-  test('sends the blob + If-Match: <etag> on updates', async () => {
+  test('sends the blob + If-Match: <etag> on updates, returns new etag', async () => {
     const { service, adapter } = makeService();
     let captured;
     adapter.onPut('/vault').reply((config) => {
@@ -63,15 +84,15 @@ describe('vaultService.save', () => {
         body: JSON.parse(config.data),
         headers: config.headers,
       };
-      return [
-        200,
-        { saltV: 'aa'.repeat(32), etag: 'newEtag' },
-      ];
+      return [200, { etag: 'newEtag' }];
     });
 
     const out = await service.save({ blob: 'CIPHERTEXT', ifMatch: 'oldEtag' });
-    expect(out.etag).toBe('newEtag');
+    expect(out).toEqual({ etag: 'newEtag' });
     expect(captured.body).toEqual({ blob: 'CIPHERTEXT' });
+    // saltV must never appear in the PUT body — it's server-owned and
+    // is not accepted as input on this endpoint.
+    expect(captured.body.saltV).toBeUndefined();
     expect(captured.headers['If-Match']).toBe('oldEtag');
     expect(captured.headers['X-CSRF-Token']).toBe('tok');
   });
@@ -81,7 +102,7 @@ describe('vaultService.save', () => {
     let captured;
     adapter.onPut('/vault').reply((config) => {
       captured = config;
-      return [200, { saltV: 'bb'.repeat(32), etag: 'firstEtag' }];
+      return [200, { etag: 'firstEtag' }];
     });
     await service.save({ blob: 'CIPHERTEXT' });
     expect(captured.headers['If-Match']).toBeUndefined();
@@ -109,6 +130,18 @@ describe('vaultService.save', () => {
     await expect(
       service.save({ blob: 'x'.repeat(10), ifMatch: '*' })
     ).rejects.toMatchObject({ code: 'vault_too_large', status: 413 });
+  });
+
+  test('server response missing etag is treated as invalid (no silent success)', async () => {
+    // If a server ever returned 200 without an etag, the client would
+    // have nothing to send as If-Match on its next write and would be
+    // stuck in a perpetual 428 loop. Reject at the service boundary
+    // so the caller sees a precise cause.
+    const { service, adapter } = makeService();
+    adapter.onPut('/vault').reply(200, {});
+    await expect(
+      service.save({ blob: 'x', ifMatch: '*' })
+    ).rejects.toMatchObject({ code: 'invalid_vault_response' });
   });
 
   test('rejects empty-string blobs client-side before any HTTP call', async () => {

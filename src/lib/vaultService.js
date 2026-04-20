@@ -7,10 +7,15 @@ import { apiClient as defaultClient } from './apiClient';
 //
 // Backend contract (from sysnode-backend/routes/vault.js):
 //
-//   GET  /vault                    -> 200 { saltV, blob, etag, updatedAt }
+//   GET  /vault                    -> 200 { blob, etag, updatedAt }
 //                                     200 { empty: true }
-//   PUT  /vault  If-Match: <etag>  -> 200 { saltV, etag }            // update
-//   PUT  /vault  If-Match: *       -> 200 { saltV, etag }            // first write
+//   PUT  /vault  If-Match: <etag>  -> 200 { etag }            // update
+//   PUT  /vault  If-Match: *       -> 200 { etag }            // first write
+//
+// saltV is NOT carried on these endpoints. It lives on the users row and
+// is delivered alongside the user identity by /auth/login and /auth/me
+// (see migration 004 in sysnode-backend). Callers get it from
+// useAuth().user.saltV; the vault route is blob-only.
 //
 // PUT error responses (all with { error: <code> }):
 //
@@ -42,17 +47,14 @@ export function createVaultService(client = defaultClient) {
       }
       // Defensive parse — any missing field means the server responded
       // with something other than the documented shape.
-      const { saltV, blob, etag, updatedAt } = res.data || {};
-      if (typeof saltV !== 'string' || !saltV) {
-        throw vaultError('invalid_vault_response', 0);
-      }
+      const { blob, etag, updatedAt } = res.data || {};
       if (typeof blob !== 'string' || !blob) {
         throw vaultError('invalid_vault_response', 0);
       }
       if (typeof etag !== 'string' || !etag) {
         throw vaultError('invalid_vault_response', 0);
       }
-      return { empty: false, saltV, blob, etag, updatedAt: updatedAt || 0 };
+      return { empty: false, blob, etag, updatedAt: updatedAt || 0 };
     } catch (err) {
       // apiClient has already normalised into { code, status }; re-raise.
       if (err && err.code) throw err;
@@ -72,7 +74,15 @@ export function createVaultService(client = defaultClient) {
     if (ifMatch) headers['If-Match'] = ifMatch;
     try {
       const res = await client.put(VAULT_PATH, { blob }, { headers });
-      return res.data; // { saltV, etag }
+      const data = res.data || {};
+      if (typeof data.etag !== 'string' || !data.etag) {
+        // The server must always echo the new etag — otherwise the
+        // client has no way to issue a correct If-Match on its next
+        // write. Treat a missing etag as a server-side invariant
+        // violation rather than silently accepting the write.
+        throw vaultError('invalid_vault_response', 0);
+      }
+      return { etag: data.etag };
     } catch (err) {
       if (!err || !err.code) {
         throw vaultError('network_error', 0, err);
