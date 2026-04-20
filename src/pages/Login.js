@@ -3,6 +3,7 @@ import { Link, useHistory, useLocation } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
 import { useAuth } from '../context/AuthContext';
+import { useVault } from '../context/VaultContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 
 const ERROR_COPY = {
@@ -26,6 +27,7 @@ function errorToCopy(code) {
 
 export default function Login() {
   const { login } = useAuth();
+  const vault = useVault();
   const history = useHistory();
   const location = useLocation();
 
@@ -54,7 +56,24 @@ export default function Login() {
     setSubmitting(true);
     setError(null);
     login({ email: normalized, password })
-      .then(function onLoggedIn() {
+      .then(function onLoggedIn(result) {
+        // Fire-and-forget vault auto-unlock.
+        //
+        // We DO NOT await this: navigation is the user's priority, and an
+        // empty-vault or offline-vault response shouldn't delay reaching
+        // the account page. The VaultContext's own state machine tracks
+        // success / locked / empty / error and the Account page renders
+        // whichever lands. We swallow errors here so a vault failure
+        // doesn't look like a login failure.
+        //
+        // `result.master` comes from the AuthContext contract — see the
+        // authService.login comment for why it's surfaced.
+        if (result && result.master instanceof Uint8Array) {
+          vault.unlockWithMaster(result.master).catch(function onIgnore() {
+            // noop — VaultContext records the error into its state for
+            // the Account page to render.
+          });
+        }
         const next = (location.state && location.state.from) || '/account';
         history.replace(next);
       })

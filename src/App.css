@@ -1550,6 +1550,29 @@
   max-width: 520px;
 }
 
+.auth-wrap--stack {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.auth-card__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.auth-card__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.auth-alert--error {
+  color: #6b1712;
+}
+
 .auth-card {
   background: var(--panel);
   border: 1px solid var(--panel-outline);
