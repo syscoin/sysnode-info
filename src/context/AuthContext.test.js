@@ -18,7 +18,15 @@ function HookProbe() {
       <span data-testid="email">{auth.user ? auth.user.email : 'none'}</span>
       <button
         type="button"
-        onClick={() => auth.login({ email: 'a@b.com', password: 'pw' })}
+        onClick={() =>
+          auth
+            .login({ email: 'a@b.com', password: 'pw' })
+            .catch(() => {
+              // Swallow in the test harness — real callers surface this
+              // via the Login page's form-error UI; what we care about
+              // for AuthContext tests is the post-failure provider state.
+            })
+        }
       >
         login
       </button>
@@ -189,6 +197,53 @@ test('stale mount-time /auth/me 401 cannot overwrite a newer successful login (C
   await flush();
   expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
   expect(screen.getByTestId('email')).toHaveTextContent('user@example.com');
+});
+
+test('failed login does not strand the UI in booting when mount refresh is still in flight (Codex round 3 P1)', async () => {
+  // Setup: mount-time /auth/me is pending. User clicks login, credentials
+  // are rejected. The mount refresh's eventual 401 MUST still be able to
+  // land ANONYMOUS — the failed login must not invalidate it by bumping
+  // the gen counter prematurely.
+  let rejectMountMe;
+  const mountMe = new Promise((_resolve, reject) => {
+    rejectMountMe = reject;
+  });
+  const service = makeService({
+    me: jest.fn().mockReturnValueOnce(mountMe),
+    login: jest.fn().mockRejectedValue(
+      Object.assign(new Error('bad creds'), {
+        code: 'invalid_credentials',
+        status: 401,
+      })
+    ),
+  });
+
+  render(
+    <AuthProvider authService={service}>
+      <HookProbe />
+    </AuthProvider>
+  );
+  expect(screen.getByTestId('status')).toHaveTextContent('booting');
+
+  // Fail the login while the mount refresh is still pending.
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+  // Login itself surfaces an error — status must still be booting, not
+  // authenticated.
+  expect(screen.getByTestId('status')).toHaveTextContent('booting');
+
+  // Now the mount /auth/me resolves 401. It MUST land ANONYMOUS — if the
+  // failed login had bumped the gen counter, this write would be dropped
+  // and the UI would be stuck in booting forever.
+  await act(async () => {
+    rejectMountMe(Object.assign(new Error('unauth'), { status: 401 }));
+    await flush();
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+  );
 });
 
 test('useAuth throws outside provider', () => {

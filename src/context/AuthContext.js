@@ -103,8 +103,19 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
 
   const login = useCallback(
     async ({ email, password }) => {
-      const myGen = nextGen();
+      // Do NOT claim a generation before awaiting `authService.login`.
+      // Bumping up-front would invalidate a still-in-flight mount-time
+      // refresh even when credentials turn out to be rejected — the
+      // refresh's eventual ANONYMOUS write would then be discarded as
+      // stale and the app could stay stuck in `booting` on top of the
+      // failed-login error. (Codex round 3 P1.)
+      //
+      // Only claim the gen once we know login actually succeeded;
+      // anything that throws out of authService.login falls through
+      // with the pre-login gen intact, so the mount refresh still
+      // lands the correct (anonymous) state.
       const res = await authService.login(email, password);
+      const myGen = nextGen();
       // /auth/login returns the shallow user; hit /auth/me to pick up
       // emailVerified + notificationPrefs in one canonical shape.
       try {
