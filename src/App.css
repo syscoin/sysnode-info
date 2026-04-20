@@ -1537,3 +1537,138 @@
   }
 
 }
+
+/* ---------------------------------------------------------------------------
+   Auth pages (/login, /register, /verify-email, /account)
+   --------------------------------------------------------------------------- */
+
+.auth-hero {
+  padding-bottom: 24px;
+}
+
+.auth-wrap {
+  max-width: 520px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-outline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.auth-card--info {
+  gap: 20px;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.auth-input {
+  border: 1px solid var(--panel-outline);
+  border-radius: 14px;
+  padding: 13px 16px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 1rem;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.auth-hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.auth-alert {
+  background: rgba(229, 107, 85, 0.1);
+  border: 1px solid rgba(229, 107, 85, 0.35);
+  color: #8b2d1b;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 0.93rem;
+}
+
+.auth-foot {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.auth-foot a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.auth-foot a:hover {
+  color: var(--accent-strong);
+}
+
+.auth-linklike {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-linklike:hover {
+  color: var(--accent-strong);
+}
+
+.auth-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.auth-kv__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-kv__row dt {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+}
+
+.auth-kv__row dd {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text);
+}
+
+@media (max-width: 600px) {
+  .auth-card {
+    padding: 24px 20px;
+  }
+}

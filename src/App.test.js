@@ -26,6 +26,34 @@ jest.mock('./pages/Error', () => function MockError() {
   return <div>Not found page</div>;
 });
 
+jest.mock('./pages/Login', () => function MockLogin() {
+  return <div>Login page</div>;
+});
+
+jest.mock('./pages/Register', () => function MockRegister() {
+  return <div>Register page</div>;
+});
+
+jest.mock('./pages/VerifyEmail', () => function MockVerify() {
+  return <div>Verify email page</div>;
+});
+
+jest.mock('./pages/Account', () => function MockAccount() {
+  return <div>Account page</div>;
+});
+
+jest.mock('./lib/authService', () => ({
+  authService: {
+    me: () =>
+      Promise.reject(Object.assign(new Error('unauth'), { status: 401 })),
+    login: jest.fn(),
+    logout: jest.fn(),
+    register: jest.fn(),
+    verifyEmail: jest.fn(),
+  },
+  createAuthService: jest.fn(),
+}));
+
 import App from './App';
 
 beforeEach(() => {
