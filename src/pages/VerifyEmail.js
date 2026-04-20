@@ -58,12 +58,23 @@ export default function VerifyEmail() {
       if (lastSubmittedTokenRef.current === token) return;
       lastSubmittedTokenRef.current = token;
 
+      // Bump the counter BEFORE the malformed-token early return.
+      //
+      // If a previous valid-token request is still in flight and the
+      // URL changes to a malformed token, we want that stale response
+      // to no-op when it lands. Previously the counter only advanced
+      // on dispatch, so a late-returning "verified" would satisfy
+      // `myReqId === reqIdRef.current` and overwrite the current
+      // invalid-token screen. Unconditionally bumping on any new
+      // token (valid or not) makes every older in-flight request
+      // stale from this point. (Codex round 6 P2.)
+      const myReqId = (reqIdRef.current += 1);
+
       if (!/^[0-9a-f]{64}$/.test(token)) {
         setStatus(STATUS_BAD);
         return;
       }
 
-      const myReqId = (reqIdRef.current += 1);
       setStatus(STATUS_BOOTING);
       verifyEmail(token)
         .then(function onVerified() {

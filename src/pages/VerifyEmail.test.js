@@ -154,6 +154,72 @@ test('late response from a previous token cannot overwrite the current token’s
   ).not.toBeInTheDocument();
 });
 
+test('navigating from a valid token to a malformed one invalidates the in-flight request (Codex round 6 P2)', async () => {
+  const TOKEN_A = 'a'.repeat(64);
+  const MALFORMED = 'short';
+
+  let resolveA;
+  const aPending = new Promise((resolve) => {
+    resolveA = resolve;
+  });
+
+  const service = mockService({
+    verifyEmail: jest.fn((token) => {
+      if (token === TOKEN_A) return aPending;
+      return Promise.reject(new Error('unexpected token'));
+    }),
+  });
+
+  const { createMemoryHistory } = require('history');
+  const history = createMemoryHistory({
+    initialEntries: [`/verify-email?token=${TOKEN_A}`],
+  });
+  const { Router } = require('react-router-dom');
+  const { render: rtlRender } = require('@testing-library/react');
+  const { AuthProvider } = require('../context/AuthContext');
+  const VerifyEmailComponent = require('./VerifyEmail').default;
+
+  rtlRender(
+    <AuthProvider authService={service}>
+      <Router history={history}>
+        <VerifyEmailComponent />
+      </Router>
+    </AuthProvider>
+  );
+
+  // Token A is pending. Navigate to a malformed token — the page goes
+  // straight to "invalid" without hitting the service.
+  await act(async () => {
+    history.push(`/verify-email?token=${MALFORMED}`);
+  });
+
+  await waitFor(() =>
+    expect(
+      screen.getByRole('heading', { name: /link expired/i })
+    ).toBeInTheDocument()
+  );
+  // Service was only called for TOKEN_A.
+  expect(service.verifyEmail).toHaveBeenCalledTimes(1);
+  expect(service.verifyEmail).toHaveBeenLastCalledWith(TOKEN_A);
+
+  // Now the stale A request resolves with success. Its .then MUST be
+  // invalidated even though the malformed-token branch never bumped
+  // the counter the old way — bumping BEFORE the early return makes
+  // the pending A request stale here.
+  await act(async () => {
+    resolveA({ status: 'verified' });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(
+    screen.getByRole('heading', { name: /link expired/i })
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole('heading', { name: /email verified/i })
+  ).not.toBeInTheDocument();
+});
+
 test('re-runs verification when the token query parameter changes (Codex round 1 P2)', async () => {
   // Same-tab SPA navigation from one /verify-email?token=... URL to
   // another must NOT reuse the first run's result. The dedupe key is
