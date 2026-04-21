@@ -280,6 +280,13 @@ export default function NewProposal() {
       } else {
         result = await proposalService.createDraft(body);
         setDraftId(result.id);
+        // Mark the reducer clean BEFORE history.replace. history.block
+        // is keyed on `dirty`, so replacing the URL while we are still
+        // dirty can either be prompted (triggering the unsaved-changes
+        // modal on a flow that actually succeeded) or — worse — swallowed
+        // by the block's getUserConfirmation, leaving the new `?draft=<id>`
+        // out of the URL. (Codex PR8 round 1 frontend P2.)
+        dispatch({ type: 'mark_saved' });
         // Reflect the new id in the URL so a reload reopens the draft.
         const params = new URLSearchParams(history.location.search);
         params.set('draft', String(result.id));
@@ -287,6 +294,8 @@ export default function NewProposal() {
           pathname: history.location.pathname,
           search: `?${params.toString()}`,
         });
+        setDraftSavedAt(Date.now());
+        return result;
       }
       // Sync baseline — we are no longer "dirty" relative to storage.
       dispatch({ type: 'mark_saved' });

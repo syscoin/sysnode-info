@@ -17,6 +17,7 @@ jest.mock('../lib/proposalService', () => {
     proposalService: {
       getSubmission: jest.fn(),
       deleteSubmission: jest.fn(),
+      attachCollateral: jest.fn(),
     },
   };
 });
@@ -138,6 +139,176 @@ describe('ProposalStatus', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(/not_found/);
     });
+  });
+
+  test('prepared state renders inline attach-collateral form (Codex P1)', async () => {
+    // Hash with a trailing "ff" byte proves the reversal logic:
+    // big-endian "...ff" must render as a little-endian OP_RETURN
+    // that starts with "ff...".
+    const hashBig = 'aa'.repeat(31) + 'ff';
+    proposalService.getSubmission.mockResolvedValueOnce({
+      id: 15,
+      status: 'prepared',
+      title: 'resume-flow',
+      name: 'resume-flow',
+      proposalHash: hashBig,
+      paymentAddress: 'sys1qexample',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: 1700000000,
+      endEpoch: 1701000000,
+    });
+    await renderAt(15);
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-prepared')).toBeInTheDocument();
+    });
+    // OP_RETURN hex is the byte-reversed proposal hash, little-endian.
+    expect(screen.getByTestId('proposal-status-opreturn')).toHaveTextContent(
+      'ff' + 'aa'.repeat(31)
+    );
+    expect(screen.getByTestId('proposal-status-txid-input')).toBeInTheDocument();
+    expect(screen.getByTestId('proposal-status-attach')).toBeDisabled();
+  });
+
+  test('prepared state: malformed TXID surfaces inline error, no RPC call', async () => {
+    proposalService.getSubmission.mockResolvedValueOnce({
+      id: 16,
+      status: 'prepared',
+      name: 't',
+      proposalHash: 'aa'.repeat(32),
+      paymentAddress: 'sys1q',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: 1,
+      endEpoch: 2,
+    });
+    await renderAt(16);
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-prepared')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('proposal-status-txid-input'), {
+      target: { value: 'not-a-hash' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('proposal-status-attach'));
+    });
+    expect(screen.getByTestId('proposal-status-attach-error')).toHaveTextContent(
+      /64-character hex/i
+    );
+    expect(proposalService.attachCollateral).not.toHaveBeenCalled();
+  });
+
+  test('prepared state: valid TXID calls attachCollateral and swaps to awaiting_collateral', async () => {
+    const hashBig = 'aa'.repeat(32);
+    const txid = 'cc'.repeat(32);
+    proposalService.getSubmission.mockResolvedValueOnce({
+      id: 17,
+      status: 'prepared',
+      name: 't',
+      proposalHash: hashBig,
+      paymentAddress: 'sys1q',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: 1,
+      endEpoch: 2,
+    });
+    proposalService.attachCollateral.mockResolvedValueOnce({
+      id: 17,
+      status: 'awaiting_collateral',
+      name: 't',
+      proposalHash: hashBig,
+      paymentAddress: 'sys1q',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: 1,
+      endEpoch: 2,
+      collateralTxid: txid,
+      collateralConfs: 0,
+    });
+    await renderAt(17);
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-prepared')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('proposal-status-txid-input'), {
+      target: { value: txid.toUpperCase() }, // test normalisation
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('proposal-status-attach'));
+    });
+    expect(proposalService.attachCollateral).toHaveBeenCalledWith(17, txid);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('proposal-status-awaiting')
+      ).toBeInTheDocument();
+    });
+  });
+
+  test('polling continues to schedule after a transient fetch failure (Codex P1)', async () => {
+    // 1st call: row is awaiting_collateral (live). 2nd call: throws.
+    // 3rd call: still live. We need to assert the scheduler keeps
+    // ticking — otherwise a blip freezes the status page until
+    // reload.
+    jest.useFakeTimers();
+    proposalService.getSubmission
+      .mockResolvedValueOnce({
+        id: 21,
+        status: 'awaiting_collateral',
+        name: 't',
+        proposalHash: 'aa'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+        collateralTxid: 'bb'.repeat(32),
+        collateralConfs: 2,
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('boom'), { code: 'network' })
+      )
+      .mockResolvedValueOnce({
+        id: 21,
+        status: 'awaiting_collateral',
+        name: 't',
+        proposalHash: 'aa'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+        collateralTxid: 'bb'.repeat(32),
+        collateralConfs: 4,
+      });
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={[`/governance/proposal/21`]}>
+          <AuthProvider authService={makeAuthService()}>
+            <Route path="/governance/proposal/:id" component={ProposalStatus} />
+          </AuthProvider>
+        </MemoryRouter>
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-confs')).toHaveTextContent(
+        '2 / 6'
+      );
+    });
+    // Tick forward the fast-poll interval; 2nd call errors, but
+    // the scheduler must re-arm.
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+    });
+    // Second tick — this one should succeed and bump confs to 4/6.
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-confs')).toHaveTextContent(
+        '4 / 6'
+      );
+    });
+    expect(proposalService.getSubmission).toHaveBeenCalledTimes(3);
+    jest.useRealTimers();
   });
 
   test('delete on failed submission navigates home', async () => {

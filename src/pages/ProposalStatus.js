@@ -3,7 +3,26 @@ import { Link, useHistory, useParams } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
 import { useAuth } from '../context/AuthContext';
-import { proposalService } from '../lib/proposalService';
+import { COLLATERAL_FEE_SATS } from '../lib/proposalForm';
+import { proposalService, HEX64_RE } from '../lib/proposalService';
+
+// Convert a 64-char big-endian proposal hash (the canonical display
+// form, matches `gobject list` output) to the 32-byte little-endian
+// hex that must be pushed inside the collateral OP_RETURN. Core
+// reverses the internal hash bytes when rendering for display, so
+// the on-chain payload is that reversal. Kept local — the backend
+// already computes and returns this on /prepare, but we need to
+// surface it again when the user reloads a prepared submission.
+function proposalHashToOpReturnHex(hashBig) {
+  if (typeof hashBig !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hashBig)) {
+    return '';
+  }
+  let out = '';
+  for (let i = hashBig.length - 2; i >= 0; i -= 2) {
+    out += hashBig.slice(i, i + 2);
+  }
+  return out.toLowerCase();
+}
 
 // ProposalStatus — /governance/proposal/:id
 // ----------------------------------------
@@ -77,6 +96,17 @@ export default function ProposalStatus() {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
 
+  // Inline attach-collateral form shown when a submission is
+  // reopened in the `prepared` state (e.g. user reloaded the
+  // status page or tapped "Open" from the in-flight list in a
+  // separate session). Mirrors the wizard's SubmitStep UX —
+  // paste a 64-hex TXID and we POST attach-collateral, which
+  // flips the row to `awaiting_collateral` and the dispatcher
+  // takes it from there. (Codex PR8 round 1 frontend P1.)
+  const [txidInput, setTxidInput] = useState('');
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState(null);
+
   const timerRef = useRef(null);
   const mountedRef = useRef(true);
   useEffect(() => () => {
@@ -113,11 +143,25 @@ export default function ProposalStatus() {
   }, [load]);
 
   // Adaptive polling.
+  //
+  // Depending on the current status we poll at different rates, and
+  // we also keep polling through transient fetch failures — a single
+  // 5xx or network blip should NOT freeze the page on a non-terminal
+  // submission until the user reloads. (Codex PR8 round 1 frontend P1.)
+  //
+  // We key the effect on both `submission` and `error` so that an
+  // error transition re-runs the scheduler and queues another attempt
+  // at a sensible interval. When there's an error but no submission
+  // at all, we fall back to the slow cadence — we're blind to the
+  // status, so don't hammer the server.
   useEffect(() => {
-    if (!submission) return undefined;
-    const { status } = submission;
+    const status = submission && submission.status;
     if (status === 'submitted' || status === 'failed') return undefined;
-    const delay = status === 'awaiting_collateral' ? POLL_FAST_MS : POLL_SLOW_MS;
+    // No submission yet AND no pending error means the initial load
+    // hasn't returned — the `load` effect will bring us back here.
+    if (!submission && !error) return undefined;
+    const delay =
+      status === 'awaiting_collateral' ? POLL_FAST_MS : POLL_SLOW_MS;
     timerRef.current = window.setTimeout(() => {
       load();
     }, delay);
@@ -127,12 +171,37 @@ export default function ProposalStatus() {
         timerRef.current = null;
       }
     };
-  }, [submission, load]);
+  }, [submission, error, load]);
 
   const chip = useMemo(
     () => (submission ? statusChip(submission.status) : null),
     [submission]
   );
+
+  async function onAttachCollateral() {
+    if (!submission) return;
+    setAttachError(null);
+    const cleaned = (txidInput || '').trim().toLowerCase();
+    if (!HEX64_RE.test(cleaned)) {
+      setAttachError({ code: 'malformed_txid' });
+      return;
+    }
+    setAttaching(true);
+    try {
+      const updated = await proposalService.attachCollateral(
+        submission.id,
+        cleaned
+      );
+      if (!mountedRef.current) return;
+      setSubmission(updated);
+      setTxidInput('');
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setAttachError(err);
+    } finally {
+      if (mountedRef.current) setAttaching(false);
+    }
+  }
 
   async function onDelete() {
     if (!submission) return;
@@ -244,14 +313,91 @@ export default function ProposalStatus() {
               </dl>
 
               {submission.status === 'prepared' ? (
-                <div className="proposal-status__section">
+                <div
+                  className="proposal-status__section"
+                  data-testid="proposal-status-prepared"
+                >
                   <p>
-                    You haven't attached a collateral TXID yet. Return to
-                    the wizard to pay the 150 SYS burn fee.
+                    <strong>Prepared — awaiting your 150 SYS burn.</strong>
+                    {' '}
+                    Pay the collateral with an <code>OP_RETURN</code> that
+                    commits to this proposal, then paste the TXID below.
+                    We'll watch for <strong>6 confirmations</strong> and
+                    auto-submit.
                   </p>
-                  <Link to="/governance/new" className="button button--primary">
-                    Continue
-                  </Link>
+                  <p className="proposal-status__help">
+                    This 150 SYS is a non-refundable burn required by
+                    Syscoin Core for spam prevention — not a deposit.
+                  </p>
+
+                  <dl className="proposal-wizard__summary">
+                    <dt>Amount to send</dt>
+                    <dd>{fmtSats(COLLATERAL_FEE_SATS.toString())} SYS</dd>
+                    <dt>
+                      <code>OP_RETURN</code> hex (push data)
+                    </dt>
+                    <dd>
+                      <code data-testid="proposal-status-opreturn">
+                        {proposalHashToOpReturnHex(submission.proposalHash)}
+                      </code>
+                    </dd>
+                  </dl>
+
+                  <label
+                    className="proposal-wizard__field"
+                    htmlFor="proposal-status-txid-input"
+                  >
+                    Collateral TXID
+                    <input
+                      id="proposal-status-txid-input"
+                      type="text"
+                      className="input"
+                      value={txidInput}
+                      onChange={(e) => setTxidInput(e.target.value)}
+                      placeholder="64-hex transaction id"
+                      spellCheck="false"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      disabled={attaching}
+                      data-testid="proposal-status-txid-input"
+                    />
+                  </label>
+
+                  {attachError ? (
+                    <div
+                      className="auth-alert auth-alert--error"
+                      role="alert"
+                      data-testid="proposal-status-attach-error"
+                    >
+                      {attachError.code === 'malformed_txid'
+                        ? 'That does not look like a 64-character hex TXID.'
+                        : attachError.code === 'opreturn_mismatch'
+                        ? 'This transaction does not commit to this proposal (OP_RETURN mismatch). Double-check you used the OP_RETURN hex shown above.'
+                        : attachError.code === 'fee_too_low'
+                        ? 'The burn output is below the 150 SYS requirement.'
+                        : attachError.code === 'txid_not_found'
+                        ? 'We could not find that TXID on the Syscoin network yet. Wait for the broadcast to propagate and retry.'
+                        : `Could not attach TXID: ${attachError.code || 'error'}`}
+                    </div>
+                  ) : null}
+
+                  <div className="proposal-wizard__actions">
+                    <button
+                      type="button"
+                      className="button button--primary"
+                      onClick={onAttachCollateral}
+                      disabled={attaching || !txidInput.trim()}
+                      data-testid="proposal-status-attach"
+                    >
+                      {attaching ? 'Attaching…' : 'Attach TXID'}
+                    </button>
+                    <Link
+                      to="/governance/new"
+                      className="button button--ghost"
+                    >
+                      Open wizard
+                    </Link>
+                  </div>
                 </div>
               ) : null}
 
