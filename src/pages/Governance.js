@@ -91,6 +91,7 @@ function ProposalRow({
   isHighlighted,
   summaryRow,
   metaChips,
+  nowMs,
 }) {
   const [feedback, setFeedback] = useState('');
   const supportPercent = enabledCount
@@ -181,9 +182,10 @@ function ProposalRow({
           if (!Number.isFinite(latestVerifiedAt) || latestVerifiedAt <= 0) {
             return null;
           }
-          const age = Date.now() - latestVerifiedAt;
+          const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+          const age = now - latestVerifiedAt;
           if (!(age >= 0 && age < VERIFIED_FRESHNESS_MS)) return null;
-          const ago = verifiedAgo(latestVerifiedAt);
+          const ago = verifiedAgo(latestVerifiedAt, now);
           const verifiedWhen = new Date(latestVerifiedAt).toUTCString();
           const tooltip =
             `${confirmed} of your ${
@@ -323,6 +325,20 @@ export default function Governance() {
   // it when the vote modal closes so a freshly-submitted vote shows
   // up in the activity list without forcing a full page reload.
   const [activityRefreshToken, setActivityRefreshToken] = useState(0);
+  // Slow-ticking clock that drives time-sensitive derivations like
+  // the closing-window chip. Re-computing once per minute keeps the
+  // label accurate across long-lived sessions (e.g. "closing-soon"
+  // → "closing-urgent" transition at the 48h boundary, or the chip
+  // disappearing once the deadline passes) without hammering React
+  // — the chip rounds to minute / hour / day tiers, so sub-minute
+  // drift is invisible anyway.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 60 * 1000);
+    return () => window.clearInterval(id);
+  }, []);
   const highlightTimerRef = useRef(null);
   const {
     error,
@@ -375,18 +391,22 @@ export default function Governance() {
     [proposals, enabledCount, superblockStats]
   );
 
-  // Per-row closing chip depends only on the superblock deadline,
-  // so we derive it once per render and reuse the single object
-  // for every row. (Using Date.now() here is fine: the chip's
-  // rounding makes sub-minute drift invisible and any hard-timed
-  // behaviour — e.g. disabling the vote button at the deadline —
-  // lives server-side, not in this label.)
+  // Per-row closing chip depends on the superblock deadline AND
+  // the current time, so it's memoized on both and re-derived once
+  // per minute via the `nowMs` ticker above. That ticker is what
+  // keeps long-lived sessions honest: the chip transitions from
+  // closing-soon → closing-urgent at the 48h boundary and
+  // disappears entirely once the deadline passes, even if the
+  // stats object isn't refreshed. Any hard-timed behaviour (e.g.
+  // disabling the vote button at the deadline) still lives on the
+  // server; this label is purely advisory.
   const closing = useMemo(
     () =>
       closingChip({
         votingDeadline: superblockStats ? superblockStats.voting_deadline : 0,
+        nowMs,
       }),
-    [superblockStats]
+    [superblockStats, nowMs]
   );
   const visibleProposals = proposals.filter(function filterProposal(proposal) {
     const supportPercent = enabledCount
@@ -729,6 +749,7 @@ export default function Governance() {
                         cohort={cohort}
                         summaryRow={isAuthenticated ? summaryRow : null}
                         metaChips={rowMetaChips}
+                        nowMs={nowMs}
                         isHighlighted={
                           typeof highlightKey === 'string' &&
                           highlightKey.toLowerCase() === hashKey

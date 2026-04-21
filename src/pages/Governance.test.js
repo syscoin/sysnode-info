@@ -1,6 +1,6 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 // Mock strategy (same rationale as ProposalVoteModal.test.js —
 // avoids PBKDF2 / live axios). We stub the data hook and the two
@@ -736,6 +736,100 @@ describe('Governance page — proposal metadata chips', () => {
     const overBudgetKinds = allChips
       .filter((c) => c.getAttribute('data-meta-kind') === 'over-budget');
     expect(overBudgetKinds).toHaveLength(1);
+  });
+});
+
+describe('Governance page — time-sensitive chips refresh on long-lived sessions', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('closing chip escalates from "soon" to "urgent" as the deadline approaches without a stats refresh', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    // Deadline 72h out. Under soon threshold (7d) but above urgent
+    // threshold (48h) → starts as closing-soon.
+    const deadlineSec = Math.floor(Date.now() / 1000) + 72 * 60 * 60;
+    useGovernanceData.mockReturnValue(
+      baseData({
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: deadlineSec,
+              superblock_date: deadlineSec + 60 * 60,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+    {
+      const chips = screen.getAllByTestId('proposal-row-meta-chip');
+      const closing = chips.find((c) =>
+        c.getAttribute('data-meta-kind').startsWith('closing-')
+      );
+      expect(closing.getAttribute('data-meta-kind')).toBe('closing-soon');
+    }
+
+    // Advance wall-clock past the 48h urgency line WITHOUT mutating
+    // the stats object. The tick should still demote the chip.
+    act(() => {
+      jest.setSystemTime(Date.now() + 25 * 60 * 60 * 1000); // +25h → 47h remaining
+      jest.advanceTimersByTime(60 * 1000 + 10); // one ticker interval
+    });
+
+    {
+      const chips = screen.getAllByTestId('proposal-row-meta-chip');
+      const closing = chips.find((c) =>
+        c.getAttribute('data-meta-kind').startsWith('closing-')
+      );
+      expect(closing.getAttribute('data-meta-kind')).toBe('closing-urgent');
+    }
+  });
+
+  test('closing chip disappears after the deadline passes even without a stats refresh', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    const deadlineSec = Math.floor(Date.now() / 1000) + 5 * 60; // 5m away
+    useGovernanceData.mockReturnValue(
+      baseData({
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: deadlineSec,
+              superblock_date: deadlineSec + 60 * 60,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+    // Deadline not yet passed → chip present (urgent tier).
+    expect(
+      screen
+        .getAllByTestId('proposal-row-meta-chip')
+        .some((c) => c.getAttribute('data-meta-kind') === 'closing-urgent')
+    ).toBe(true);
+
+    // Jump 10 minutes ahead and tick the clock — now the deadline
+    // is in the past and the chip should be gone.
+    act(() => {
+      jest.setSystemTime(Date.now() + 10 * 60 * 1000);
+      jest.advanceTimersByTime(60 * 1000 + 10);
+    });
+
+    expect(
+      screen
+        .queryAllByTestId('proposal-row-meta-chip')
+        .some((c) => String(c.getAttribute('data-meta-kind')).startsWith('closing-'))
+    ).toBe(false);
   });
 });
 
