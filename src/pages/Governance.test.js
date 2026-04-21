@@ -38,6 +38,42 @@ jest.mock('../components/ProposalVoteModal', () => (props) => (
   </div>
 ));
 
+// Stub the hero / activity rail so the jump-callback tests can
+// trigger jumpToProposal(key) directly via a test-only button.
+// The real components are covered in their own files; we only
+// need the prop wiring here.
+jest.mock('../components/GovernanceOpsHero', () => (props) => (
+  <div data-testid="ops-hero-stub">
+    <button
+      type="button"
+      data-testid="ops-hero-stub-jump"
+      onClick={() => {
+        if (typeof props.onJumpToProposal === 'function') {
+          props.onJumpToProposal(props['data-test-jump-key'] || '');
+        }
+      }}
+    >
+      hero-jump
+    </button>
+  </div>
+));
+jest.mock('../components/GovernanceActivity', () => (props) => (
+  <div data-testid="activity-stub">
+    <button
+      type="button"
+      data-testid="activity-stub-jump"
+      onClick={() => {
+        const key = (global && global.__ACTIVITY_STUB_JUMP_KEY__) || '';
+        if (typeof props.onJumpToProposal === 'function') {
+          props.onJumpToProposal(key);
+        }
+      }}
+    >
+      activity-jump
+    </button>
+  </div>
+));
+
 // eslint-disable-next-line import/first
 import Governance from './Governance';
 // eslint-disable-next-line import/first
@@ -700,5 +736,110 @@ describe('Governance page — proposal metadata chips', () => {
     const overBudgetKinds = allChips
       .filter((c) => c.getAttribute('data-meta-kind') === 'over-budget');
     expect(overBudgetKinds).toHaveLength(1);
+  });
+});
+
+describe('Governance page — jumpToProposal filter-aware behaviour', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+    if (typeof global !== 'undefined') {
+      delete global.__ACTIVITY_STUB_JUMP_KEY__;
+    }
+  });
+
+  test('jumping to a proposal that is hidden by the "Watch" filter clears the filter so the row becomes mountable', () => {
+    // Two proposals:
+    //   - "passing" (12% support) → visible under the Passing filter
+    //   - "watch"   (5% support)  → hidden under the Passing filter
+    // The activity card surfaces a jump to the watch-list proposal
+    // while the user has "Passing" selected. Without the fix the
+    // click is a silent no-op because the row isn't in the DOM.
+    // With the fix, filter clears back to "All" so the row mounts
+    // and the highlight attribute eventually fires.
+    const PASSING = 'a'.repeat(64);
+    const WATCH = 'b'.repeat(64);
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({
+        proposals: [
+          makeProposal({
+            Key: PASSING,
+            title: 'Passing one',
+            AbsoluteYesCount: 120,
+          }),
+          makeProposal({
+            Key: WATCH,
+            title: 'Watch one',
+            AbsoluteYesCount: 50,
+          }),
+        ],
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: 1,
+              superblock_date: 1,
+            },
+          },
+        },
+      })
+    );
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({ summary: [], ownedCount: 1 })
+    );
+
+    renderPage();
+
+    // Switch to the Passing filter — Watch proposal is now hidden.
+    fireEvent.click(screen.getByRole('button', { name: /^passing$/i }));
+    expect(document.getElementById(`proposal-row-${WATCH}`)).toBeNull();
+    expect(document.getElementById(`proposal-row-${PASSING}`)).not.toBeNull();
+
+    // Simulate the activity card asking us to jump to the hidden
+    // Watch proposal. The stub reads the target key from a global
+    // so we can pick the hash per test.
+    global.__ACTIVITY_STUB_JUMP_KEY__ = WATCH;
+    fireEvent.click(screen.getByTestId('activity-stub-jump'));
+
+    // Filter clears → the hidden row becomes mountable again.
+    // We assert on the DOM id directly rather than waiting for
+    // the requestAnimationFrame-scheduled scroll, because JSDOM
+    // commits the setState synchronously but rAF-scheduled reads
+    // would require a fake-timer dance here.
+    expect(document.getElementById(`proposal-row-${WATCH}`)).not.toBeNull();
+  });
+
+  test('jumping to a proposal that is already visible leaves the filter untouched', () => {
+    // Two proposals both passing; we stay on the "Passing" filter
+    // and jump to one of them. The filter shouldn't reset to "All"
+    // behind the user's back — the target row is already mounted.
+    const A = 'a'.repeat(64);
+    const B = 'b'.repeat(64);
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({
+        proposals: [
+          makeProposal({ Key: A, title: 'A', AbsoluteYesCount: 150 }),
+          makeProposal({ Key: B, title: 'B', AbsoluteYesCount: 130 }),
+        ],
+      })
+    );
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({ summary: [], ownedCount: 1 })
+    );
+
+    renderPage();
+
+    const passingBtn = screen.getByRole('button', { name: /^passing$/i });
+    fireEvent.click(passingBtn);
+    expect(passingBtn.className).toMatch(/is-active/);
+
+    global.__ACTIVITY_STUB_JUMP_KEY__ = A;
+    fireEvent.click(screen.getByTestId('activity-stub-jump'));
+
+    // Passing button is still the active filter — no silent reset.
+    expect(passingBtn.className).toMatch(/is-active/);
+    expect(document.getElementById(`proposal-row-${A}`)).not.toBeNull();
   });
 });
