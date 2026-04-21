@@ -1235,7 +1235,21 @@ export default function ProposalVoteModal({
         </div>
       </div>
     );
-  } else if (owned.length === 0) {
+  } else if (
+    owned.length === 0 &&
+    !(phase === PHASE.ERROR && offlineQueued)
+  ) {
+    // "No owned masternodes" is a guard state — but it must NOT
+    // preempt the queued-offline recovery UI. If a prior session
+    // persisted a vote intent in sessionStorage and the vault
+    // currently resolves to zero owned MNs (e.g., lookup came
+    // back empty, or the MNs referenced by the queued entry have
+    // since rotated off the list), the user still needs a path
+    // to Discard the stale queue — otherwise the entry sits in
+    // sessionStorage forever, re-surfacing on every reopen. The
+    // ERROR branch below handles both Resume (which falls back
+    // to PICK when chosen.length === 0) and Discard, so let that
+    // branch take precedence whenever offlineQueued is true.
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-no-owned">
         <p>
@@ -1435,18 +1449,23 @@ export default function ProposalVoteModal({
         );
       }
     }
-    const severityClass =
-      descriptor.severity === SEVERITY.WARN
-        ? 'vote-modal__error--warn'
-        : descriptor.severity === SEVERITY.INFO
-        ? 'vote-modal__error--info'
-        : 'vote-modal__error--error';
     // When the user is offline and we stashed the intent, the
     // copy shifts from "network error" to "queued for later".
+    // Severity class is derived from the descriptor we actually
+    // render (effectiveDescriptor) — not the raw submitError
+    // descriptor — so the offline-queued state reads as WARN
+    // (its own severity) instead of ERROR (network_error's
+    // severity), matching the message shown to the user.
     const headlineCode = offlineQueued ? 'offline' : submitError;
     const effectiveDescriptor = offlineQueued
       ? describeError('offline')
       : descriptor;
+    const severityClass =
+      effectiveDescriptor.severity === SEVERITY.WARN
+        ? 'vote-modal__error--warn'
+        : effectiveDescriptor.severity === SEVERITY.INFO
+        ? 'vote-modal__error--info'
+        : 'vote-modal__error--error';
     body = (
       <div
         className={`vote-modal__state vote-modal__error ${severityClass}`}

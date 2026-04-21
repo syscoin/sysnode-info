@@ -1117,6 +1117,101 @@ describe('ProposalVoteModal — error paths', () => {
     }
   });
 
+  test('offline-queued error body uses WARN severity from the displayed descriptor', async () => {
+    // Codex P3: severityClass was being derived from the raw
+    // submitError descriptor (network_error → ERROR severity),
+    // but the copy shown to the user comes from the `offline`
+    // descriptor (WARN severity). That made the banner look
+    // "red alarm" while reading "queued for later" — a visual
+    // contradiction. Assert the severity class follows the
+    // displayed descriptor.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const err = new Error('net');
+      err.code = 'network_error';
+      const service = makeService({
+        submit: jest.fn().mockRejectedValue(err),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(errorState.className).toMatch(/vote-modal__error--warn/);
+      expect(errorState.className).not.toMatch(/vote-modal__error--error/);
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: queued-offline recovery is reachable even when no MNs are currently owned', async () => {
+    // Codex P2: the `owned.length === 0` guard short-circuited
+    // rendering to the "no masternodes" state, hiding the
+    // Resume/Discard UI. A stale queued entry would then be
+    // unreachable — sitting in sessionStorage forever and
+    // re-surfacing on every reopen. The ERROR branch with
+    // offlineQueued must take precedence so the user can at
+    // least Discard the stale queue (and Resume falls back to
+    // PICK gracefully when chosen.length === 0).
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      // Lookup returns zero owned MNs — this is the state where
+      // Codex flagged the bug.
+      const service = makeService({
+        lookup: jest.fn().mockResolvedValue([]),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The no-owned branch must NOT preempt the offline ERROR.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(screen.queryByTestId('vote-modal-no-owned')).toBeNull();
+      // Discard is reachable, and it clears the queue.
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      });
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
   test('cross-session: Discard on a surfaced offline queue returns to PICK and drops the entry', async () => {
     const PROPOSAL_HASH = 'h'.repeat(64);
     const queuedEntry = {
