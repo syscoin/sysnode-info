@@ -2,6 +2,7 @@ import MockAdapter from 'axios-mock-adapter';
 import {
   apiClient,
   createApiClient,
+  parseRetryAfter,
   readCsrfCookie,
   setAuthLostHandler,
   toApiError,
@@ -243,5 +244,116 @@ describe('toApiError', () => {
     const e = toApiError(new Error('ECONNREFUSED'));
     expect(e.code).toBe('network_error');
     expect(e.status).toBe(0);
+  });
+
+  test('surfaces Retry-After (seconds) on 429 as retryAfterMs', () => {
+    const e = toApiError({
+      response: {
+        status: 429,
+        data: { error: 'too_many_vote_requests' },
+        headers: { 'retry-after': '120' },
+      },
+    });
+    expect(e.code).toBe('too_many_vote_requests');
+    expect(e.status).toBe(429);
+    expect(e.retryAfterMs).toBe(120 * 1000);
+  });
+
+  test('Retry-After HTTP-date is converted to a delta from now', () => {
+    const future = new Date(Date.now() + 5 * 60 * 1000).toUTCString();
+    const e = toApiError({
+      response: {
+        status: 429,
+        data: null,
+        headers: { 'retry-after': future },
+      },
+    });
+    expect(e.retryAfterMs).toBeGreaterThan(4 * 60 * 1000);
+    expect(e.retryAfterMs).toBeLessThan(6 * 60 * 1000);
+  });
+
+  test('falls back to RateLimit-Reset when Retry-After is missing', () => {
+    const e = toApiError({
+      response: {
+        status: 429,
+        data: null,
+        headers: { 'ratelimit-reset': '42' },
+      },
+    });
+    expect(e.retryAfterMs).toBe(42 * 1000);
+  });
+
+  test('does not attach retryAfterMs for statuses other than 429 / 503', () => {
+    const e = toApiError({
+      response: {
+        status: 409,
+        data: null,
+        headers: { 'retry-after': '30' },
+      },
+    });
+    expect(e.retryAfterMs).toBeUndefined();
+  });
+
+  test('503 responses also surface retryAfterMs when the header is present', () => {
+    const e = toApiError({
+      response: {
+        status: 503,
+        data: { error: 'unavailable' },
+        headers: { 'retry-after': '15' },
+      },
+    });
+    expect(e.retryAfterMs).toBe(15 * 1000);
+  });
+
+  test('missing / malformed Retry-After leaves retryAfterMs unset', () => {
+    const e = toApiError({
+      response: {
+        status: 429,
+        data: null,
+        headers: { 'retry-after': 'not-a-number-or-date' },
+      },
+    });
+    expect(e.retryAfterMs).toBeUndefined();
+  });
+});
+
+describe('parseRetryAfter', () => {
+  test('handles numeric seconds', () => {
+    expect(parseRetryAfter({ 'retry-after': '30' })).toBe(30000);
+    expect(parseRetryAfter({ 'Retry-After': '0' })).toBe(0);
+  });
+
+  test('handles HTTP-date', () => {
+    const future = new Date(Date.now() + 10_000).toUTCString();
+    const result = parseRetryAfter({ 'retry-after': future });
+    expect(result).toBeGreaterThan(5_000);
+    expect(result).toBeLessThan(15_000);
+  });
+
+  test('clamps past HTTP-date to zero', () => {
+    const past = new Date(Date.now() - 60_000).toUTCString();
+    expect(parseRetryAfter({ 'retry-after': past })).toBe(0);
+  });
+
+  test('returns null for missing headers', () => {
+    expect(parseRetryAfter({})).toBeNull();
+    expect(parseRetryAfter(null)).toBeNull();
+    expect(parseRetryAfter(undefined)).toBeNull();
+  });
+
+  test('accepts ratelimit-reset fallback', () => {
+    expect(parseRetryAfter({ 'ratelimit-reset': '7' })).toBe(7000);
+  });
+
+  test('prefers Retry-After over RateLimit-Reset when both present', () => {
+    const result = parseRetryAfter({
+      'retry-after': '10',
+      'ratelimit-reset': '99',
+    });
+    expect(result).toBe(10_000);
+  });
+
+  test('handles array-valued headers by picking the first', () => {
+    expect(parseRetryAfter({ 'retry-after': ['11'] })).toBe(11_000);
   });
 });

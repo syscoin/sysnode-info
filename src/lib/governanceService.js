@@ -70,7 +70,17 @@ function govError(code, status, cause) {
   const e = new Error(code);
   e.code = code;
   e.status = status;
-  if (cause) e.cause = cause;
+  if (cause) {
+    e.cause = cause;
+    // Propagate retry-after hints when remapping rate-limit codes.
+    // The apiClient attaches retryAfterMs to 429 / 503 errors; the
+    // UI countdown reads it off the rethrown error, so losing it
+    // here would force a generic "wait a minute" fallback instead
+    // of the server's actual window.
+    if (Number.isFinite(cause.retryAfterMs)) {
+      e.retryAfterMs = cause.retryAfterMs;
+    }
+  }
   return e;
 }
 
@@ -167,6 +177,16 @@ export function createGovernanceService(client = defaultClient) {
         case 'time_too_old':
           throw err; // already canonical
         default:
+          // Collapse transient 5xx responses into a single
+          // `server_error` code so the UI auto-retry descriptor
+          // knows to kick in without having to enumerate every
+          // possible upstream failure mode. Keep 4xx codes
+          // verbatim — those are actionable-by-user states
+          // (missing csrf, malformed body, etc.) that should
+          // surface their original code.
+          if (Number.isInteger(err.status) && err.status >= 500) {
+            throw govError('server_error', err.status, err);
+          }
           throw err;
       }
     }
