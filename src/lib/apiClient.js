@@ -57,13 +57,67 @@ function readCsrfCookie() {
   return null;
 }
 
+// Parse RFC 7231 Retry-After plus the draft RateLimit-Reset header that
+// express-rate-limit emits under `standardHeaders: true`. Returns
+// milliseconds from "now", or null if neither header is usable.
+//
+// Order of precedence:
+//   1. Retry-After (preferred — explicit "don't retry before")
+//        - integer seconds ("120")
+//        - HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT")
+//   2. RateLimit-Reset (fallback)
+//        - seconds-until-reset for the current window
+//
+// Anything that parses negative or non-finite clamps to null so the UI
+// can fall back to its own default delay instead of an impossible
+// "retry 4 seconds ago" countdown.
+function parseRetryAfter(headers) {
+  if (!headers || typeof headers !== 'object') return null;
+  // Build a case-insensitive lookup. axios tends to normalise to
+  // lowercase on modern versions but adapters / proxies / test
+  // mocks can preserve canonical casing ("Retry-After") or even
+  // all-caps. Scanning once is cheap relative to the request.
+  const ci = {};
+  for (const k of Object.keys(headers)) {
+    ci[k.toLowerCase()] = headers[k];
+  }
+  const getHeader = (name) => {
+    const v = ci[name.toLowerCase()];
+    if (Array.isArray(v)) return v[0];
+    return v;
+  };
+
+  const retryAfter = getHeader('retry-after');
+  if (typeof retryAfter === 'string' && retryAfter.length > 0) {
+    const asNum = Number(retryAfter);
+    if (Number.isFinite(asNum) && asNum >= 0) {
+      return Math.floor(asNum * 1000);
+    }
+    // HTTP-date form.
+    const asDate = Date.parse(retryAfter);
+    if (Number.isFinite(asDate)) {
+      const delta = asDate - Date.now();
+      return delta > 0 ? delta : 0;
+    }
+  }
+
+  const reset = getHeader('ratelimit-reset');
+  if (typeof reset === 'string' && reset.length > 0) {
+    const secs = Number(reset);
+    if (Number.isFinite(secs) && secs >= 0) {
+      return Math.floor(secs * 1000);
+    }
+  }
+  return null;
+}
+
 // Normalise axios errors into a predictable object the UI can render
 // without switching on HTTP status codes. We intentionally expose both the
 // raw status and the backend's `error` code so pages can choose whichever
 // they need.
 function toApiError(err) {
   if (err && err.response) {
-    const { status, data } = err.response;
+    const { status, data, headers } = err.response;
     const code =
       (data && typeof data === 'object' && (data.error || data.code)) ||
       'http_error';
@@ -72,6 +126,13 @@ function toApiError(err) {
     e.status = status;
     e.details = data && data.details ? data.details : null;
     e.response = err.response;
+    // Only surface retryAfterMs for the statuses that semantically
+    // carry a "wait before retry" hint. Avoids accidentally
+    // forwarding stray Retry-After headers on non-throttled 4xx/5xx.
+    if (status === 429 || status === 503) {
+      const retryAfterMs = parseRetryAfter(headers);
+      if (retryAfterMs != null) e.retryAfterMs = retryAfterMs;
+    }
     return e;
   }
   // Network / timeout / aborted before a response.
@@ -170,4 +231,4 @@ export const apiClient = createApiClient({
   },
 });
 
-export { readCsrfCookie, toApiError };
+export { readCsrfCookie, toApiError, parseRetryAfter };

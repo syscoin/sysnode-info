@@ -6,6 +6,8 @@ import PageMeta from '../components/PageMeta';
 import ProposalVoteModal from '../components/ProposalVoteModal';
 import { useAuth } from '../context/AuthContext';
 import useGovernanceData from '../hooks/useGovernanceData';
+import { useGovernanceReceipts } from '../hooks/useGovernanceReceipts';
+import { cohortChip } from '../lib/governanceCohort';
 import {
   formatCompactNumber,
   formatDayMonth,
@@ -45,6 +47,7 @@ function ProposalRow({
   enabledCount,
   isAuthenticated,
   onVote,
+  cohort,
 }) {
   const [feedback, setFeedback] = useState('');
   const supportPercent = enabledCount
@@ -96,6 +99,16 @@ function ProposalRow({
         <span className={passing ? 'status-chip is-positive' : 'status-chip is-warning'}>
           {statusLabel}
         </span>
+        {cohort ? (
+          <span
+            className={`status-chip cohort-chip cohort-chip--${cohort.kind}`}
+            title={cohort.detail}
+            data-testid="proposal-row-cohort"
+            data-cohort-kind={cohort.kind}
+          >
+            {cohort.label}
+          </span>
+        ) : null}
       </div>
 
       <div className="proposal-row__main">
@@ -189,8 +202,19 @@ export default function Governance() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [voteProposal, setVoteProposal] = useState(null);
-  const { error, loading, proposals, stats } = useGovernanceData();
+  const {
+    error,
+    loading,
+    proposals,
+    stats,
+    refresh: refreshGovernanceFeed,
+  } = useGovernanceData();
   const { isAuthenticated } = useAuth();
+  // Cohort-aware data — only meaningful for authenticated users.
+  // When anonymous, the hook returns dormant empties and does not
+  // hit /gov/receipts/summary or /gov/mns/lookup.
+  const { summaryMap, ownedCount, refresh: refreshReceipts } =
+    useGovernanceReceipts({ enabled: isAuthenticated });
 
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
@@ -229,7 +253,17 @@ export default function Governance() {
 
   const closeVoteModal = useCallback(() => {
     setVoteProposal(null);
-  }, []);
+    // Re-fetch the summary so the cohort chip reflects whatever
+    // the user just did in the modal (new votes, retried votes,
+    // etc.). Cheap enough — it's one SQL query on the backend, no
+    // RPC. `refreshOwned` stays false because the vault key set
+    // can't change from inside the vote modal.
+    if (isAuthenticated && typeof refreshReceipts === 'function') {
+      refreshReceipts().catch(() => {
+        // Swallow — non-critical UI freshness, no banner.
+      });
+    }
+  }, [isAuthenticated, refreshReceipts]);
 
   return (
     <main className="page-main">
@@ -388,6 +422,20 @@ export default function Governance() {
                 </div>
                 <div className="proposal-table__body">
                   {visibleProposals.map(function renderProposal(proposal) {
+                    const hashKey =
+                      typeof proposal.Key === 'string'
+                        ? proposal.Key.toLowerCase()
+                        : '';
+                    const summaryRow = hashKey
+                      ? summaryMap.get(hashKey) || null
+                      : null;
+                    // Only compute a cohort chip for authenticated
+                    // users — anonymous visitors don't have a
+                    // receipt trail to show, so forcing a chip
+                    // would just clutter the row.
+                    const cohort = isAuthenticated
+                      ? cohortChip(summaryRow, ownedCount)
+                      : null;
                     return (
                       <ProposalRow
                         key={proposal.Key}
@@ -395,6 +443,7 @@ export default function Governance() {
                         enabledCount={enabledCount}
                         isAuthenticated={isAuthenticated}
                         onVote={openVoteModal}
+                        cohort={cohort}
                       />
                     );
                   })}
@@ -425,6 +474,11 @@ export default function Governance() {
           open
           proposal={voteProposal}
           onClose={closeVoteModal}
+          // Wired so the `proposal_not_found` descriptor's
+          // "Reload proposals" CTA can refetch the feed instead
+          // of only refreshing the per-user MN lookup (which
+          // does nothing for a stale proposal list).
+          onReloadProposals={refreshGovernanceFeed}
         />
       ) : null}
     </main>

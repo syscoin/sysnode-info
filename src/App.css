@@ -1708,6 +1708,314 @@
 }
 
 /* -------------------------------------------------------------------------
+   Cohort chip — per-user voting state on governance rows. Lives next to
+   the network-wide Passing/Watch chip; same pill shape but smaller and
+   tonally distinct so scanning the table reads "network status · you".
+   Kinds: voted, pending, needs-retry, changed, partial, not-voted.
+   ------------------------------------------------------------------------- */
+
+.cohort-chip {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: help;
+}
+
+.cohort-chip--voted {
+  background: rgba(20, 184, 166, 0.14);
+  color: #0d766d;
+}
+
+.cohort-chip--pending {
+  background: rgba(99, 135, 203, 0.14);
+  color: #2f4b8a;
+}
+
+.cohort-chip--needs-retry {
+  background: rgba(229, 107, 85, 0.14);
+  color: #8b2d1b;
+}
+
+.cohort-chip--changed {
+  background: rgba(215, 98, 177, 0.16);
+  color: #7a2a68;
+}
+
+.cohort-chip--partial {
+  background: rgba(243, 179, 86, 0.18);
+  color: #8a5c0f;
+}
+
+.cohort-chip--not-voted {
+  background: rgba(156, 163, 175, 0.18);
+  color: #52525b;
+}
+
+/* Stack the two chips vertically when the row is narrow; side-by-side
+   on wider viewports. proposal-row__status is already a grid column of
+   its own, so we align-content to the top to keep chips compact. */
+.proposal-row__status {
+  gap: 6px;
+}
+
+/* -------------------------------------------------------------------------
+   Vote modal grouped picker — Action needed / Needs vote / Already voted
+   sections. Visual hierarchy lives in the header: Action needed is the
+   only bucket that ever warrants a warning tone, because that's where
+   failures and vote-changes land. The other two use neutral headers so
+   the user's eye trains on "is there anything I need to do?" first.
+   ------------------------------------------------------------------------- */
+
+.vote-modal__group {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.vote-modal__group:first-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.vote-modal__group-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.vote-modal__group-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+.vote-modal__group-sub {
+  font-size: 0.78rem;
+  color: #6b7280;
+  margin: 2px 0 0;
+}
+
+.vote-modal__group-count {
+  font-weight: 400;
+  color: #6b7280;
+  margin-left: 4px;
+}
+
+.vote-modal__group--action .vote-modal__group-title {
+  color: #8b2d1b;
+}
+
+.vote-modal__group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+/* CONFIRM_CHANGE body — a guard-rail step before we overwrite a
+   confirmed on-chain vote. Distinct from the picker so there's no
+   mistake about which checkboxes the user is confirming. */
+.vote-modal__confirm-change p {
+  margin: 0 0 12px;
+}
+
+.vote-modal__change-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px;
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.vote-modal__change-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  background: rgba(243, 179, 86, 0.12);
+  border-radius: 6px;
+}
+
+.vote-modal__change-outcome {
+  font-size: 0.82rem;
+  color: #8a5c0f;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Row kinds — subtle tints so the picker scans cleanly without
+   stealing attention from the row labels themselves. */
+.vote-modal__row--failed,
+.vote-modal__row--confirmed-different {
+  background: rgba(229, 107, 85, 0.06);
+  border-radius: 6px;
+}
+
+.vote-modal__row--stale,
+.vote-modal__row--relayed {
+  background: rgba(243, 179, 86, 0.08);
+  border-radius: 6px;
+}
+
+.vote-modal__row--confirmed-match {
+  opacity: 0.85;
+}
+
+/* Live progress list — one row per masternode during SIGNING /
+   SUBMITTING. Statuses are fine-grained (queued / signing / signed
+   / sign-failed / submitting) so the user sees motion on big
+   batches instead of a single spinner. */
+
+.vote-modal__progress-header {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.vote-modal__progress-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.vote-modal__progress-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.vote-modal__progress-row--signing {
+  background: rgba(99, 135, 203, 0.14);
+  color: #2f4b8a;
+}
+
+.vote-modal__progress-row--signed {
+  background: rgba(20, 184, 166, 0.10);
+  color: #0d766d;
+}
+
+.vote-modal__progress-row--submitting {
+  background: rgba(99, 135, 203, 0.12);
+  color: #2f4b8a;
+}
+
+.vote-modal__progress-row--sign-failed {
+  background: rgba(229, 107, 85, 0.14);
+  color: #8b2d1b;
+}
+
+.vote-modal__progress-status {
+  margin-left: auto;
+  font-weight: 600;
+  font-size: 0.88rem;
+  text-transform: none;
+}
+
+/* -------------------------------------------------------------------------
+   PHASE.ERROR body — severity-driven theme for the descriptor block.
+   Shape:
+     .vote-modal__error--error  → red tone (transport/csrf failures)
+     .vote-modal__error--warn   → amber tone (actionable-by-user issues)
+     .vote-modal__error--info   → neutral tone (dedup / no-op cases)
+   Within all three variants we keep typography consistent and let
+   background / border colour carry the severity signal, so screen
+   readers that ignore colour still get the same data via the
+   `short` + `long` text + `aria-live` countdown.
+   ------------------------------------------------------------------------- */
+
+.vote-modal__error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.vote-modal__error--error {
+  background: rgba(229, 107, 85, 0.08);
+  border-color: rgba(229, 107, 85, 0.35);
+  color: #7a2414;
+}
+
+.vote-modal__error--warn {
+  background: rgba(230, 180, 0, 0.08);
+  border-color: rgba(230, 180, 0, 0.35);
+  color: #6b4c00;
+}
+
+.vote-modal__error--info {
+  background: rgba(52, 116, 197, 0.06);
+  border-color: rgba(52, 116, 197, 0.25);
+  color: #1f3970;
+}
+
+.vote-modal__error-short {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.vote-modal__error-long {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  opacity: 0.92;
+}
+
+.vote-modal__error-countdown {
+  margin: 0;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+/* DONE-view row variants for benign-dup + warn-severity failures.
+   `is-ok` remains the primary success style; the additional
+   modifiers only tint the row to distinguish semantics without
+   fighting the base layout. */
+
+.vote-result.is-warn {
+  background: rgba(230, 180, 0, 0.08);
+  border-left: 3px solid rgba(230, 180, 0, 0.55);
+}
+
+.vote-result.is-ok.vote-result--dedup {
+  background: rgba(52, 116, 197, 0.06);
+  border-left: 3px solid rgba(52, 116, 197, 0.45);
+}
+
+.vote-result__cta {
+  margin-left: auto;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline;
+}
+
+.vote-result__cta:hover,
+.vote-result__cta:focus-visible {
+  text-decoration: none;
+}
+
+/* -------------------------------------------------------------------------
    Vault EMPTY state footer — centre the "Import voting keys" CTA without
    stretching it across the card.
    ------------------------------------------------------------------------- */

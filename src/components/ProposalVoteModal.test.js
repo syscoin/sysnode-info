@@ -1,6 +1,7 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -61,12 +62,14 @@ function renderModal({
   service,
   proposal = { Key: 'h'.repeat(64), name: 'SomeSponsor', title: 'Test Prop' },
   onClose = jest.fn(),
+  onReloadProposals,
   open = true,
 } = {}) {
   useAuth.mockReturnValue(auth);
   useVault.mockReturnValue(vault);
   return {
     onClose,
+    onReloadProposals,
     ...render(
       <MemoryRouter>
         <ProposalVoteModal
@@ -74,6 +77,7 @@ function renderModal({
           onClose={onClose}
           proposal={proposal}
           governanceService={service}
+          onReloadProposals={onReloadProposals}
         />
       </MemoryRouter>
     ),
@@ -679,15 +683,833 @@ describe('ProposalVoteModal — error paths', () => {
     });
     fireEvent.click(screen.getByTestId('vote-modal-submit'));
 
+    // Error phase renders the richer rate-limit descriptor: a
+    // short headline, the long explanation, and a live
+    // countdown. "Try again" is disabled while the countdown is
+    // positive so we don't silently retry into another 429.
     const errorState = await screen.findByTestId('vote-modal-error');
+    expect(within(errorState).getByText(/too many votes/i)).toBeInTheDocument();
     expect(within(errorState).getByText(/lot of votes/i)).toBeInTheDocument();
+    expect(
+      within(errorState).getByTestId('vote-modal-rate-limit-countdown')
+    ).toBeInTheDocument();
+    expect(
+      within(errorState).getByTestId('vote-modal-error-try-again')
+    ).toBeDisabled();
 
+    // "Edit selection" is always available — users can reconsider
+    // their selection without waiting out the countdown.
     fireEvent.click(
-      within(errorState).getByRole('button', { name: /try again/i })
+      within(errorState).getByTestId('vote-modal-error-back-to-picker')
     );
     await waitFor(() => {
       expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
     });
+  });
+
+  test('rate-limited error honours an explicit Retry-After from the server', async () => {
+    const err = new Error('nope');
+    err.code = 'rate_limited';
+    // Retry-After of ~2 seconds — picked short enough to be
+    // observable within the test's timing budget without mocking
+    // timers, but long enough that the countdown definitely
+    // renders before the tick clears it.
+    err.retryAfterMs = 2500;
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    const errorState = await screen.findByTestId('vote-modal-error');
+    const countdown = within(errorState).getByTestId(
+      'vote-modal-rate-limit-countdown'
+    );
+    // The rendered integer should reflect the server's hint
+    // (~2s) rather than the DEFAULT_RATE_LIMIT_RETRY_MS fallback
+    // (~60s). Use a range because the test tick measures wall
+    // clock time.
+    const match = countdown.textContent.match(/(\d+)s/);
+    expect(match).toBeTruthy();
+    const seconds = Number(match[1]);
+    expect(seconds).toBeGreaterThanOrEqual(1);
+    expect(seconds).toBeLessThanOrEqual(3);
+  });
+
+  test('closing the modal during a rate-limit countdown clears the tick interval', async () => {
+    // Codex P2: the countdown tick effect was armed purely by
+    // retryReadyAt/autoRetryAt, and retryReadyAt wasn't cleared
+    // when `open` flipped to false — so closing on a
+    // rate-limited error left a 250ms interval (and a persistent
+    // setState→re-render loop) alive in the background until
+    // the component unmounted. Include `open` in the armed
+    // predicate so the interval is torn down on close.
+    const err = new Error('nope');
+    err.code = 'rate_limited';
+    err.retryAfterMs = 60_000;
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    useAuth.mockReturnValue(makeAuth());
+    useVault.mockReturnValue(UNLOCKED_VAULT_WITH_TWO_KEYS);
+
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    try {
+      const proposal = {
+        Key: 'h'.repeat(64),
+        name: 'SomeSponsor',
+        title: 'Test Prop',
+      };
+      const { rerender } = render(
+        <MemoryRouter>
+          <ProposalVoteModal
+            open
+            onClose={() => {}}
+            proposal={proposal}
+            governanceService={service}
+          />
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      await screen.findByTestId('vote-modal-rate-limit-countdown');
+
+      // The tick effect fires after React commits the countdown
+      // element, so we poll until the spy observes it rather
+      // than sampling at a single point — the countdown element
+      // can appear in the DOM one microtask before useEffect
+      // actually runs, which makes a direct assertion flaky
+      // under parallel workers.
+      const count250 = () =>
+        setIntervalSpy.mock.calls.filter((args) => args[1] === 250).length;
+      await waitFor(() => {
+        expect(count250()).toBeGreaterThan(0);
+      });
+      const beforeCloseIntervalCalls = count250();
+      const beforeCloseClears = clearIntervalSpy.mock.calls.length;
+
+      // Close the modal without draining the countdown. The tick
+      // effect's cleanup MUST fire so no new 250ms interval is
+      // armed and the previous one is cleared.
+      rerender(
+        <MemoryRouter>
+          <ProposalVoteModal
+            open={false}
+            onClose={() => {}}
+            proposal={proposal}
+            governanceService={service}
+          />
+        </MemoryRouter>
+      );
+
+      // At least one cleared interval after close.
+      expect(clearIntervalSpy.mock.calls.length).toBeGreaterThan(
+        beforeCloseClears
+      );
+      // No NEW 250ms interval armed after close. (Arbitrarily
+      // sample a few rAFs / microtasks so we observe any stray
+      // re-arming attempts.)
+      await new Promise((r) => setTimeout(r, 50));
+      const afterCloseIntervalCalls = setIntervalSpy.mock.calls.filter(
+        (args) => args[1] === 250
+      ).length;
+      expect(afterCloseIntervalCalls).toBe(beforeCloseIntervalCalls);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  test('server_error shows an auto-retry countdown and a cancel button', async () => {
+    // The first submit returns a 5xx-style error; we verify the
+    // modal schedules an auto-retry (visible countdown) and that
+    // the user can cancel it.
+    const err = new Error('boom');
+    err.code = 'server_error';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    const errorState = await screen.findByTestId('vote-modal-error');
+    // The scheduler useEffect that sets autoRetryAt runs AFTER
+    // React commits the error state, so the countdown element
+    // may not be in the DOM at the exact moment findByTestId
+    // for vote-modal-error resolves. Poll explicitly for it
+    // so the test isn't a race between the committed error
+    // state and the subsequent effect tick.
+    const countdown = await within(errorState).findByTestId(
+      'vote-modal-auto-retry-countdown'
+    );
+    expect(countdown).toBeInTheDocument();
+    const cancel = within(errorState).getByTestId(
+      'vote-modal-cancel-auto-retry'
+    );
+    fireEvent.click(cancel);
+    // After cancel, the auto-retry countdown disappears but the
+    // error state remains.
+    await waitFor(() => {
+      expect(
+        within(errorState).queryByTestId('vote-modal-auto-retry-countdown')
+      ).toBeNull();
+    });
+  });
+
+  test('in-session Discard stops the online-event auto-resume from firing', async () => {
+    // Codex P2: Discard on an in-session offline error only
+    // cleared offlineQueued/sessionStorage but left phase=ERROR
+    // and submitError='network_error'. The onOnline handler
+    // guard still matched, so on reconnect the batch would
+    // auto-submit — directly violating the user's Discard
+    // intent. Verify that Discard now exits PHASE.ERROR so the
+    // guard drops and no rerun fires on reconnect.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const netErr = new Error('net');
+      netErr.code = 'network_error';
+      const service = makeService({
+        submit: jest.fn().mockRejectedValueOnce(netErr),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      const errorState = await screen.findByTestId('vote-modal-error');
+      // Discard the queued intent.
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      // Discard must exit the ERROR view entirely.
+      await waitFor(() => {
+        expect(screen.queryByTestId('vote-modal-error')).toBeNull();
+      });
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      // Come back online: the auto-resume guard must NOT fire.
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // Only the initial (failed) submit ever ran.
+      expect(service.submitVote).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('online-event auto-resume drains the offline queue before rerunning', async () => {
+    // Codex P1: resumeOfflineQueue / discardOfflineQueue were the
+    // only code paths calling drainOfflineVote; the onOnline auto-
+    // resume fell straight through to rerunLastBatch() without
+    // clearing sessionStorage. A successful auto-retry therefore
+    // left the entry behind as a phantom that would re-surface on
+    // the next modal open. Lock in the contract: the `online`
+    // event drains the queue before calling rerun.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const netErr = new Error('net');
+      netErr.code = 'network_error';
+      const service = makeService({
+        submit: jest
+          .fn()
+          // First attempt: offline failure, enqueues intent.
+          .mockRejectedValueOnce(netErr)
+          // Second attempt (online-event rerun): succeeds.
+          .mockResolvedValueOnce({
+            accepted: 2,
+            rejected: 0,
+            results: [
+              { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+              { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+            ],
+          }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      await screen.findByTestId('vote-modal-error');
+      // Queue is populated by the failure path.
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeTruthy();
+
+      // Come back online: the onOnline handler must drain the
+      // queue BEFORE firing the rerun, so after the successful
+      // second attempt we end up with an empty queue (not a
+      // phantom entry that would re-surface on reopen).
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('auto-retry budget resets per user-initiated run', async () => {
+    // Codex P2: autoRetryAttemptsRef was only reset on modal open.
+    // After one server-error incident burned its maxAttempts
+    // window, a later independent server error in the same modal
+    // session would skip auto-retry entirely. Verify the budget is
+    // actually reset when the user clicks Try again — a fresh
+    // incident should show a fresh countdown.
+    const err = new Error('boom');
+    err.code = 'server_error';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    const errorState = await screen.findByTestId('vote-modal-error');
+    // First error session: countdown visible. The countdown is
+    // armed by the scheduler useEffect which runs after React
+    // commits the error state, so use findByTestId to poll
+    // past that effect tick. Cancel to consume the budget
+    // manually (simpler and deterministic than waiting for
+    // two real timers to fire).
+    await within(errorState).findByTestId('vote-modal-auto-retry-countdown');
+    fireEvent.click(
+      within(errorState).getByTestId('vote-modal-cancel-auto-retry')
+    );
+    await waitFor(() => {
+      expect(
+        within(errorState).queryByTestId('vote-modal-auto-retry-countdown')
+      ).toBeNull();
+    });
+
+    // Click Try again. The submit rejects again with server_error
+    // → we land back in ERROR. If the budget had not been reset
+    // by the user-initiated run, the scheduler would skip the
+    // countdown. Assert the fresh countdown appears.
+    fireEvent.click(
+      within(errorState).getByTestId('vote-modal-error-try-again')
+    );
+    await waitFor(() => {
+      // submitVote was called twice (initial + Try again rerun).
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('vote-modal-error')).getByTestId(
+          'vote-modal-auto-retry-countdown'
+        )
+      ).toBeInTheDocument();
+    });
+  });
+
+  test('mn_not_found renders the CTA link on the DONE row', async () => {
+    // A mn_not_found failure should render an inline "Go to
+    // Account" link so the user can self-serve the fix without
+    // hunting for the Account page.
+    const service = makeService({
+      submit: jest.fn().mockResolvedValue({
+        accepted: 1,
+        rejected: 1,
+        results: [
+          { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+          {
+            collateralHash: 'd'.repeat(64),
+            collateralIndex: 1,
+            ok: false,
+            error: 'mn_not_found',
+          },
+        ],
+      }),
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    const rows = screen.getAllByTestId('vote-result-row');
+    const failingRow = rows.find(
+      (r) => r.getAttribute('data-error-code') === 'mn_not_found'
+    );
+    expect(failingRow).toBeTruthy();
+    const cta = within(failingRow).getByTestId('vote-result-row-cta');
+    expect(cta.getAttribute('href')).toBe('/account');
+  });
+
+  test('network_error while offline captures the intent and offers Resume / Discard', async () => {
+    // Simulate an offline device: navigator.onLine=false + the
+    // submitVote promise rejects with network_error. The modal
+    // should surface the offline descriptor and the Resume /
+    // Discard pair instead of the normal Try again CTA, and the
+    // intent should land in sessionStorage so a fresh modal open
+    // can re-offer it.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const err = new Error('net');
+      err.code = 'network_error';
+      const service = makeService({
+        submit: jest
+          .fn()
+          // First call during offline: reject with network_error.
+          .mockRejectedValueOnce(err)
+          // Second call on Resume (test flips navigator back to
+          // online before Resume): accept.
+          .mockResolvedValueOnce({
+            accepted: 2,
+            rejected: 0,
+            results: [
+              {
+                collateralHash: 'c'.repeat(64),
+                collateralIndex: 0,
+                ok: true,
+              },
+              {
+                collateralHash: 'd'.repeat(64),
+                collateralIndex: 1,
+                ok: true,
+              },
+            ],
+          }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      const errorState = await screen.findByTestId('vote-modal-error');
+      // The offline descriptor replaces the raw network_error one.
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      const shortHeadline = errorState.querySelector(
+        '.vote-modal__error-short'
+      );
+      expect(shortHeadline.textContent).toMatch(/offline/i);
+      // Queue is persisted for this proposal.
+      const queueRaw = window.sessionStorage.getItem('gov:pending:v1');
+      expect(queueRaw).toBeTruthy();
+      expect(JSON.parse(queueRaw)).toHaveProperty('h'.repeat(64));
+      // Flip online so the Resume rerun actually reaches the
+      // (now-succeeding) submit mock.
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      });
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-resume')
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+      // Queue drained after resume.
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: pre-existing offline queue surfaces as ERROR with Resume/Discard on reopen', async () => {
+    // Codex P1: closing the modal (or reloading the page) while a
+    // vote is queued offline must re-surface the pending intent
+    // the next time the modal opens. Simulate that by seeding
+    // sessionStorage with the canonical queue shape, opening a
+    // fresh modal, and asserting:
+    //
+    //   * The modal lands in PHASE.ERROR with the `offline`
+    //     descriptor (not the empty PICK that shipped originally).
+    //   * Resume rehydrates the batch from queued.targets ×
+    //     owned, calls submitVote with exactly those outpoints,
+    //     and drains the sessionStorage entry.
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'no',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+        {
+          collateralHash: 'd'.repeat(64),
+          collateralIndex: 1,
+          keyId: 'k2',
+          address: 'sys1qb',
+          label: 'beta',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      const service = makeService({
+        submit: jest.fn().mockResolvedValue({
+          accepted: 2,
+          rejected: 0,
+          results: [
+            { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The modal must surface the queued intent immediately —
+      // not render the empty PICK view.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(
+        within(errorState).getByTestId('vote-modal-offline-resume')
+      ).toBeInTheDocument();
+      expect(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      ).toBeInTheDocument();
+
+      // Wait for `owned` to load so resume has something to map
+      // targets against.
+      await waitFor(() => {
+        expect(service.lookupOwnedMasternodes).toHaveBeenCalled();
+      });
+
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-resume')
+      );
+
+      await waitFor(() => {
+        expect(service.submitVote).toHaveBeenCalledTimes(1);
+      });
+      const payload = service.submitVote.mock.calls[0][0];
+      expect(payload.proposalHash).toBe(PROPOSAL_HASH);
+      // Outcome is restored from the queued entry, not the default.
+      expect(payload.voteOutcome).toBe('no');
+      expect(payload.entries).toHaveLength(2);
+      const outpoints = payload.entries
+        .map((e) => `${e.collateralHash}:${e.collateralIndex}`)
+        .sort();
+      expect(outpoints).toEqual(
+        [`${'c'.repeat(64)}:0`, `${'d'.repeat(64)}:1`].sort()
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+      // Queue drained after resume.
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('offline-queued error body uses WARN severity from the displayed descriptor', async () => {
+    // Codex P3: severityClass was being derived from the raw
+    // submitError descriptor (network_error → ERROR severity),
+    // but the copy shown to the user comes from the `offline`
+    // descriptor (WARN severity). That made the banner look
+    // "red alarm" while reading "queued for later" — a visual
+    // contradiction. Assert the severity class follows the
+    // displayed descriptor.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const err = new Error('net');
+      err.code = 'network_error';
+      const service = makeService({
+        submit: jest.fn().mockRejectedValue(err),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(errorState.className).toMatch(/vote-modal__error--warn/);
+      expect(errorState.className).not.toMatch(/vote-modal__error--error/);
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: queued-offline recovery is reachable even when the MN lookup fails', async () => {
+    // Codex P2: the lookup-error guard (`isError` branch) used
+    // to preempt the ERROR body unconditionally. If the user
+    // reopened the modal with a queued intent *and* the
+    // /gov/mns/lookup call was currently failing, they'd see
+    // the lookup-error view with only Retry/Close — no way to
+    // Discard or Resume the queued entry. The entry stayed in
+    // sessionStorage and re-surfaced on every reopen. Same fix
+    // pattern as the owned.length===0 case: yield to the
+    // offlineQueued ERROR body.
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      // Lookup rejects — simulates the upstream /gov/mns/lookup
+      // outage Codex flagged.
+      const service = makeService({
+        lookup: jest.fn().mockRejectedValue(new Error('upstream_down')),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The lookup-error guard must NOT preempt the offline
+      // ERROR body. Resume/Discard must be reachable.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(screen.queryByTestId('vote-modal-lookup-error')).toBeNull();
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      });
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: queued-offline recovery is reachable even when no MNs are currently owned', async () => {
+    // Codex P2: the `owned.length === 0` guard short-circuited
+    // rendering to the "no masternodes" state, hiding the
+    // Resume/Discard UI. A stale queued entry would then be
+    // unreachable — sitting in sessionStorage forever and
+    // re-surfacing on every reopen. The ERROR branch with
+    // offlineQueued must take precedence so the user can at
+    // least Discard the stale queue (and Resume falls back to
+    // PICK gracefully when chosen.length === 0).
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      // Lookup returns zero owned MNs — this is the state where
+      // Codex flagged the bug.
+      const service = makeService({
+        lookup: jest.fn().mockResolvedValue([]),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The no-owned branch must NOT preempt the offline ERROR.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(screen.queryByTestId('vote-modal-no-owned')).toBeNull();
+      // Discard is reachable, and it clears the queue.
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      });
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: Discard on a surfaced offline queue returns to PICK and drops the entry', async () => {
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      const service = makeService();
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      const errorState = await screen.findByTestId('vote-modal-error');
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+
+      // Back to the picker, and the queue entry is gone.
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('vote-modal-error')).toBeNull();
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      // No relay attempt.
+      expect(service.submitVote).not.toHaveBeenCalled();
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('already_voted renders as a benign dedup, not a red failure', async () => {
+    // When the backend echoes already_voted for a row, the
+    // network already has the exact vote the user wanted — so
+    // the row should render as "Already on-chain" and should NOT
+    // be counted toward the retryable-failure set.
+    const service = makeService({
+      submit: jest.fn().mockResolvedValue({
+        accepted: 0,
+        rejected: 1,
+        results: [
+          {
+            collateralHash: 'c'.repeat(64),
+            collateralIndex: 0,
+            ok: false,
+            error: 'already_voted',
+          },
+          {
+            collateralHash: 'd'.repeat(64),
+            collateralIndex: 1,
+            ok: false,
+            error: 'already_voted',
+          },
+        ],
+      }),
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(2);
+    rows.forEach((r) => {
+      expect(r.getAttribute('data-benign-dup')).toBe('true');
+      expect(within(r).getByText(/already on-chain/i)).toBeInTheDocument();
+    });
+    // No "Retry failed" prompt — the batch is logically done.
+    expect(screen.queryByTestId('vote-modal-retry-failed')).toBeNull();
   });
 
   test('Retry failed re-submits only the failed rows and preserves prior successes in the DONE view', async () => {
@@ -953,6 +1775,89 @@ describe('ProposalVoteModal — error paths', () => {
     });
   });
 
+  test('Retry failed excludes benign dedup (already_voted) rows from the re-submit payload', async () => {
+    // Codex P2: the retry picker previously included every !ok row,
+    // so in a mixed batch it would re-submit `already_voted`
+    // alongside real failures. That contradicts the benign-dedup
+    // story we tell the user (Already on-chain) and would trigger
+    // avoidable duplicate / cooldown errors. Lock in the contract:
+    // on Retry failed, only rows that are !ok && !isBenignDup are
+    // re-signed and re-submitted; benign-dup rows stay in place in
+    // the merged summary as soft successes.
+    const service = makeService({
+      submit: jest
+        .fn()
+        // First pass: k1 → already_voted (benign), k2 → real failure.
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 2,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'already_voted',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        })
+        // Retry pass: only k2 is re-submitted (see assertions).
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 0,
+          results: [
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+
+    const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    const retryPayload = service.submitVote.mock.calls[1][0];
+    expect(retryPayload.entries).toHaveLength(1);
+    expect(retryPayload.entries[0].collateralHash).toBe('d'.repeat(64));
+    expect(retryPayload.entries[0].collateralIndex).toBe(1);
+    // The benign row must have been re-signed zero additional
+    // times — the retry set never included its outpoint.
+    const firstSignCalls = signVoteFromWif.mock.calls.filter(
+      (c) => c[0].collateralHash === 'c'.repeat(64)
+    );
+    // One sign for the initial submit, none for the retry pass.
+    expect(firstSignCalls).toHaveLength(1);
+
+    // The merged DONE view: k1 stays as Already on-chain, k2 is now ok.
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      expect(summary.textContent).toMatch(/1 accepted/i);
+    });
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(2);
+    const benignRow = rows.find(
+      (r) => r.getAttribute('data-benign-dup') === 'true'
+    );
+    expect(benignRow).toBeDefined();
+    expect(within(benignRow).getByText(/already on-chain/i)).toBeInTheDocument();
+  });
+
   test('per-signing-row failure surfaces in the DONE list alongside backend results', async () => {
     // Make signVoteFromWif throw for the second key; the first one
     // still signs. Backend relay should get only one entry, but the
@@ -1001,6 +1906,80 @@ describe('ProposalVoteModal — error paths', () => {
     expect(within(bad).getByText(/vote failed/i)).toBeInTheDocument();
 
     expect(service.submitVote.mock.calls[0][0].entries).toHaveLength(1);
+  });
+
+  test('proposal_not_found CTA invokes onReloadProposals (governance feed), not MN lookup', async () => {
+    // Codex P2: the "Reload proposals" CTA for the
+    // `proposal_not_found` descriptor used to fall through to the
+    // MN-lookup refresh (from useOwnedMasternodes), which does
+    // NOTHING for the proposal feed. Users clicked it, nothing
+    // happened, and the stale list stayed put. Now the Governance
+    // page wires in useGovernanceData.refresh via the
+    // `onReloadProposals` prop. Verify:
+    //   1. When the prop is supplied, the CTA calls it (once).
+    //   2. It does not trigger a second MN lookup (the prop takes
+    //      precedence over the internal refresh fallback).
+    //   3. When the prop is absent, the CTA falls back to the
+    //      MN-lookup refresh so any future refresh-kind descriptor
+    //      stays functional.
+    const err = new Error('gone');
+    err.code = 'proposal_not_found';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    const onReloadProposals = jest.fn();
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+      onReloadProposals,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    // Lookup fires once on mount; reset call count so we can
+    // assert the CTA does NOT fire a second lookup.
+    const lookupCallsBefore = service.lookupOwnedMasternodes.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    const errorState = await screen.findByTestId('vote-modal-error');
+    expect(errorState.getAttribute('data-error-code')).toBe(
+      'proposal_not_found'
+    );
+    const cta = within(errorState).getByTestId('vote-modal-error-cta-refresh');
+    fireEvent.click(cta);
+
+    expect(onReloadProposals).toHaveBeenCalledTimes(1);
+    expect(service.lookupOwnedMasternodes.mock.calls.length).toBe(
+      lookupCallsBefore
+    );
+  });
+
+  test('proposal_not_found CTA falls back to MN-lookup refresh when onReloadProposals is not provided', async () => {
+    const err = new Error('gone');
+    err.code = 'proposal_not_found';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+      // intentionally no onReloadProposals
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    const lookupCallsBefore = service.lookupOwnedMasternodes.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    const errorState = await screen.findByTestId('vote-modal-error');
+    const cta = within(errorState).getByTestId('vote-modal-error-cta-refresh');
+    fireEvent.click(cta);
+
+    await waitFor(() => {
+      expect(service.lookupOwnedMasternodes.mock.calls.length).toBe(
+        lookupCallsBefore + 1
+      );
+    });
   });
 });
 
@@ -1292,5 +2271,341 @@ describe('ProposalVoteModal — receipts-aware default selection', () => {
     expect(within(rowA).getByTestId('vote-modal-row-receipt').textContent).toMatch(
       /last attempt failed/i
     );
+  });
+});
+
+describe('ProposalVoteModal — grouped picker + vote-change confirmation', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // Same helpers as the receipts-aware describe block. Duplicated
+  // locally to keep this suite independently runnable; they're
+  // cheap and the signatures rarely churn.
+  function makeReceiptService({ receipts = [], reconcileError = null } = {}) {
+    const s = makeService();
+    s.reconcileReceipts = jest.fn().mockResolvedValue({
+      receipts,
+      reconciled: !reconcileError,
+      reconcileError,
+      updated: 0,
+    });
+    return s;
+  }
+  function receipt({ hash, index, status = 'confirmed', outcome = 'yes' }) {
+    return {
+      collateralHash: hash,
+      collateralIndex: index,
+      status,
+      voteOutcome: outcome,
+      voteSignal: 'funding',
+      voteTime: 1700000000,
+      verifiedAt: 1700000001,
+      updatedAt: 1700000001,
+      createdAt: 1700000000,
+      lastError: null,
+    };
+  }
+
+  test('rows bucket into Action needed and Already voted sections', async () => {
+    // Two MNs from the standard fixture:
+    //  A (c:0) → confirmed 'yes' at current outcome → Already voted
+    //  B (d:1) → failed last attempt              → Action needed
+    //
+    // Needs vote section is intentionally absent in this fixture
+    // (covered separately by "only sections with content render").
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+        receipt({ hash: 'd'.repeat(64), index: 1, status: 'failed', outcome: 'yes' }),
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    const actionNeeded = screen.getByTestId('vote-modal-group-action-needed');
+    const alreadyVoted = screen.getByTestId('vote-modal-group-already-voted');
+    expect(
+      screen.queryByTestId('vote-modal-group-needs-vote')
+    ).not.toBeInTheDocument();
+
+    // Each row lands in exactly one section.
+    expect(
+      within(actionNeeded).getByTestId('vote-modal-row').getAttribute('data-mn-id')
+    ).toBe(OUTPOINT_B);
+    // Already voted section is collapsed by default — the section
+    // itself mounts but its <ul> is hidden. The checkbox is still
+    // in the DOM (testing-library ignores display) so `selected`
+    // logic has a stable target for tests.
+    expect(alreadyVoted.getAttribute('data-collapsed')).toBe('true');
+    const alreadyRow = alreadyVoted.querySelector(
+      `[data-mn-id="${OUTPOINT_A}"]`
+    );
+    expect(alreadyRow).not.toBeNull();
+    expect(alreadyRow.getAttribute('data-row-kind')).toBe(
+      'confirmed-match'
+    );
+  });
+
+  test('Already voted section toggles open on click and reveals its rows', async () => {
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    const alreadyVoted = screen.getByTestId('vote-modal-group-already-voted');
+    expect(alreadyVoted.getAttribute('data-collapsed')).toBe('true');
+    const toggle = screen.getByTestId('vote-modal-toggle-already-voted');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(toggle);
+
+    expect(alreadyVoted.getAttribute('data-collapsed')).toBe('false');
+    expect(
+      screen.getByTestId('vote-modal-toggle-already-voted').getAttribute(
+        'aria-expanded'
+      )
+    ).toBe('true');
+  });
+
+  test('only sections with content render', async () => {
+    // No receipts at all → only "Needs vote" is mounted.
+    const service = makeReceiptService({ receipts: [] });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('vote-modal-group-needs-vote')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('vote-modal-group-action-needed')
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('vote-modal-group-already-voted')
+    ).not.toBeInTheDocument();
+  });
+
+  test('vote-change confirmation guards overwriting an existing on-chain vote', async () => {
+    // MN A confirmed yes. User flips outcome to no and clicks Sign
+    // & Submit — should first see a CONFIRM_CHANGE phase listing
+    // the vote-change targets, not jump straight to signing.
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    // Flip to no — A now becomes a vote-change candidate, so it's
+    // checked by default and sits in the Action needed bucket.
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+    expect(
+      screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked
+    ).toBe(true);
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    // Confirmation phase replaces the picker — no submit yet.
+    expect(
+      screen.getByTestId('vote-modal-confirm-change')
+    ).toBeInTheDocument();
+    expect(service.submitVote).not.toHaveBeenCalled();
+
+    // And it tells the user exactly which MNs are changing.
+    const changeList = screen.getByTestId('vote-modal-change-list');
+    expect(within(changeList).getAllByText(/yes → no/i).length).toBe(1);
+  });
+
+  test('CONFIRM_CHANGE "Back" returns to picker without calling submitVote', async () => {
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    fireEvent.click(
+      screen.getByTestId('vote-modal-confirm-change-cancel')
+    );
+
+    // Back in the picker.
+    expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('vote-modal-confirm-change')
+    ).not.toBeInTheDocument();
+    expect(service.submitVote).not.toHaveBeenCalled();
+  });
+
+  test('CONFIRM_CHANGE "Change votes" proceeds to sign and submit', async () => {
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+      ],
+    });
+    // Mute submitVote so we land cleanly in DONE.
+    service.submitVote = jest.fn().mockResolvedValue({
+      accepted: 1,
+      rejected: 0,
+      results: [
+        {
+          ok: true,
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          error: null,
+        },
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+    // Only select A so the vote-change fires.
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+    // Deselect B (no receipt, not a change candidate).
+    fireEvent.click(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`));
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    expect(
+      screen.getByTestId('vote-modal-confirm-change')
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByTestId('vote-modal-confirm-change-submit')
+    );
+
+    // Eventually we reach DONE — submitVote was called with 'no'.
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    expect(service.submitVote).toHaveBeenCalledWith(
+      expect.objectContaining({ voteOutcome: 'no' })
+    );
+  });
+
+  test('live progress renders a per-row status during SIGNING', async () => {
+    // We deliberately set signVoteFromWif up to throw for MN B and
+    // succeed for MN A. Because the real sign loop yields control
+    // every 4 iterations (2 MNs here stays synchronous), the
+    // signing completes before we can see intermediate states —
+    // so this test inspects the terminal live-progress view just
+    // before submit resolves. Wrap submitVote in a pending promise
+    // to hold SUBMITTING open while we assert.
+    let releaseSubmit;
+    const service = makeReceiptService({ receipts: [] });
+    service.submitVote = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          releaseSubmit = () =>
+            resolve({
+              accepted: 1,
+              rejected: 0,
+              results: [
+                {
+                  ok: true,
+                  collateralHash: 'c'.repeat(64),
+                  collateralIndex: 0,
+                  error: null,
+                },
+              ],
+            });
+        })
+    );
+    signVoteFromWif.mockImplementation(({ wif }) => {
+      if (wif === 'Lwif2') {
+        const e = new Error('sig fail');
+        e.code = 'sign_failed';
+        throw e;
+      }
+      return { voteSig: '00'.repeat(65) };
+    });
+
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    // After signing finishes we're in SUBMITTING waiting for the
+    // pending submitVote promise. The progress list should carry
+    // two rows — A in 'submitting' status (signed OK) and B in
+    // 'sign-failed' status (sticky).
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-progress')).toBeInTheDocument();
+    });
+    const rows = screen.getAllByTestId('vote-modal-progress-row');
+    expect(rows).toHaveLength(2);
+    const byMn = {};
+    for (const r of rows) byMn[r.getAttribute('data-mn-id')] = r;
+    expect(byMn[OUTPOINT_A].getAttribute('data-row-status')).toBe(
+      'submitting'
+    );
+    expect(byMn[OUTPOINT_B].getAttribute('data-row-status')).toBe(
+      'sign-failed'
+    );
+
+    // Release the pending submitVote so the modal transitions to
+    // DONE cleanly and the test doesn't leak a hanging promise.
+    releaseSubmit();
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+  });
+
+  test('no confirmation step when selection has no vote-change candidates', async () => {
+    // Confirmed receipts at the CURRENT outcome stay in Already
+    // voted and are excluded from the default selection → no
+    // vote-change candidates → startVoting goes straight to signing.
+    const service = makeReceiptService({
+      receipts: [
+        receipt({ hash: 'c'.repeat(64), index: 0, status: 'confirmed', outcome: 'yes' }),
+      ],
+    });
+    service.submitVote = jest.fn().mockResolvedValue({
+      accepted: 1,
+      rejected: 0,
+      results: [
+        {
+          ok: true,
+          collateralHash: 'd'.repeat(64),
+          collateralIndex: 1,
+          error: null,
+        },
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+    // Outcome stays 'yes'. Submit — only B is chosen by default
+    // (A sits in Already voted, unchecked). No change, straight to
+    // signing.
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByTestId('vote-modal-confirm-change')
+    ).not.toBeInTheDocument();
+    expect(service.submitVote).toHaveBeenCalledTimes(1);
   });
 });
