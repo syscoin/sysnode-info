@@ -1,7 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import DataState from '../components/DataState';
 import PageMeta from '../components/PageMeta';
+import ProposalVoteModal from '../components/ProposalVoteModal';
+import { useAuth } from '../context/AuthContext';
 import useGovernanceData from '../hooks/useGovernanceData';
 import {
   formatCompactNumber,
@@ -15,18 +18,45 @@ import {
   parseNumber,
 } from '../lib/formatters';
 
-function ProposalRow(props) {
+// Governance page.
+//
+// Two voter cohorts get different action affordances on each row:
+//
+//   Anonymous  → "Yes" / "No" buttons copy a `gobject_vote_many` CLI
+//                command to the clipboard. That's the legacy flow;
+//                preserved so operators without a sysnode account can
+//                still use the page as a quick CLI helper.
+//
+//   Authenticated → Single "Vote" button opens a modal that signs
+//                votes locally against the user's vault and relays
+//                them to the backend. No CLI required; abstain is an
+//                option; per-MN selection lets operators split votes
+//                across multiple proposals without copy-pasting.
+//
+// Logged-out users also get a CTA banner above the list inviting
+// them to log in for one-click voting. We intentionally don't hide
+// the CLI fallback for them — preserving muscle memory is a feature,
+// not a bug. (See the syshub UX issues the user flagged — deleting
+// legacy paths without an equivalent replacement was a repeat
+// complaint.)
+
+function ProposalRow({
+  proposal,
+  enabledCount,
+  isAuthenticated,
+  onVote,
+}) {
   const [feedback, setFeedback] = useState('');
-  const supportPercent = props.enabledCount
-    ? (Number(props.proposal.AbsoluteYesCount || 0) / props.enabledCount) * 100
+  const supportPercent = enabledCount
+    ? (Number(proposal.AbsoluteYesCount || 0) / enabledCount) * 100
     : 0;
-  const yesVotes = Number(props.proposal.YesCount || 0);
-  const noVotes = Number(props.proposal.NoCount || 0);
+  const yesVotes = Number(proposal.YesCount || 0);
+  const noVotes = Number(proposal.NoCount || 0);
   const passing = supportPercent > 10;
-  const paymentAmount = parseNumber(props.proposal.payment_amount);
+  const paymentAmount = parseNumber(proposal.payment_amount);
   const durationMonths = getProposalDurationMonths(
-    props.proposal.start_epoch,
-    props.proposal.end_epoch
+    proposal.start_epoch,
+    proposal.end_epoch
   );
 
   useEffect(
@@ -46,13 +76,13 @@ function ProposalRow(props) {
     [feedback]
   );
 
-  const proposalTitle = props.proposal.title || props.proposal.name;
+  const proposalTitle = proposal.title || proposal.name;
   const statusLabel = passing ? 'Passing' : 'Not enough votes';
 
   async function copyCommand(direction) {
     try {
       await navigator.clipboard.writeText(
-        `gobject_vote_many ${props.proposal.Key} funding ${direction}`
+        `gobject_vote_many ${proposal.Key} funding ${direction}`
       );
       setFeedback(`${direction === 'yes' ? 'Yes' : 'No'} vote command copied.`);
     } catch (error) {
@@ -71,11 +101,11 @@ function ProposalRow(props) {
       <div className="proposal-row__main">
         <h3>{proposalTitle}</h3>
         <div className="proposal-row__meta-line">
-          <span className="proposal-row__sponsor">{props.proposal.name}</span>
+          <span className="proposal-row__sponsor">{proposal.name}</span>
           <span className="proposal-row__meta-separator" aria-hidden="true">
             •
           </span>
-          <span>Created {formatDateFromEpoch(props.proposal.CreationTime)}</span>
+          <span>Created {formatDateFromEpoch(proposal.CreationTime)}</span>
         </div>
       </div>
 
@@ -100,10 +130,10 @@ function ProposalRow(props) {
       </div>
 
       <div className="proposal-row__actions">
-        {props.proposal.url ? (
+        {proposal.url ? (
           <a
             className="button button--ghost button--small proposal-row__action proposal-row__action--proposal"
-            href={props.proposal.url}
+            href={proposal.url}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Open proposal"
@@ -111,26 +141,43 @@ function ProposalRow(props) {
             Proposal
           </a>
         ) : null}
-        <button
-          type="button"
-          className="button button--ghost button--small proposal-row__action proposal-row__action--yes"
-          aria-label="Copy yes vote command"
-          onClick={function handleYesCopy() {
-            copyCommand('yes');
-          }}
-        >
-          Yes
-        </button>
-        <button
-          type="button"
-          className="button button--ghost button--small proposal-row__action proposal-row__action--no"
-          aria-label="Copy no vote command"
-          onClick={function handleNoCopy() {
-            copyCommand('no');
-          }}
-        >
-          No
-        </button>
+
+        {isAuthenticated ? (
+          <button
+            type="button"
+            className="button button--primary button--small proposal-row__action proposal-row__action--vote"
+            aria-label="Vote on proposal"
+            onClick={function handleVoteClick() {
+              onVote(proposal);
+            }}
+            data-testid="proposal-row-vote"
+          >
+            Vote
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="button button--ghost button--small proposal-row__action proposal-row__action--yes"
+              aria-label="Copy yes vote command"
+              onClick={function handleYesCopy() {
+                copyCommand('yes');
+              }}
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              className="button button--ghost button--small proposal-row__action proposal-row__action--no"
+              aria-label="Copy no vote command"
+              onClick={function handleNoCopy() {
+                copyCommand('no');
+              }}
+            >
+              No
+            </button>
+          </>
+        )}
       </div>
 
       {feedback ? <p className="inline-feedback">{feedback}</p> : null}
@@ -141,7 +188,10 @@ function ProposalRow(props) {
 export default function Governance() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
+  const [voteProposal, setVoteProposal] = useState(null);
   const { error, loading, proposals, stats } = useGovernanceData();
+  const { isAuthenticated } = useAuth();
+
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
   const enabledCount = parseNumber(networkStats && networkStats.enabled);
@@ -173,11 +223,19 @@ export default function Governance() {
     return true;
   });
 
+  const openVoteModal = useCallback((proposal) => {
+    setVoteProposal(proposal);
+  }, []);
+
+  const closeVoteModal = useCallback(() => {
+    setVoteProposal(null);
+  }, []);
+
   return (
     <main className="page-main">
       <PageMeta
         title="Governance"
-        description="Track active Syscoin governance proposals, requested budgets, voting deadlines, superblocks, and copy-ready vote commands."
+        description="Track active Syscoin governance proposals, requested budgets, voting deadlines, superblocks, and vote directly from your vault or via copy-ready CLI commands."
       />
 
       <section className="page-hero">
@@ -241,6 +299,20 @@ export default function Governance() {
             loading={loading && !stats}
             loadingMessage="Loading the live governance feed..."
           />
+          {!isAuthenticated && stats ? (
+            <div
+              className="panel governance-cta"
+              data-testid="governance-login-cta"
+            >
+              <p>
+                <strong>Vote in one click.</strong>{' '}
+                <Link to="/login">Log in</Link> and import your
+                masternode voting keys on the{' '}
+                <Link to="/account">Account page</Link> to vote
+                without leaving the browser — no CLI needed.
+              </p>
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -321,6 +393,8 @@ export default function Governance() {
                         key={proposal.Key}
                         proposal={proposal}
                         enabledCount={enabledCount}
+                        isAuthenticated={isAuthenticated}
+                        onVote={openVoteModal}
                       />
                     );
                   })}
@@ -335,6 +409,12 @@ export default function Governance() {
           </div>
         </section>
       ) : null}
+
+      <ProposalVoteModal
+        open={voteProposal !== null}
+        proposal={voteProposal}
+        onClose={closeVoteModal}
+      />
     </main>
   );
 }
