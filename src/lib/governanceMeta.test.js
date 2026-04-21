@@ -140,6 +140,31 @@ describe('computeOverBudgetMap', () => {
     expect(map.get('b'.repeat(64))).toBeUndefined();
   });
 
+  test('non-finite payment_amounts are clamped to 0 so the running total stays useful', () => {
+    // Proposal A has a malformed payment_amount (non-numeric
+    // string → NaN after Number()). Without the clamp, the running
+    // total becomes NaN and no downstream row ever registers as
+    // over budget. With the clamp, we treat the unknowable row as
+    // 0 and keep checking the rest of the list.
+    //
+    // Setup: three passing proposals ranked A(200) → B(150) → C(120).
+    // A has malformed amount; B and C each request 80 SYS against a
+    // 100 SYS ceiling. Expected over-budget rows: C (running = 0
+    // + 80 + 80 = 160 > 100 at C). B stays inside the budget.
+    const map = computeOverBudgetMap({
+      proposals: [
+        { Key: 'a'.repeat(64), payment_amount: 'NOT_A_NUMBER', AbsoluteYesCount: 200 },
+        { Key: 'b'.repeat(64), payment_amount: 80, AbsoluteYesCount: 150 },
+        { Key: 'c'.repeat(64), payment_amount: 80, AbsoluteYesCount: 120 },
+      ],
+      enabledCount: 1000,
+      budget: 100,
+    });
+    expect(map.has('a'.repeat(64))).toBe(false);
+    expect(map.has('b'.repeat(64))).toBe(false);
+    expect(map.has('c'.repeat(64))).toBe(true);
+  });
+
   test('Keys are stored lowercased so callers can look up case-insensitively', () => {
     const MIXED = `${'A'.repeat(32)}${'b'.repeat(32)}`;
     const map = computeOverBudgetMap({

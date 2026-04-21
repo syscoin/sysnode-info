@@ -157,7 +157,16 @@ export function computeOverBudgetMap({
 
   let running = 0;
   for (const row of passing) {
-    running += Math.max(0, row.amount);
+    // Coerce non-finite amounts (NaN / Infinity — e.g. a malformed
+    // payment_amount string from the feed) to 0 before adding.
+    // Without this, a single NaN contaminates `running` and every
+    // subsequent `running > ceiling` comparison returns false,
+    // silently dropping chips on rows that genuinely are past the
+    // cutline. Clamping at 0 preserves cutline detection for the
+    // rest of the list and biases toward NOT warning (vs. warning
+    // spuriously on an unknowable amount).
+    const amount = Number.isFinite(row.amount) ? Math.max(0, row.amount) : 0;
+    running += amount;
     if (running > ceiling) {
       out.set(row.key, {
         kind: 'over-budget',
