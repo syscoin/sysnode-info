@@ -266,6 +266,57 @@ describe('DeleteAccountCard', () => {
     expect(screen.getByTestId('delete-account-submit')).not.toBeDisabled();
   });
 
+  test('on `unauthorized` clears local auth state and redirects home', async () => {
+    // Regression for Codex PR 7 round 1 P2:
+    //   If the session expires (or is revoked on another device)
+    //   mid-submit, deleteAccount rejects with `unauthorized`. The
+    //   card must not leave the user stranded on the private account
+    //   page with a stale AuthContext — it must mirror the server's
+    //   view of the world and bounce them home.
+    const authService = makeAuthService();
+    const err = new Error('unauthorized');
+    err.code = 'unauthorized';
+    err.status = 401;
+    const cardAuthService = {
+      deleteAccount: jest.fn().mockRejectedValue(err),
+    };
+    // eslint-disable-next-line global-require
+    const { useLocation } = require('react-router-dom');
+    const PathnameProbe = () => {
+      const loc = useLocation();
+      return <div data-testid="pathname-probe">{loc.pathname}</div>;
+    };
+    renderCard({
+      authService,
+      cardAuthService,
+      extra: <PathnameProbe />,
+    });
+    await waitForUserHydrated();
+    await expandForm();
+    fireEvent.change(screen.getByTestId('delete-account-email'), {
+      target: { value: 'alice@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('delete-account-password'), {
+      target: { value: 'hunter22a' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('delete-account-card'));
+    });
+    await waitFor(() =>
+      expect(cardAuthService.deleteAccount).toHaveBeenCalled()
+    );
+    // Auth state should have flipped to ANONYMOUS (the card will
+    // have unmounted along with its AuthProvider-gated siblings;
+    // the probe navigates to '/').
+    await waitFor(() =>
+      expect(screen.getByTestId('pathname-probe')).toHaveTextContent('/')
+    );
+    // And we did NOT surface a dismissible error — the user is
+    // already gone from this page, so an inline error toast would
+    // never be seen anyway. The redirect IS the feedback.
+    expect(screen.queryByTestId('delete-account-error')).not.toBeInTheDocument();
+  });
+
   test('on success navigates to "/" after the API resolves', async () => {
     const authService = makeAuthService();
     const cardAuthService = {

@@ -114,7 +114,21 @@ export default function DeleteAccountCard({
         try {
           await authService.deleteAccount({ oldAuthHash: authHash });
         } catch (err) {
-          setErrCode((err && err.code) || 'http_error');
+          const code = (err && err.code) || 'http_error';
+          // `unauthorized` means the session expired (or was
+          // revoked elsewhere) mid-submit. The server reports the
+          // client as unauthenticated — we must mirror that locally
+          // or the user is stranded on private Account UI while
+          // AuthContext still thinks they're signed in. The
+          // /auth/* apiClient path deliberately does NOT drive the
+          // global auth-loss interceptor, so this branch has to do
+          // it explicitly.
+          if (code === 'unauthorized') {
+            handleAuthLost();
+            history.replace('/');
+            return;
+          }
+          setErrCode(code);
           return;
         }
 

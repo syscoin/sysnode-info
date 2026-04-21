@@ -744,6 +744,14 @@ export function VaultProvider({
       // cached vaultKey.
       const newBlob = await rewrapEnvelope(s.blob, oldVaultKey, newVaultKey);
 
+      // Snapshot the current session generation BEFORE handing the
+      // commit callback back to the caller. If the user logs out
+      // (or a different user takes over this provider) between the
+      // POST and the commit, reset() bumps sessionGenRef and the
+      // commit becomes a no-op — we must not revive a torn-down
+      // provider's state with stale blob/etag for the wrong user.
+      const startingSessionGen = sessionGenRef.current;
+
       return {
         blob: newBlob,
         ifMatch: s.etag,
@@ -751,23 +759,45 @@ export function VaultProvider({
           if (typeof newEtag !== 'string' || newEtag.length === 0) {
             throw new Error('rewrapForPasswordChange.commit: etag required');
           }
-          // Only install the new vaultKey + etag if we're still
-          // authoritative (hasn't been torn down between the POST
-          // and this commit). Avoids a corner case where logout
-          // races a mid-flight change-password and the commit would
-          // otherwise re-install key material into a reset provider.
-          if (stateRef.current.status !== UNLOCKED) return;
-          vaultKeyRef.current = newVaultKey;
+          // Logout / user-swap race: reset() bumped sessionGen. The
+          // server accepted the rewrapped blob for the OLD user, but
+          // this provider is no longer authoritative for them. Do
+          // nothing — the next login will load() fresh state anyway.
+          if (sessionGenRef.current !== startingSessionGen) return;
+
+          const current = stateRef.current;
+          // EMPTY shouldn't be reachable (we returned null up-front),
+          // and any other transient status (LOADING, ERROR, IDLE) is
+          // in the middle of a reshape we shouldn't stomp on.
+          if (current.status !== UNLOCKED && current.status !== LOCKED) {
+            return;
+          }
+
           const myGen = bumpGen();
-          commit(
-            {
-              // Preserve UNLOCKED, data, and dk/vaultKey refs; only
-              // update the wrap-related bookkeeping.
-              blob: newBlob,
-              etag: newEtag,
-            },
-            myGen
-          );
+          if (current.status === UNLOCKED) {
+            // Happy path: same session, still unlocked. Install the
+            // new vaultKey so subsequent save()s wrap under it, and
+            // refresh the wrap bookkeeping.
+            vaultKeyRef.current = newVaultKey;
+            commit({ blob: newBlob, etag: newEtag }, myGen);
+          } else {
+            // LOCKED mid-flight: the user called lock() between our
+            // POST and this commit. The server has already accepted
+            // the rewrapped blob, so our cached {blob, etag} would
+            // otherwise point at stale ciphertext. load()'s cache
+            // short-circuit serves that cached snapshot for every
+            // subsequent unlock attempt, which then tries to
+            // decrypt old ciphertext with a vaultKey derived from
+            // the NEW password and fails every time until a full
+            // page reload.
+            //
+            // Refreshing blob+etag here keeps the short-circuit
+            // correct. We deliberately do NOT install vaultKeyRef
+            // — the vault is locked, there's no live vaultKey to
+            // hold, and the next unlock re-derives it from the new
+            // master anyway.
+            commit({ blob: newBlob, etag: newEtag }, myGen);
+          }
         },
       };
     },
