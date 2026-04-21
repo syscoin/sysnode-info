@@ -18,6 +18,10 @@ import {
   SEVERITY,
 } from '../lib/governanceErrors';
 import {
+  computeSupportShift,
+  describeSupportShift,
+} from '../lib/governanceSupportShift';
+import {
   enqueue as enqueueOfflineVote,
   drain as drainOfflineVote,
   peek as peekOfflineVote,
@@ -430,6 +434,25 @@ export default function ProposalVoteModal({
     if (selected !== null) return selected;
     return computeDefault(owned, outcome);
   }, [selected, owned, outcome, computeDefault]);
+
+  // Pre-submit preview of how the current selection would move the
+  // proposal's net on-chain support. Drives an informational banner
+  // in the picker so a vote change never happens silently — e.g. a
+  // user who previously voted yes on 3 MNs and now has "no"
+  // selected for all 3 sees "Net support −6 · 3 prior confirmed
+  // votes will change" before clicking Sign & submit.
+  const supportShift = useMemo(() => {
+    if (effectiveSelected.size === 0) return null;
+    const entries = owned
+      .filter((m) => effectiveSelected.has(mnId(m)))
+      .map((m) => ({
+        currentOutcome: outcome,
+        previousOutcome: m.receipt ? m.receipt.voteOutcome : null,
+        previousStatus: m.receipt ? m.receipt.status : '',
+      }));
+    const shift = computeSupportShift(entries);
+    return describeSupportShift(shift, entries.length);
+  }, [owned, effectiveSelected, outcome]);
 
   // Reset local state whenever the modal opens or the proposal
   // changes. `proposal.Key` is the governance hash and is unique
@@ -1815,6 +1838,24 @@ export default function ProposalVoteModal({
             now ({reconcileError}). You can still vote — recent votes
             may be re-submitted, which is harmless.
           </p>
+        ) : null}
+
+        {supportShift ? (
+          <div
+            className={`vote-modal__shift vote-modal__shift--${supportShift.tone}`}
+            data-testid="vote-modal-shift"
+            data-shift-tone={supportShift.tone}
+            data-shift-delta={supportShift.netDelta}
+          >
+            <span className="vote-modal__shift-headline">
+              {supportShift.headline}
+            </span>
+            {supportShift.detail ? (
+              <span className="vote-modal__shift-detail">
+                {supportShift.detail}
+              </span>
+            ) : null}
+          </div>
         ) : null}
 
         {(() => {

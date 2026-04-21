@@ -1753,6 +1753,74 @@
   color: #52525b;
 }
 
+/* "Verified on-chain" confidence pill.
+ *
+ * Small, low-contrast by design — it complements the cohort chip
+ * rather than shouting over it. The ✓ mark carries the semantic
+ * weight; the label is only a timestamp hint. We show it only when
+ * the reconciler has freshly observed the user's confirmed vote(s),
+ * so it should read as "this is live info, not cached". */
+.verified-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(20, 184, 166, 0.16);
+  color: #0a7a55;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.verified-chip__mark {
+  font-weight: 700;
+  line-height: 1;
+}
+
+.verified-chip__label {
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Metadata chips — proposal-level context surfaces: closing window,
+ * over-budget rank pressure, and margin warnings. Tone classes keep
+ * visual language consistent with cohort chips: warm for urgency /
+ * over-budget (action-requiring), cool for margin signals (neutral
+ * informational).
+ *
+ * We keep type-weight deliberately light so a row with three
+ * metadata chips + a verified pill + a cohort chip still reads as
+ * one status column rather than a traffic jam.
+ */
+.meta-chip {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.meta-chip--closing-urgent {
+  background: rgba(229, 107, 85, 0.18);
+  color: #a8362d;
+}
+
+.meta-chip--closing-soon {
+  background: rgba(243, 179, 86, 0.18);
+  color: #8a5c0f;
+}
+
+.meta-chip--over-budget {
+  background: rgba(229, 107, 85, 0.12);
+  color: #a8362d;
+  border: 1px dashed rgba(229, 107, 85, 0.35);
+}
+
+.meta-chip--margin-thin {
+  background: rgba(243, 179, 86, 0.14);
+  color: #8a5c0f;
+}
+
+.meta-chip--margin-near {
+  background: rgba(30, 120, 255, 0.1);
+  color: #1a4fb0;
+}
+
 /* Stack the two chips vertically when the row is narrow; side-by-side
    on wider viewports. proposal-row__status is already a grid column of
    its own, so we align-content to the top to keep chips compact. */
@@ -2564,4 +2632,421 @@
   .vote-result {
     grid-template-columns: 1fr;
   }
+}
+
+/* ───────────── Governance ops hero (PR 6c) ─────────────
+ *
+ * Sits above the proposal table when the viewer is authenticated
+ * and gives a personal, at-a-glance read of their governance
+ * workload. Intentionally shares spacing with .panel so the hero
+ * visually belongs to the same column as the proposal table below.
+ */
+.ops-hero {
+  margin-top: 18px;
+  padding: 22px 26px;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(30, 120, 255, 0.08) 0%,
+      rgba(20, 184, 166, 0.06) 100%
+    ),
+    var(--panel-strong);
+  border: 1px solid var(--accent-soft);
+}
+
+.ops-hero__body {
+  display: grid;
+  gap: 16px;
+}
+
+.ops-hero__body h2 {
+  margin: 0;
+  font-size: clamp(1.05rem, 1.2vw + 0.9rem, 1.4rem);
+  line-height: 1.25;
+  color: var(--text);
+}
+
+.ops-hero__body h2 strong {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.ops-hero__copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.ops-hero__progress {
+  display: grid;
+  gap: 6px;
+}
+
+.ops-hero__progress-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.ops-hero__progress-percent {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.ops-hero__progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(44, 74, 117, 0.1);
+  overflow: hidden;
+}
+
+.ops-hero__progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, #58c7ff 100%);
+  transition: width 280ms ease-out;
+}
+
+.ops-hero__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-hero__stat {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.ops-hero__stat-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.ops-hero__stat strong {
+  font-size: clamp(1.3rem, 1.4vw + 0.8rem, 1.7rem);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ops-hero__stat small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.ops-hero__stat--needs-vote strong {
+  color: var(--accent-strong);
+}
+
+.ops-hero__stat--voted strong {
+  color: #0a7a55;
+}
+
+.ops-hero__stat--passing strong {
+  color: #125ac4;
+}
+
+.ops-hero__actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ops-hero__hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ops-hero__hint--ok {
+  color: #0a7a55;
+}
+
+.ops-hero--empty .ops-hero__body,
+.ops-hero--loading .ops-hero__body {
+  gap: 10px;
+}
+
+.ops-hero__skeleton {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-hero__skeleton span {
+  height: 72px;
+  border-radius: 16px;
+  background: linear-gradient(
+    90deg,
+    rgba(44, 74, 117, 0.06) 0%,
+    rgba(44, 74, 117, 0.12) 50%,
+    rgba(44, 74, 117, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: ops-hero-shimmer 1.4s linear infinite;
+}
+
+@keyframes ops-hero-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Jump-to-next target: briefly glow the row so the eye can land
+ * on it without the user scanning the whole list.
+ */
+.proposal-row.is-highlighted {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background:
+    linear-gradient(
+      90deg,
+      rgba(30, 120, 255, 0.08) 0%,
+      rgba(30, 120, 255, 0) 100%
+    ),
+    rgba(30, 120, 255, 0.04);
+  animation: ops-hero-pulse 2.4s ease-out 1;
+}
+
+@keyframes ops-hero-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(30, 120, 255, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(30, 120, 255, 0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+}
+
+@media (max-width: 780px) {
+  .ops-hero__stats,
+  .ops-hero__skeleton {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 460px) {
+  .ops-hero__stats,
+  .ops-hero__skeleton {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Auth-only rail stacks the ops hero and activity card side-by-side
+ * on wide viewports, then wraps below.
+ */
+.gov-auth-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.gov-auth-rail > .ops-hero {
+  margin-top: 0;
+}
+
+@media (max-width: 960px) {
+  .gov-auth-rail {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─────────────── "Your activity" card ─────────────── */
+.gov-activity {
+  padding: 20px 22px;
+}
+
+.gov-activity__header {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.gov-activity__header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.gov-activity__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.gov-activity__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.gov-activity__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.65);
+  align-items: center;
+}
+
+.gov-activity__item-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gov-activity__item-title {
+  font-size: 0.95rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gov-activity__jump {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--accent-strong);
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gov-activity__jump:hover,
+.gov-activity__jump:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.gov-activity__title-inert {
+  color: var(--text);
+}
+
+.gov-activity__item-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.gov-activity__warn {
+  color: #a8362d;
+}
+
+.gov-activity__item-side {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  text-align: right;
+}
+
+.gov-activity__status {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  white-space: nowrap;
+}
+
+.gov-activity__status--confirmed {
+  background: rgba(10, 122, 85, 0.12);
+  color: #0a7a55;
+}
+
+.gov-activity__status--relayed {
+  background: rgba(30, 120, 255, 0.12);
+  color: var(--accent-strong);
+}
+
+.gov-activity__status--stale,
+.gov-activity__status--failed {
+  background: rgba(229, 107, 85, 0.14);
+  color: #a8362d;
+}
+
+.gov-activity__time {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────── Pre-submit support-shift preview ───────────
+ *
+ * Renders inside the vote modal's picker phase, below the outcome
+ * selector. Tone classes mirror the delta direction so a yes-heavy
+ * selection reads positive (mint), a no-heavy selection reads
+ * negative (warm), and abstain / no-op selections read neutral.
+ */
+.vote-modal__shift {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(30, 120, 255, 0.18);
+  font-size: 0.9rem;
+}
+
+.vote-modal__shift-headline {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vote-modal__shift-detail {
+  color: var(--muted);
+}
+
+.vote-modal__shift--positive {
+  background: rgba(20, 184, 166, 0.1);
+  border-color: rgba(20, 184, 166, 0.3);
+}
+
+.vote-modal__shift--positive .vote-modal__shift-headline {
+  color: #0a7a55;
+}
+
+.vote-modal__shift--negative {
+  background: rgba(229, 107, 85, 0.1);
+  border-color: rgba(229, 107, 85, 0.3);
+}
+
+.vote-modal__shift--negative .vote-modal__shift-headline {
+  color: #a8362d;
+}
+
+.vote-modal__shift--neutral .vote-modal__shift-headline {
+  color: var(--muted);
 }

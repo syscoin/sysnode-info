@@ -404,3 +404,301 @@ describe('Governance page — cohort chips', () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 });
+
+describe('Governance page — verified-on-chain pill', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function summaryRow(partial) {
+    return {
+      proposalHash: 'a'.repeat(64),
+      total: 0,
+      relayed: 0,
+      confirmed: 0,
+      stale: 0,
+      failed: 0,
+      confirmedYes: 0,
+      confirmedNo: 0,
+      confirmedAbstain: 0,
+      latestSubmittedAt: 1700000000,
+      latestVerifiedAt: 1700000001,
+      ...partial,
+    };
+  }
+
+  test('renders the "Verified" pill when the user has a fresh confirmed receipt', () => {
+    // latestVerifiedAt within the freshness window (<5 min) — the
+    // reconciler has recently observed this user's on-chain votes
+    // for this proposal, so we surface a quiet confidence signal.
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({ proposals: [makeProposal({ Key: 'a'.repeat(64) })] })
+    );
+    const now = Date.now();
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({
+            total: 2,
+            confirmed: 2,
+            confirmedYes: 2,
+            latestVerifiedAt: now - 30_000,
+          }),
+        ],
+        ownedCount: 2,
+      })
+    );
+
+    renderPage();
+
+    const pill = screen.getByTestId('proposal-row-verified');
+    expect(pill).toBeInTheDocument();
+    expect(pill.textContent).toMatch(/verified/i);
+    expect(pill.getAttribute('title')).toMatch(
+      /were last observed on-chain/i
+    );
+  });
+
+  test('does not render when the confirmation is older than the freshness window', () => {
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({ proposals: [makeProposal({ Key: 'a'.repeat(64) })] })
+    );
+    const now = Date.now();
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({
+            total: 1,
+            confirmed: 1,
+            confirmedYes: 1,
+            // 1 hour old — well past the 5-minute window.
+            latestVerifiedAt: now - 60 * 60 * 1000,
+          }),
+        ],
+        ownedCount: 1,
+      })
+    );
+
+    renderPage();
+
+    expect(
+      screen.queryByTestId('proposal-row-verified')
+    ).not.toBeInTheDocument();
+  });
+
+  test('does not render when the user has no confirmed receipts for the proposal', () => {
+    // Failed-only / relayed-only receipts should NOT get the
+    // verified pill — that chip claims on-chain confirmation.
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({ proposals: [makeProposal({ Key: 'a'.repeat(64) })] })
+    );
+    const now = Date.now();
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({
+            total: 2,
+            failed: 2,
+            latestVerifiedAt: now - 30_000,
+          }),
+        ],
+        ownedCount: 2,
+      })
+    );
+
+    renderPage();
+
+    expect(
+      screen.queryByTestId('proposal-row-verified')
+    ).not.toBeInTheDocument();
+  });
+
+  test('anonymous visitors never see the Verified pill', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    useGovernanceData.mockReturnValue(baseData());
+    const now = Date.now();
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({
+            total: 1,
+            confirmed: 1,
+            confirmedYes: 1,
+            latestVerifiedAt: now - 30_000,
+          }),
+        ],
+        ownedCount: 1,
+      })
+    );
+
+    renderPage();
+
+    expect(
+      screen.queryByTestId('proposal-row-verified')
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('Governance page — proposal metadata chips', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('closing-soon chip renders when the voting deadline is within a week', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    const threeDaysAhead = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
+    useGovernanceData.mockReturnValue(
+      baseData({
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: threeDaysAhead,
+              superblock_date: threeDaysAhead + 60 * 60,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    const chips = screen.getAllByTestId('proposal-row-meta-chip');
+    const closing = chips.find(
+      (c) => c.getAttribute('data-meta-kind') === 'closing-soon'
+    );
+    expect(closing).toBeDefined();
+    expect(closing.textContent).toMatch(/Closes in/i);
+  });
+
+  test('closing chip escalates to urgent tone when the deadline is within 48h', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    const oneHourAhead = Math.floor(Date.now() / 1000) + 60 * 60;
+    useGovernanceData.mockReturnValue(
+      baseData({
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: oneHourAhead,
+              superblock_date: oneHourAhead + 60 * 60,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    const chips = screen.getAllByTestId('proposal-row-meta-chip');
+    const closing = chips.find(
+      (c) => c.getAttribute('data-meta-kind') === 'closing-urgent'
+    );
+    expect(closing).toBeDefined();
+  });
+
+  test('margin-thin chip renders when passing support is just over 10%', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    useGovernanceData.mockReturnValue(
+      baseData({
+        // 10.5% support → 0.5% over the line → within the margin.
+        // No closing chip: the default baseData deadline is way in
+        // the past relative to now, so closingChip returns null.
+        proposals: [makeProposal({ AbsoluteYesCount: 105 })],
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: 1, // far past → no closing chip
+              superblock_date: 1,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    const chips = screen.getAllByTestId('proposal-row-meta-chip');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].getAttribute('data-meta-kind')).toBe('margin-thin');
+    expect(chips[0].textContent).toMatch(/slim margin/i);
+  });
+
+  test('margin-near chip renders when support is just under 10%', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    useGovernanceData.mockReturnValue(
+      baseData({
+        proposals: [makeProposal({ AbsoluteYesCount: 92 })],
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1_000_000,
+              voting_deadline: 1,
+              superblock_date: 1,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    const chips = screen.getAllByTestId('proposal-row-meta-chip');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].getAttribute('data-meta-kind')).toBe('margin-near');
+  });
+
+  test('over-budget chip only decorates the proposals below the ranking cutline', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    // Two passing proposals (12% and 15% support) each requesting
+    // 80 SYS against a 100 SYS ceiling. Rank 1 (15%) stays inside
+    // the budget; rank 2 (12%) sits past the cutline → over-budget.
+    const A = 'a'.repeat(64);
+    const B = 'b'.repeat(64);
+    useGovernanceData.mockReturnValue(
+      baseData({
+        proposals: [
+          makeProposal({
+            Key: A,
+            title: 'Top',
+            AbsoluteYesCount: 150,
+            payment_amount: '80',
+          }),
+          makeProposal({
+            Key: B,
+            title: 'Tail',
+            AbsoluteYesCount: 120,
+            payment_amount: '80',
+          }),
+        ],
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 100,
+              voting_deadline: 1,
+              superblock_date: 1,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    // Find every row and check its meta-chip set. The top-ranked
+    // row should NOT have an over-budget chip; the tail one should.
+    const allChips = screen.queryAllByTestId('proposal-row-meta-chip');
+    const overBudgetKinds = allChips
+      .filter((c) => c.getAttribute('data-meta-kind') === 'over-budget');
+    expect(overBudgetKinds).toHaveLength(1);
+  });
+});

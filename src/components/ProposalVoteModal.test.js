@@ -2609,3 +2609,113 @@ describe('ProposalVoteModal — grouped picker + vote-change confirmation', () =
     expect(service.submitVote).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ProposalVoteModal — pre-submit support-shift preview', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function makeReceiptService({ receipts = [], reconcileError = null } = {}) {
+    const s = makeService();
+    s.reconcileReceipts = jest.fn().mockResolvedValue({
+      receipts,
+      reconciled: !reconcileError,
+      reconcileError,
+      updated: 0,
+    });
+    return s;
+  }
+
+  function confirmed({ hash, index, outcome = 'yes' }) {
+    return {
+      collateralHash: hash,
+      collateralIndex: index,
+      status: 'confirmed',
+      voteOutcome: outcome,
+      voteSignal: 'funding',
+      voteTime: 1700000000,
+      verifiedAt: 1700000001,
+      updatedAt: 1700000001,
+      createdAt: 1700000000,
+      lastError: null,
+    };
+  }
+
+  test('fresh yes selection on two MNs previews a +2 positive shift', async () => {
+    const service = makeReceiptService({ receipts: [] });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    const shift = screen.getByTestId('vote-modal-shift');
+    expect(shift.getAttribute('data-shift-tone')).toBe('positive');
+    expect(shift.getAttribute('data-shift-delta')).toBe('2');
+    expect(shift.textContent).toMatch(/\+2/);
+  });
+
+  test('flipping outcome to no with a prior confirmed yes previews a −2 negative shift and flags replacement', async () => {
+    // MN A has a confirmed "yes" receipt. User flips outcome to "no".
+    // Default selection includes A (vote-change candidate) and B.
+    // Net on-chain move: A flips (−2) + B fresh no (−1) = −3, with
+    // one confirmed replacement called out in the detail line.
+    const service = makeReceiptService({
+      receipts: [confirmed({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' })],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+
+    await waitFor(() => {
+      const shift = screen.getByTestId('vote-modal-shift');
+      expect(shift.getAttribute('data-shift-tone')).toBe('negative');
+      expect(shift.getAttribute('data-shift-delta')).toBe('-3');
+    });
+    const shift = screen.getByTestId('vote-modal-shift');
+    expect(shift.textContent).toMatch(/−3|-3/);
+    expect(shift.textContent).toMatch(/1 prior confirmed vote/i);
+  });
+
+  test('abstain-only selection previews a neutral (zero) shift', async () => {
+    const service = makeReceiptService({ receipts: [] });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-abstain'));
+
+    await waitFor(() => {
+      const shift = screen.getByTestId('vote-modal-shift');
+      expect(shift.getAttribute('data-shift-tone')).toBe('neutral');
+      expect(shift.getAttribute('data-shift-delta')).toBe('0');
+    });
+  });
+
+  test('no selection → no preview is rendered', async () => {
+    // Both MNs already confirmed yes → default excludes both → empty
+    // selection → the preview card is hidden so we don't render a
+    // confusing "+0" banner when there's literally nothing to preview.
+    const service = makeReceiptService({
+      receipts: [
+        confirmed({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' }),
+        confirmed({ hash: 'd'.repeat(64), index: 1, outcome: 'yes' }),
+      ],
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    expect(
+      screen.queryByTestId('vote-modal-shift')
+    ).not.toBeInTheDocument();
+  });
+});

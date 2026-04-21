@@ -1,13 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataState from '../components/DataState';
+import GovernanceActivity from '../components/GovernanceActivity';
+import GovernanceOpsHero from '../components/GovernanceOpsHero';
 import PageMeta from '../components/PageMeta';
 import ProposalVoteModal from '../components/ProposalVoteModal';
 import { useAuth } from '../context/AuthContext';
 import useGovernanceData from '../hooks/useGovernanceData';
 import { useGovernanceReceipts } from '../hooks/useGovernanceReceipts';
 import { cohortChip } from '../lib/governanceCohort';
+import {
+  closingChip,
+  computeOverBudgetMap,
+  marginChip,
+} from '../lib/governanceMeta';
 import {
   formatCompactNumber,
   formatDayMonth,
@@ -42,12 +49,48 @@ import {
 // legacy paths without an equivalent replacement was a repeat
 // complaint.)
 
+// DOM id format used to let the ops hero jump-link scroll to a
+// specific proposal row. Governance hashes are case-insensitive
+// hex; lowercasing matches the normalisation used by the summary
+// map and keeps the id stable across re-renders.
+export function proposalRowDomId(key) {
+  if (typeof key !== 'string' || !key) return '';
+  return `proposal-row-${key.toLowerCase()}`;
+}
+
+// How fresh a `latestVerifiedAt` must be for the row to render the
+// "Verified on-chain" pill. Matches the backend's
+// DEFAULT_RECEIPTS_FRESHNESS_MS window (2 minutes) relaxed slightly
+// to cover UI-side drift — anything older than ~5 minutes we treat
+// as "probably still correct but not a confident live read" and
+// fall back to the plain cohort chip.
+const VERIFIED_FRESHNESS_MS = 5 * 60 * 1000;
+
+// Small relative time helper scoped to the row. Purposely narrow:
+// we only need to distinguish "just now" / "N minutes ago" for
+// tooltip copy. A broader formatter lives locally in
+// GovernanceActivity for its own use; if a third consumer arrives
+// we should hoist a shared one into lib/formatters.
+function verifiedAgo(verifiedAt, nowMs) {
+  const ts = Number(verifiedAt);
+  if (!Number.isFinite(ts) || ts <= 0) return '';
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const diffSec = Math.max(0, Math.round((now - ts) / 1000));
+  if (diffSec < 10) return 'just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const mins = Math.round(diffSec / 60);
+  return `${mins}m ago`;
+}
+
 function ProposalRow({
   proposal,
   enabledCount,
   isAuthenticated,
   onVote,
   cohort,
+  isHighlighted,
+  summaryRow,
+  metaChips,
 }) {
   const [feedback, setFeedback] = useState('');
   const supportPercent = enabledCount
@@ -93,8 +136,20 @@ function ProposalRow({
     }
   }
 
+  const rowClasses = [
+    'proposal-row',
+    passing ? 'is-passing' : 'is-watch',
+    isHighlighted ? 'is-highlighted' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <article className={passing ? 'proposal-row is-passing' : 'proposal-row is-watch'}>
+    <article
+      className={rowClasses}
+      id={proposalRowDomId(proposal.Key)}
+      data-testid={isHighlighted ? 'proposal-row-highlighted' : undefined}
+    >
       <div className="proposal-row__status">
         <span className={passing ? 'status-chip is-positive' : 'status-chip is-warning'}>
           {statusLabel}
@@ -109,6 +164,60 @@ function ProposalRow({
             {cohort.label}
           </span>
         ) : null}
+        {(() => {
+          // On-chain verified pill: a quiet "your vote is observed
+          // on-chain and was last checked <X> ago" indicator. We
+          // deliberately only show it when (a) the user has at
+          // least one confirmed receipt for this proposal (i.e. the
+          // cohort chip already reads "Voted"), and (b) the last
+          // verification happened recently enough that it's still
+          // a meaningful confidence signal. Otherwise the row
+          // would shout "verified!" for rows the reconciler hasn't
+          // actually touched in an hour.
+          if (!summaryRow) return null;
+          const confirmed = Number(summaryRow.confirmed);
+          if (!(Number.isFinite(confirmed) && confirmed > 0)) return null;
+          const latestVerifiedAt = Number(summaryRow.latestVerifiedAt);
+          if (!Number.isFinite(latestVerifiedAt) || latestVerifiedAt <= 0) {
+            return null;
+          }
+          const age = Date.now() - latestVerifiedAt;
+          if (!(age >= 0 && age < VERIFIED_FRESHNESS_MS)) return null;
+          const ago = verifiedAgo(latestVerifiedAt);
+          const verifiedWhen = new Date(latestVerifiedAt).toUTCString();
+          const tooltip =
+            `${confirmed} of your ${
+              confirmed === 1 ? 'vote' : 'votes'
+            } were last observed on-chain ${ago} (${verifiedWhen}).`;
+          return (
+            <span
+              className="status-chip verified-chip"
+              title={tooltip}
+              data-testid="proposal-row-verified"
+              aria-label="Verified on-chain"
+            >
+              <span aria-hidden="true" className="verified-chip__mark">
+                ✓
+              </span>
+              <span className="verified-chip__label">
+                Verified {ago}
+              </span>
+            </span>
+          );
+        })()}
+        {Array.isArray(metaChips) && metaChips.length > 0
+          ? metaChips.map((chip) => (
+              <span
+                key={chip.kind}
+                className={`status-chip meta-chip meta-chip--${chip.kind}`}
+                title={chip.detail}
+                data-testid="proposal-row-meta-chip"
+                data-meta-kind={chip.kind}
+              >
+                {chip.label}
+              </span>
+            ))
+          : null}
       </div>
 
       <div className="proposal-row__main">
@@ -198,10 +307,23 @@ function ProposalRow({
   );
 }
 
+// How long the ops-hero "Jump to next" highlight stays visible on
+// the target row before fading out. Long enough for the user's
+// eye to land on it post-scroll; short enough that it doesn't
+// stick around competing for attention if they then start
+// interacting with the row.
+const JUMP_HIGHLIGHT_MS = 2400;
+
 export default function Governance() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [voteProposal, setVoteProposal] = useState(null);
+  const [highlightKey, setHighlightKey] = useState(null);
+  // Bumping this token re-runs the "Your activity" fetch. We bump
+  // it when the vote modal closes so a freshly-submitted vote shows
+  // up in the activity list without forcing a full page reload.
+  const [activityRefreshToken, setActivityRefreshToken] = useState(0);
+  const highlightTimerRef = useRef(null);
   const {
     error,
     loading,
@@ -216,12 +338,56 @@ export default function Governance() {
   const { summaryMap, ownedCount, refresh: refreshReceipts } =
     useGovernanceReceipts({ enabled: isAuthenticated });
 
+  // Hash → proposal lookup for the activity card so receipts can
+  // render titles and the jump-link can route the user to an
+  // existing row. Built once per feed load; the activity card
+  // handles missing entries gracefully (receipt lands without a
+  // jump button).
+  const proposalsByHash = useMemo(() => {
+    const m = new Map();
+    for (const p of proposals) {
+      if (p && typeof p.Key === 'string') {
+        m.set(p.Key.toLowerCase(), p);
+      }
+    }
+    return m;
+  }, [proposals]);
+
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
   const enabledCount = parseNumber(networkStats && networkStats.enabled);
   const requestedBudget = proposals.reduce(function sumBudget(total, proposal) {
     return total + Number(proposal.payment_amount || 0);
   }, 0);
+
+  // Feed-wide over-budget computation: precomputed once per render
+  // so each ProposalRow can look its chip up by hash in O(1)
+  // without reiterating the whole feed. Rebuilds on any change to
+  // proposals / enabledCount / budget; all three are referentially
+  // stable between fetches so the memo hit rate is high.
+  const overBudgetMap = useMemo(
+    () =>
+      computeOverBudgetMap({
+        proposals,
+        enabledCount,
+        budget: superblockStats ? superblockStats.budget : 0,
+      }),
+    [proposals, enabledCount, superblockStats]
+  );
+
+  // Per-row closing chip depends only on the superblock deadline,
+  // so we derive it once per render and reuse the single object
+  // for every row. (Using Date.now() here is fine: the chip's
+  // rounding makes sub-minute drift invisible and any hard-timed
+  // behaviour — e.g. disabling the vote button at the deadline —
+  // lives server-side, not in this label.)
+  const closing = useMemo(
+    () =>
+      closingChip({
+        votingDeadline: superblockStats ? superblockStats.voting_deadline : 0,
+      }),
+    [superblockStats]
+  );
   const visibleProposals = proposals.filter(function filterProposal(proposal) {
     const supportPercent = enabledCount
       ? (Number(proposal.AbsoluteYesCount || 0) / enabledCount) * 100
@@ -251,6 +417,50 @@ export default function Governance() {
     setVoteProposal(proposal);
   }, []);
 
+  // Smoothly scroll to a proposal by hash and briefly highlight
+  // it so the user's eye lands on the right row. We guard against
+  // unmount-after-timeout by clearing a ref on cleanup.
+  const jumpToProposal = useCallback((key) => {
+    if (typeof key !== 'string' || !key) return;
+    const domId = proposalRowDomId(key);
+    if (!domId) return;
+    if (typeof document !== 'undefined') {
+      const el = document.getElementById(domId);
+      if (el && typeof el.scrollIntoView === 'function') {
+        try {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (_e) {
+          // Older test environments / JSDOM may not accept the
+          // options object. Fall back to the plain scrollIntoView
+          // rather than throwing in a user-facing path.
+          try {
+            el.scrollIntoView();
+          } catch (_e2) {
+            // Nothing else we can do; the highlight alone will
+            // still hint to the user that we jumped.
+          }
+        }
+      }
+    }
+    setHighlightKey(key);
+    if (highlightTimerRef.current) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightKey(null);
+      highlightTimerRef.current = null;
+    }, JUMP_HIGHLIGHT_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const closeVoteModal = useCallback(() => {
     setVoteProposal(null);
     // Re-fetch the summary so the cohort chip reflects whatever
@@ -263,6 +473,9 @@ export default function Governance() {
         // Swallow — non-critical UI freshness, no banner.
       });
     }
+    // Same rationale for the activity card — a vote just closed so
+    // the "last 10" almost certainly changed.
+    setActivityRefreshToken((v) => v + 1);
   }, [isAuthenticated, refreshReceipts]);
 
   return (
@@ -345,6 +558,22 @@ export default function Governance() {
                 <Link to="/account">Account page</Link> to vote
                 without leaving the browser — no CLI needed.
               </p>
+            </div>
+          ) : null}
+          {isAuthenticated && stats ? (
+            <div className="gov-auth-rail">
+              <GovernanceOpsHero
+                proposals={visibleProposals}
+                summaryMap={summaryMap}
+                ownedCount={ownedCount}
+                enabledCount={enabledCount}
+                onJumpToProposal={jumpToProposal}
+              />
+              <GovernanceActivity
+                proposalsByHash={proposalsByHash}
+                refreshToken={activityRefreshToken}
+                onJumpToProposal={jumpToProposal}
+              />
             </div>
           ) : null}
         </div>
@@ -436,6 +665,20 @@ export default function Governance() {
                     const cohort = isAuthenticated
                       ? cohortChip(summaryRow, ownedCount)
                       : null;
+                    // Metadata chips are built per-row but derived
+                    // from feed-wide state (closing deadline, budget
+                    // ranking). Order matters: urgency first, budget
+                    // pressure second, margin last — that's the
+                    // order in which a scanning user needs to decide
+                    // "do I care enough to click in?"
+                    const rowMetaChips = [];
+                    if (closing) rowMetaChips.push(closing);
+                    const overBudget = hashKey
+                      ? overBudgetMap.get(hashKey)
+                      : null;
+                    if (overBudget) rowMetaChips.push(overBudget);
+                    const margin = marginChip({ proposal, enabledCount });
+                    if (margin) rowMetaChips.push(margin);
                     return (
                       <ProposalRow
                         key={proposal.Key}
@@ -444,6 +687,12 @@ export default function Governance() {
                         isAuthenticated={isAuthenticated}
                         onVote={openVoteModal}
                         cohort={cohort}
+                        summaryRow={isAuthenticated ? summaryRow : null}
+                        metaChips={rowMetaChips}
+                        isHighlighted={
+                          typeof highlightKey === 'string' &&
+                          highlightKey.toLowerCase() === hashKey
+                        }
                       />
                     );
                   })}
