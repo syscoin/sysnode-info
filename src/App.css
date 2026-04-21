@@ -1816,6 +1816,96 @@
   color: #8a5c0f;
 }
 
+/* PR 6d — tap/focus-revealed tooltip for informational chips.
+ *
+ * Chips carry a short label (e.g. "Over budget") plus a richer
+ * detail (e.g. "Drops below the available budget at rank 4 / 3
+ * funded slots"). We previously exposed the detail only through the
+ * native `title` attribute, which (a) is inaccessible on touch
+ * devices and (b) has inconsistent screen-reader support. The
+ * governance UI adds `data-tip` + `tabindex=0` + `aria-label` so
+ * the detail is reachable via:
+ *   - mouse hover (CSS ::after)
+ *   - keyboard focus (:focus-visible)
+ *   - tap on mobile (:focus via tabindex)
+ *   - screen readers (aria-label)
+ *
+ * We avoid JS state: `:focus` on a focusable element covers taps on
+ * iOS and Android. Tapping elsewhere dismisses the popover. The
+ * existing native `title` is kept as a desktop fallback so legacy
+ * tests and slow-hover mouse users still see the same detail.
+ */
+.status-chip[data-tip] {
+  position: relative;
+  cursor: help;
+}
+
+.status-chip[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  /* PR 6d (Codex r1): render tooltip BELOW the chip rather than
+   * above. The proposal table wraps every row in
+   * `.proposal-table { overflow: hidden }` (required so row
+   * background fills stay inside the table's rounded corners),
+   * which clipped the upward tooltip on the top row. Downward
+   * the tooltip renders inside the row's own cell or into the
+   * next row — both are still inside the table's clip region,
+   * so it stays visible for every row except the very bottom
+   * one. Other contexts that host chips (modal, hero, activity
+   * card) don't impose vertical clipping, so they benefit from
+   * downward rendering too without regressing. */
+  top: calc(100% + 6px);
+  transform: translateX(-50%) translateY(-3px);
+  background: rgba(18, 21, 28, 0.95);
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 500;
+  line-height: 1.35;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: normal;
+  width: max-content;
+  max-width: 240px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  z-index: 20;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  text-align: left;
+}
+
+.status-chip[data-tip]:hover::after,
+.status-chip[data-tip]:focus::after,
+.status-chip[data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.status-chip[data-tip]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Right-most chips in a row risk their tooltip getting clipped by
+ * the viewport edge. We shift the popover origin toward the visible
+ * side when the chip is near the end of a flex track. There's no
+ * pure-CSS way to detect "last on a wrapped line", so we opt for a
+ * right-anchor style that authors can opt into per chip via a
+ * `data-tip-align="end"` escape hatch — we don't use it yet, but
+ * the hook is here if a very long detail string shows clipping. */
+.status-chip[data-tip][data-tip-align='end']::after {
+  left: auto;
+  right: 0;
+  transform: translateX(0) translateY(-3px);
+}
+
+.status-chip[data-tip][data-tip-align='end']:hover::after,
+.status-chip[data-tip][data-tip-align='end']:focus::after,
+.status-chip[data-tip][data-tip-align='end']:focus-visible::after {
+  transform: translateX(0) translateY(0);
+}
+
 .meta-chip--margin-near {
   background: rgba(30, 120, 255, 0.1);
   color: #1a4fb0;
@@ -1823,9 +1913,22 @@
 
 /* Stack the two chips vertically when the row is narrow; side-by-side
    on wider viewports. proposal-row__status is already a grid column of
-   its own, so we align-content to the top to keep chips compact. */
+   its own, so we align-content to the top to keep chips compact.
+   PR 6d: when the row itself collapses to one column (≤980px), the
+   status cell becomes full-width — a horizontal wrap packs chips
+   much tighter than a vertical stack and stops the row from growing
+   to 6+ chip-heights tall when every signal lights up at once. */
 .proposal-row__status {
   gap: 6px;
+}
+
+@media (max-width: 980px) {
+  .proposal-row__status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -2488,6 +2591,18 @@
   gap: 6px;
   cursor: pointer;
   font-size: 0.92rem;
+  /* PR 6d: outcome radios are the single most-tapped control in the
+   * modal. A 6px vertical pad yields ≈34px hit area (14px input +
+   * 20px line + 12px pad) which is acceptable on mouse and touch
+   * without pushing the visible size around. */
+  padding: 6px 4px;
+  margin: -6px -4px;
+  border-radius: 6px;
+}
+
+.vote-modal__radio:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .vote-modal__selection-header {
@@ -2506,6 +2621,24 @@
 .vote-modal__selection-actions {
   display: flex;
   gap: 10px;
+}
+
+/* PR 6d: link-buttons inside the modal's two action rows are primary
+ * controls (Select all, Clear, Cancel, Edit selection) not inline
+ * prose, so we give them an explicit tap zone + focus ring. We scope
+ * this to the modal to avoid affecting auth pages where the same
+ * class is deliberately inline-text-flow. */
+.vote-modal__selection-actions .auth-linklike,
+.vote-modal__actions .auth-linklike {
+  padding: 8px 10px;
+  border-radius: 6px;
+  line-height: 1.2;
+}
+
+.vote-modal__selection-actions .auth-linklike:focus-visible,
+.vote-modal__actions .auth-linklike:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .vote-modal__list {
@@ -2631,6 +2764,52 @@
   }
   .vote-result {
     grid-template-columns: 1fr;
+  }
+
+  /* PR 6d — phone-layout tightening.
+   *
+   * The modal's flex rows were authored for a minimum of ~520px of
+   * inner width; below ~420px (iPhone SE etc.) the legend + three
+   * outcome radios overflow, and the "Cancel / Sign & submit"
+   * actions bar pushes the primary CTA off-screen. Wrapping them
+   * onto separate lines keeps every control tappable without
+   * shrinking type size or gap past readable thresholds.
+   */
+  .vote-modal__outcome {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+  }
+  .vote-modal__outcome legend {
+    flex-basis: 100%;
+    margin-right: 0;
+  }
+  .vote-modal__selection-header {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .vote-modal__selection-actions {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+  .vote-modal__actions {
+    /* PR 6d (Codex r1): use plain `wrap` rather than `wrap-reverse`.
+     * DOM order in every modal state is [primary, secondary], so
+     * `wrap` keeps the primary CTA on the first (top) wrapped line
+     * and the secondary on the second (bottom) wrapped line. That
+     * keeps tab order top-to-bottom aligned with visible order —
+     * `wrap-reverse` would invert tab order vs visual order, which
+     * Codex flagged as an a11y regression on error states that add
+     * extra buttons. */
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  /* Buttons that live in the actions row grow to full width once
+   * the row has wrapped — users shouldn't have to aim for a narrow
+   * pill when there's no layout reason to keep them inline. */
+  .vote-modal__actions > .button,
+  .vote-modal__actions > .auth-linklike {
+    flex: 1 1 180px;
+    min-width: 0;
   }
 }
 
@@ -2927,8 +3106,14 @@
   appearance: none;
   background: transparent;
   border: 0;
-  padding: 0;
-  margin: 0;
+  /* PR 6d: vertical padding here is the only thing separating a
+     precise-enough tap from a mis-tap on a narrow title. 6px top +
+     6px bottom + ~22px line-height lands around 34px; still under
+     the 44px Apple guideline, but the item's row gap (10px) + card
+     padding (10px) yield ~54px of vertical sweep on touch. Going
+     taller would visually float the title off the row. */
+  padding: 6px 0;
+  margin: -6px 0;
   font: inherit;
   color: var(--accent-strong);
   cursor: pointer;
@@ -2937,12 +3122,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Give focus rings something solid to render against; matches
+     the accent pill we already use for jump-highlighted rows. */
+  border-radius: 6px;
 }
 
 .gov-activity__jump:hover,
 .gov-activity__jump:focus-visible {
   text-decoration: underline;
-  outline: none;
+}
+
+.gov-activity__jump:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .gov-activity__title-inert {
@@ -2999,6 +3191,32 @@
   color: var(--muted);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* Narrow-viewport activity rows.
+ *
+ * The two-column grid (main | side) is the right shape on tablets
+ * and up, but on phones the side column steals 90–110px of width
+ * for a status pill + relative-time chip, which leaves the title
+ * truncated aggressively. Below 440px we drop to a single column
+ * and put the side info beneath the main block, left-aligned so it
+ * reads as metadata rather than an isolated right-rail.
+ */
+@media (max-width: 440px) {
+  .gov-activity__item {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .gov-activity__item-side {
+    justify-items: start;
+    text-align: left;
+    flex-direction: row;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
 }
 
 /* ─────────── Pre-submit support-shift preview ───────────
