@@ -18,9 +18,29 @@ import { governanceService as defaultService } from '../lib/governanceService';
 //       keyId, label, wif, address,          // from the vault
 //       proTxHash, collateralHash,
 //       collateralIndex, masternodeStatus,   // from /gov/mns/lookup
+//       receipt,                             // see below (null when
+//                                            // proposalHash isn't set
+//                                            // or the MN has no receipt)
 //     }, ...],
-//     refresh: () => Promise<void>,
+//     receipts:       [<raw receipt row>, ...]  // when proposalHash set
+//     reconciled:     boolean  (receipts freshly reconciled with chain)
+//     reconcileError: null | <code> (soft: 'rpc_failed' | 'receipts_failed')
+//     refresh: (opts?: { refreshReceipts?: boolean }) => Promise<void>,
 //   }
+//
+// `proposalHash` (optional): when provided, the hook additionally
+// calls /gov/receipts after the /gov/mns/lookup join and annotates
+// every owned row with a `receipt` field (or null for rows with no
+// stored receipt). Receipts power the modal's "default-exclude
+// already-confirmed MNs" and "Retry failed" behaviour. The receipts
+// fetch runs in the SAME loading cycle as the lookup so the UI
+// transitions IDLE → LOADING → READY in one step — consumers don't
+// need to orchestrate two overlapping spinners.
+//
+// A failure to FETCH receipts does not fail the hook: owned rows are
+// still correct and usable for a fresh vote. We surface the failure
+// as a soft `reconcileError` the modal can render as a banner
+// without blocking the user.
 //
 // Why `empty_vault` is a distinct state: "vault unlocked but zero
 // imported keys" and "vault has keys but none correspond to a live
@@ -67,11 +87,15 @@ const EMPTY_VAULT = 'empty_vault';
 export function useOwnedMasternodes({
   governanceService = defaultService,
   enabled = true,
+  proposalHash = null,
 } = {}) {
   const vault = useVault();
   const [status, setStatus] = useState(IDLE);
   const [error, setError] = useState(null);
   const [matches, setMatches] = useState([]);
+  const [receipts, setReceipts] = useState([]);
+  const [reconciled, setReconciled] = useState(false);
+  const [reconcileError, setReconcileError] = useState(null);
 
   // Ensure late-landing responses don't overwrite state that a
   // newer request has already committed. Every fetch captures the
@@ -114,7 +138,7 @@ export function useOwnedMasternodes({
   );
 
   const doFetch = useCallback(
-    async (keys) => {
+    async (keys, propHash, { refreshReceipts = false } = {}) => {
       if (!mountedRef.current) return;
       const myGen = ++genRef.current;
       setStatus(LOADING);
@@ -146,11 +170,77 @@ export function useOwnedMasternodes({
             networkAddress: row.address, // host:port of the MN
           });
         }
-        setMatches(joined);
+
+        // Receipts join is opt-in by passing a proposalHash. When
+        // absent we short-circuit with `receipt: null` on every row
+        // so consumers can render a uniform shape regardless of
+        // whether they asked for receipts.
+        let receiptList = [];
+        let reconciledFlag = false;
+        let reconcileErr = null;
+        if (
+          propHash &&
+          typeof governanceService.fetchReceipts === 'function'
+        ) {
+          try {
+            const r = await governanceService.fetchReceipts(propHash, {
+              refresh: refreshReceipts,
+            });
+            if (!mountedRef.current || genRef.current !== myGen) return;
+            receiptList = Array.isArray(r.receipts) ? r.receipts : [];
+            reconciledFlag = Boolean(r.reconciled);
+            reconcileErr =
+              typeof r.reconcileError === 'string'
+                ? r.reconcileError
+                : null;
+          } catch (err) {
+            if (!mountedRef.current || genRef.current !== myGen) return;
+            // Soft failure — owned rows are still correct for a
+            // fresh vote. Surface the code so the modal can warn.
+            reconcileErr = (err && err.code) || 'receipts_failed';
+          }
+        }
+
+        // Index receipts by (collateralHash, collateralIndex) for
+        // O(1) join against the owned rows. Lowercasing the hash
+        // mirrors the backend's normalisation so a mixed-case row
+        // from the MN lookup still matches a stored receipt.
+        const byOutpoint = new Map();
+        for (const rec of receiptList) {
+          if (
+            rec &&
+            typeof rec.collateralHash === 'string' &&
+            Number.isInteger(rec.collateralIndex)
+          ) {
+            byOutpoint.set(
+              `${rec.collateralHash.toLowerCase()}:${rec.collateralIndex}`,
+              rec
+            );
+          }
+        }
+        const withReceipts = joined.map((row) => ({
+          ...row,
+          receipt:
+            (row.collateralHash &&
+              byOutpoint.get(
+                `${String(row.collateralHash).toLowerCase()}:${
+                  row.collateralIndex
+                }`
+              )) ||
+            null,
+        }));
+
+        setMatches(withReceipts);
+        setReceipts(receiptList);
+        setReconciled(reconciledFlag);
+        setReconcileError(reconcileErr);
         setStatus(READY);
       } catch (err) {
         if (!mountedRef.current || genRef.current !== myGen) return;
         setMatches([]);
+        setReceipts([]);
+        setReconciled(false);
+        setReconcileError(null);
         setStatus(ERROR);
         setError((err && err.code) || 'lookup_failed');
       }
@@ -173,6 +263,9 @@ export function useOwnedMasternodes({
       // fetch resolves.
       genRef.current += 1;
       setMatches([]);
+      setReceipts([]);
+      setReconciled(false);
+      setReconcileError(null);
       setError(null);
       setStatus(IDLE);
       return;
@@ -181,6 +274,9 @@ export function useOwnedMasternodes({
       // Any in-flight lookup is cancelled by bumping the gen counter.
       genRef.current += 1;
       setMatches([]);
+      setReceipts([]);
+      setReconciled(false);
+      setReconcileError(null);
       setError(null);
       setStatus(vault.isIdle || vault.isLoading ? IDLE : VAULT_LOCKED);
       return;
@@ -193,25 +289,36 @@ export function useOwnedMasternodes({
       // that simply don't map to a live MN.
       genRef.current += 1;
       setMatches([]);
+      setReceipts([]);
+      setReconciled(false);
+      setReconcileError(null);
       setError(null);
       setStatus(EMPTY_VAULT);
       return;
     }
-    doFetch(vaultKeys);
+    doFetch(vaultKeys, proposalHash);
     // vaultKeys is captured by value; the fingerprint guarantees
-    // we re-fire only when the address set actually changed.
+    // we re-fire only when the address set actually changed. We
+    // also re-fire when the proposalHash changes so moving between
+    // proposals re-fetches the receipts join.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint]);
+  }, [enabled, vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint, proposalHash]);
 
-  const refresh = useCallback(async () => {
-    if (!enabled || !vault.isUnlocked) return;
-    await doFetch(vaultKeys);
-  }, [enabled, vault.isUnlocked, vaultKeys, doFetch]);
+  const refresh = useCallback(
+    async ({ refreshReceipts = false } = {}) => {
+      if (!enabled || !vault.isUnlocked) return;
+      await doFetch(vaultKeys, proposalHash, { refreshReceipts });
+    },
+    [enabled, vault.isUnlocked, vaultKeys, proposalHash, doFetch]
+  );
 
   return {
     status,
     error,
     owned: matches,
+    receipts,
+    reconciled,
+    reconcileError,
     refresh,
     isIdle: status === IDLE,
     isLoading: status === LOADING,

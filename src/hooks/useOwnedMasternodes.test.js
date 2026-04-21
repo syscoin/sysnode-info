@@ -15,10 +15,11 @@ jest.mock('../context/VaultContext', () => ({
 // eslint-disable-next-line import/first
 const { useVault } = require('../context/VaultContext');
 
-function Probe({ service, onValue, enabled }) {
+function Probe({ service, onValue, enabled, proposalHash }) {
   const v = useOwnedMasternodes({
     governanceService: service,
     ...(enabled === undefined ? {} : { enabled }),
+    ...(proposalHash === undefined ? {} : { proposalHash }),
   });
   React.useEffect(() => {
     onValue(v);
@@ -139,7 +140,14 @@ describe('useOwnedMasternodes', () => {
       masternodeStatus: 'ENABLED',
       payee: 'payee1',
       networkAddress: '1.2.3.4:18369',
+      // Hook always provides `receipt`; it's null when no
+      // proposalHash was passed (this test).
+      receipt: null,
     });
+    // Receipts state should also reflect the no-proposalHash case.
+    expect(last.receipts).toEqual([]);
+    expect(last.reconciled).toBe(false);
+    expect(last.reconcileError).toBeNull();
   });
 
   test('backend rows for addresses NOT in the vault are dropped', async () => {
@@ -364,5 +372,377 @@ describe('useOwnedMasternodes', () => {
 
     expect(service.lookupOwnedMasternodes).toHaveBeenCalledTimes(2);
     expect(values.at(-1).owned).toHaveLength(1);
+  });
+});
+
+describe('useOwnedMasternodes — receipts join', () => {
+  beforeEach(() => {
+    useVault.mockReset();
+  });
+
+  const PROPOSAL = 'a'.repeat(64);
+  const COL1 = 'c'.repeat(64);
+  const COL2 = 'd'.repeat(64);
+
+  function mkService({ lookupRows, receipts }) {
+    return {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue(lookupRows),
+      fetchReceipts: jest.fn().mockResolvedValue({
+        receipts,
+        reconciled: true,
+        reconcileError: null,
+        updated: 0,
+      }),
+    };
+  }
+
+  test('joins receipts onto owned rows by (collateralHash, collateralIndex)', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [
+            { id: 'k1', label: 'alpha', wif: 'Lwif1', address: 'sys1qa' },
+            { id: 'k2', label: 'beta', wif: 'Lwif2', address: 'sys1qb' },
+          ],
+        },
+      })
+    );
+    const service = mkService({
+      lookupRows: [
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+          payee: 'payee1',
+          address: '1.2.3.4:18369',
+        },
+        {
+          votingaddress: 'sys1qb',
+          proTxHash: 'pro2',
+          collateralHash: COL2,
+          collateralIndex: 1,
+          status: 'ENABLED',
+          payee: 'payee2',
+          address: '5.6.7.8:18369',
+        },
+      ],
+      receipts: [
+        {
+          collateralHash: COL1,
+          collateralIndex: 0,
+          proposalHash: PROPOSAL,
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          voteTime: 1_700_000_000,
+          status: 'confirmed',
+          lastError: null,
+          submittedAt: 1_700_000_123_000,
+          verifiedAt: 1_700_000_456_000,
+        },
+      ],
+    });
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.fetchReceipts).toHaveBeenCalledWith(PROPOSAL, {
+      refresh: false,
+    });
+    const last = values.at(-1);
+    const byKey = Object.fromEntries(
+      last.owned.map((r) => [r.keyId, r])
+    );
+    expect(byKey.k1.receipt).toMatchObject({ status: 'confirmed' });
+    expect(byKey.k2.receipt).toBeNull();
+    expect(last.reconciled).toBe(true);
+    expect(last.reconcileError).toBeNull();
+  });
+
+  test('matches receipts case-insensitively on the collateral hash', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const UPPER = 'C'.repeat(64);
+    const service = mkService({
+      lookupRows: [
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: UPPER, // upper from /mns/lookup
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ],
+      receipts: [
+        {
+          collateralHash: UPPER.toLowerCase(), // lower from receipts
+          collateralIndex: 0,
+          proposalHash: PROPOSAL,
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          voteTime: 1_700_000_000,
+          status: 'failed',
+          lastError: 'signature_invalid',
+          submittedAt: 1_700_000_123_000,
+          verifiedAt: null,
+        },
+      ],
+    });
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    const last = values.at(-1);
+    expect(last.owned[0].receipt).toMatchObject({
+      status: 'failed',
+      lastError: 'signature_invalid',
+    });
+  });
+
+  test('surfaces reconcileError from the receipts response without failing', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      fetchReceipts: jest.fn().mockResolvedValue({
+        receipts: [
+          {
+            collateralHash: COL1,
+            collateralIndex: 0,
+            proposalHash: PROPOSAL,
+            voteOutcome: 'yes',
+            voteSignal: 'funding',
+            voteTime: 1_700_000_000,
+            status: 'relayed',
+            lastError: null,
+            submittedAt: 1_700_000_123_000,
+            verifiedAt: null,
+          },
+        ],
+        reconciled: false,
+        reconcileError: 'rpc_failed',
+      }),
+    };
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    const last = values.at(-1);
+    expect(last.reconciled).toBe(false);
+    expect(last.reconcileError).toBe('rpc_failed');
+    expect(last.owned[0].receipt).toMatchObject({ status: 'relayed' });
+  });
+
+  test('fetchReceipts throwing does not fail the hook — owned rows still delivered', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const err = new Error('network_error');
+    err.code = 'network_error';
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      fetchReceipts: jest.fn().mockRejectedValue(err),
+    };
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    const last = values.at(-1);
+    expect(last.reconcileError).toBe('network_error');
+    expect(last.owned).toHaveLength(1);
+    expect(last.owned[0].receipt).toBeNull();
+  });
+
+  test('refresh({ refreshReceipts: true }) forwards to fetchReceipts', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = mkService({
+      lookupRows: [
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ],
+      receipts: [],
+    });
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.fetchReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
+      refresh: false,
+    });
+
+    await act(async () => {
+      await values.at(-1).refresh({ refreshReceipts: true });
+    });
+    expect(service.fetchReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
+      refresh: true,
+    });
+  });
+
+  test('changing proposalHash triggers a fresh lookup + receipts fetch', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const PROP_B = 'b'.repeat(64);
+    const service = mkService({
+      lookupRows: [
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ],
+      receipts: [],
+    });
+    const values = [];
+
+    const { rerender } = render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.fetchReceipts).toHaveBeenCalledWith(PROPOSAL, {
+      refresh: false,
+    });
+
+    rerender(
+      <Probe
+        service={service}
+        proposalHash={PROP_B}
+        onValue={(v) => values.push(v)}
+      />
+    );
+    await waitFor(() =>
+      expect(
+        service.fetchReceipts.mock.calls.some((c) => c[0] === PROP_B)
+      ).toBe(true)
+    );
+    expect(service.lookupOwnedMasternodes).toHaveBeenCalledTimes(2);
+  });
+
+  test('proposalHash=null means no receipts fetch', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = mkService({
+      lookupRows: [
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ],
+      receipts: [],
+    });
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={null}
+        onValue={(v) => values.push(v)}
+      />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.fetchReceipts).not.toHaveBeenCalled();
+    expect(values.at(-1).owned[0].receipt).toBeNull();
   });
 });

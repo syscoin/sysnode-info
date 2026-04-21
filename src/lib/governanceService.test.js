@@ -164,3 +164,142 @@ describe('governanceService.submitVote', () => {
     expect(out.results[1].error).toBe('vote_too_often');
   });
 });
+
+describe('governanceService.fetchReceipts', () => {
+  test('GETs /gov/receipts with the proposalHash query param', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts').reply((config) => {
+      expect(config.params).toEqual({ proposalHash: H64('a') });
+      return [
+        200,
+        {
+          receipts: [
+            {
+              collateralHash: H64('b'),
+              collateralIndex: 0,
+              proposalHash: H64('a'),
+              voteOutcome: 'yes',
+              voteSignal: 'funding',
+              voteTime: 1_700_000_000,
+              status: 'confirmed',
+              lastError: null,
+              submittedAt: 1_700_000_123_000,
+              verifiedAt: 1_700_000_456_000,
+            },
+          ],
+          reconciled: true,
+          updated: 1,
+        },
+      ];
+    });
+    const out = await service.fetchReceipts(H64('a'));
+    expect(out.reconciled).toBe(true);
+    expect(out.updated).toBe(1);
+    expect(out.reconcileError).toBeNull();
+    expect(out.receipts).toHaveLength(1);
+    expect(out.receipts[0].status).toBe('confirmed');
+  });
+
+  test('passes refresh=1 through when requested', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts').reply((config) => {
+      expect(config.params).toEqual({ proposalHash: H64('a'), refresh: 1 });
+      return [200, { receipts: [], reconciled: true }];
+    });
+    await service.fetchReceipts(H64('a'), { refresh: true });
+  });
+
+  test('surfaces a reconcileError when the backend reports one', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts').reply(200, {
+      receipts: [
+        {
+          collateralHash: H64('b'),
+          collateralIndex: 0,
+          proposalHash: H64('a'),
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          voteTime: 1_700_000_000,
+          status: 'relayed',
+          lastError: null,
+          submittedAt: 1_700_000_123_000,
+          verifiedAt: null,
+        },
+      ],
+      reconciled: false,
+      reconcileError: 'rpc_failed',
+    });
+    const out = await service.fetchReceipts(H64('a'));
+    expect(out.reconciled).toBe(false);
+    expect(out.reconcileError).toBe('rpc_failed');
+    expect(out.receipts).toHaveLength(1);
+  });
+
+  test('defaults receipts to [] on a malformed success body', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts').reply(200, { receipts: 'oops' });
+    const out = await service.fetchReceipts(H64('a'));
+    expect(out.receipts).toEqual([]);
+    expect(out.reconciled).toBe(false);
+  });
+
+  test('rejects an invalid proposalHash locally (no network call)', async () => {
+    const { service, adapter } = makeService();
+    await expect(service.fetchReceipts('nope')).rejects.toThrow(
+      /invalid_proposal_hash/
+    );
+    expect(adapter.history.get).toHaveLength(0);
+  });
+
+  test('propagates 4xx error codes from the backend', async () => {
+    const { service, adapter } = makeService();
+    adapter
+      .onGet('/gov/receipts')
+      .reply(400, { error: 'invalid_proposal_hash' });
+    await expect(service.fetchReceipts(H64('a'))).rejects.toMatchObject({
+      code: 'invalid_proposal_hash',
+      status: 400,
+    });
+  });
+});
+
+describe('governanceService.fetchReceiptsSummary', () => {
+  test('GETs /gov/receipts/summary and returns the aggregated rollup', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/summary').reply(200, {
+      summary: [
+        {
+          proposalHash: H64('a'),
+          total: 3,
+          relayed: 1,
+          confirmed: 2,
+          stale: 0,
+          failed: 0,
+          confirmedYes: 2,
+          confirmedNo: 0,
+          confirmedAbstain: 0,
+          latestSubmittedAt: 1_700_000_123_000,
+          latestVerifiedAt: 1_700_000_456_000,
+        },
+      ],
+    });
+    const out = await service.fetchReceiptsSummary();
+    expect(out.summary).toHaveLength(1);
+    expect(out.summary[0].confirmed).toBe(2);
+  });
+
+  test('defaults summary to [] on a malformed body', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/summary').reply(200, {});
+    const out = await service.fetchReceiptsSummary();
+    expect(out.summary).toEqual([]);
+  });
+
+  test('maps network failures to network_error', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/summary').networkError();
+    await expect(service.fetchReceiptsSummary()).rejects.toMatchObject({
+      code: 'network_error',
+    });
+  });
+});
