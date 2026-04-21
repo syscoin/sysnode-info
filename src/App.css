@@ -1697,6 +1697,110 @@
 }
 
 /* -------------------------------------------------------------------------
+   auth-alert success variant (PR 7)
+   Paired with .auth-alert above; swaps the red tones for a calm green
+   used after a successful password change / prefs save.
+   ------------------------------------------------------------------------- */
+
+.auth-alert--success {
+  background: rgba(58, 163, 105, 0.12);
+  border-color: rgba(58, 163, 105, 0.35);
+  color: #1b5c34;
+}
+
+/* -------------------------------------------------------------------------
+   auth-toggle (PR 7)
+   Checkbox row used by NotificationPreferencesCard. Styled as a
+   flex-row so the native checkbox gets a generous 44×44 hit target
+   on touch and the label/hint stack next to it on every viewport.
+   ------------------------------------------------------------------------- */
+
+.auth-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.auth-toggle input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.auth-toggle__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.auth-toggle__label {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.auth-toggle__hint {
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* -------------------------------------------------------------------------
+   auth-card danger variant (PR 7)
+   Used by DeleteAccountCard. A subdued red frame (not a fullsaturation
+   banner) signals "destructive section" without shouting — the actual
+   red shouting is reserved for the .button--danger CTA inside.
+   ------------------------------------------------------------------------- */
+
+.auth-card--danger {
+  border-color: rgba(198, 48, 36, 0.35);
+  background: rgba(198, 48, 36, 0.04);
+}
+
+.auth-card__danger-list {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.auth-card__danger-list li {
+  margin: 4px 0;
+}
+
+.auth-form-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.auth-form-actions .button {
+  min-height: 44px;
+}
+
+.button--danger {
+  background: linear-gradient(135deg, #c63024 0%, #e06051 100%);
+  color: #fff;
+  border-color: rgba(198, 48, 36, 0.6);
+}
+
+.button--danger:hover:not(:disabled) {
+  background: linear-gradient(135deg, #a82519 0%, #c84834 100%);
+}
+
+.button--danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* -------------------------------------------------------------------------
    status-chip: is-negative variant
    Auth stack already ships is-positive/is-warning; the import modal needs
    a third tone for invalid-row badges.

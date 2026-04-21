@@ -15,6 +15,7 @@ import {
   decryptEnvelope,
   encryptEnvelope,
   generateDataKey,
+  rewrapEnvelope,
 } from '../lib/crypto/envelope';
 
 // ---------------------------------------------------------------------------
@@ -670,6 +671,110 @@ export function VaultProvider({
   }, [bumpGen, commit, wipeKeys]);
 
   // -----------------------------------------------------------------------
+  // rewrapForPasswordChange(newMaster)
+  //
+  // Used exclusively by AuthContext.changePassword. Produces the new
+  // vault blob + ifMatch that the client submits alongside the auth
+  // rotation, and returns a `commit(newEtag)` callback the orchestrator
+  // calls AFTER the server reports success so the in-memory vaultKey
+  // and etag stay in sync.
+  //
+  // Contract:
+  //
+  //   - Vault must be UNLOCKED when this is called (we need the
+  //     current vaultKey to rewrap, and the dataKey to confirm
+  //     we're working off the right blob). If the vault is EMPTY
+  //     — the user has no vault row at all — we return `null` so
+  //     the orchestrator knows to submit the password change
+  //     without a vault payload.
+  //
+  //   - The rewrap is done entirely in WebCrypto; `rewrapEnvelope`
+  //     preserves the payload ciphertext byte-identically and only
+  //     swaps the outer AES-GCM wrap. That keeps "small change, big
+  //     cost" password-change UX snappy regardless of vault size.
+  //
+  //   - `commit(newEtag)` is deliberately separate from the return
+  //     because the etag is only known after the server accepts the
+  //     blob. If the POST fails (412 stale, 500 server error), the
+  //     caller simply doesn't call commit; vault state is untouched.
+  // -----------------------------------------------------------------------
+  const rewrapForPasswordChange = useCallback(
+    async (newMaster) => {
+      if (!(newMaster instanceof Uint8Array) || newMaster.length === 0) {
+        throw new Error('rewrapForPasswordChange: newMaster required');
+      }
+      const s = stateRef.current;
+      if (s.status === EMPTY) {
+        // Nothing to rewrap. Orchestrator should call changePassword
+        // without a vault payload.
+        return null;
+      }
+      if (s.status !== UNLOCKED) {
+        const err = new Error('vault_not_unlocked');
+        err.code = 'vault_not_unlocked';
+        throw err;
+      }
+      if (!s.blob || !s.etag) {
+        // Defensive: UNLOCKED implies we previously observed blob+etag.
+        const err = new Error('vault_missing_blob');
+        err.code = 'vault_missing_blob';
+        throw err;
+      }
+      const oldVaultKey = vaultKeyRef.current;
+      if (!oldVaultKey) {
+        // Defensive: UNLOCKED implies vaultKey is cached.
+        const err = new Error('vault_missing_key');
+        err.code = 'vault_missing_key';
+        throw err;
+      }
+
+      const saltV = userSaltVRef.current;
+      if (!saltV) {
+        const err = new Error('vault_missing_saltv');
+        err.code = 'vault_missing_saltv';
+        throw err;
+      }
+      // Derive the NEW vaultKey from the new master. We do this here
+      // (not in the caller) to keep all raw key material inside the
+      // vault module — callers only ever see the envelope output.
+      const newVaultKey = await deriveVaultKey(newMaster, saltV);
+
+      // rewrapEnvelope preserves the payload bytes, so `data` is
+      // unchanged. We only need to update `blob`, `etag`, and the
+      // cached vaultKey.
+      const newBlob = await rewrapEnvelope(s.blob, oldVaultKey, newVaultKey);
+
+      return {
+        blob: newBlob,
+        ifMatch: s.etag,
+        commit: (newEtag) => {
+          if (typeof newEtag !== 'string' || newEtag.length === 0) {
+            throw new Error('rewrapForPasswordChange.commit: etag required');
+          }
+          // Only install the new vaultKey + etag if we're still
+          // authoritative (hasn't been torn down between the POST
+          // and this commit). Avoids a corner case where logout
+          // races a mid-flight change-password and the commit would
+          // otherwise re-install key material into a reset provider.
+          if (stateRef.current.status !== UNLOCKED) return;
+          vaultKeyRef.current = newVaultKey;
+          const myGen = bumpGen();
+          commit(
+            {
+              // Preserve UNLOCKED, data, and dk/vaultKey refs; only
+              // update the wrap-related bookkeeping.
+              blob: newBlob,
+              etag: newEtag,
+            },
+            myGen
+          );
+        },
+      };
+    },
+    [bumpGen, commit]
+  );
+
+  // -----------------------------------------------------------------------
   // Auth lifecycle hooks.
   // -----------------------------------------------------------------------
   const prevUserIdRef = useRef(null);
@@ -717,6 +822,7 @@ export function VaultProvider({
       save,
       lock,
       reset,
+      rewrapForPasswordChange,
       _hasDataKeyForTest: hasDataKeyForTest,
       _hasVaultKeyForTest: hasVaultKeyForTest,
     }),
@@ -728,6 +834,7 @@ export function VaultProvider({
       save,
       lock,
       reset,
+      rewrapForPasswordChange,
       hasDataKeyForTest,
       hasVaultKeyForTest,
     ]
