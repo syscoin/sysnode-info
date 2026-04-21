@@ -1197,6 +1197,89 @@ describe('ProposalVoteModal — error paths', () => {
     });
   });
 
+  test('Retry failed excludes benign dedup (already_voted) rows from the re-submit payload', async () => {
+    // Codex P2: the retry picker previously included every !ok row,
+    // so in a mixed batch it would re-submit `already_voted`
+    // alongside real failures. That contradicts the benign-dedup
+    // story we tell the user (Already on-chain) and would trigger
+    // avoidable duplicate / cooldown errors. Lock in the contract:
+    // on Retry failed, only rows that are !ok && !isBenignDup are
+    // re-signed and re-submitted; benign-dup rows stay in place in
+    // the merged summary as soft successes.
+    const service = makeService({
+      submit: jest
+        .fn()
+        // First pass: k1 → already_voted (benign), k2 → real failure.
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 2,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'already_voted',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        })
+        // Retry pass: only k2 is re-submitted (see assertions).
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 0,
+          results: [
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+
+    const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    const retryPayload = service.submitVote.mock.calls[1][0];
+    expect(retryPayload.entries).toHaveLength(1);
+    expect(retryPayload.entries[0].collateralHash).toBe('d'.repeat(64));
+    expect(retryPayload.entries[0].collateralIndex).toBe(1);
+    // The benign row must have been re-signed zero additional
+    // times — the retry set never included its outpoint.
+    const firstSignCalls = signVoteFromWif.mock.calls.filter(
+      (c) => c[0].collateralHash === 'c'.repeat(64)
+    );
+    // One sign for the initial submit, none for the retry pass.
+    expect(firstSignCalls).toHaveLength(1);
+
+    // The merged DONE view: k1 stays as Already on-chain, k2 is now ok.
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      expect(summary.textContent).toMatch(/1 accepted/i);
+    });
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(2);
+    const benignRow = rows.find(
+      (r) => r.getAttribute('data-benign-dup') === 'true'
+    );
+    expect(benignRow).toBeDefined();
+    expect(within(benignRow).getByText(/already on-chain/i)).toBeInTheDocument();
+  });
+
   test('per-signing-row failure surfaces in the DONE list alongside backend results', async () => {
     // Make signVoteFromWif throw for the second key; the first one
     // still signs. Backend relay should get only one entry, but the

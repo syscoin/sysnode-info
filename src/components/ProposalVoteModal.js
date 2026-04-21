@@ -958,11 +958,20 @@ export default function ProposalVoteModal({
     // in the current `owned` list). These are the ones we'll
     // re-sign; everything else is preserved verbatim.
     const ownedIds = new Set(owned.map(mnId));
+    // Benign dedup rows (already_voted) must be excluded from the
+    // retry set — they are logical successes that the backend has
+    // already observed on-chain. Re-submitting them would just
+    // produce another dedup (or, with a cooldown still active,
+    // trigger vote_too_often and surface a confusing "error" for a
+    // state the user has already achieved). Keep the same guard in
+    // lockstep with the `hasFailures` / `retryable` checks used to
+    // show the Retry failed button in the DONE view.
     const retriedKeys = new Set(
       results.byEntry
         .filter(
           (e) =>
             !e.ok &&
+            !isBenignDup(e.error) &&
             e.collateralHash &&
             e.collateralIndex != null &&
             ownedIds.has(outpointKey(e.collateralHash, e.collateralIndex))
