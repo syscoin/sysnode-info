@@ -190,7 +190,12 @@ export function marginChip({ proposal, enabledCount } = {}) {
     (Number(proposal.AbsoluteYesCount || 0) / enabled) * 100;
   const delta = support - PASSING_SUPPORT_PERCENT;
   if (Math.abs(delta) > MARGIN_WARNING_PERCENT) return null;
-  const above = delta >= 0;
+  // Strict > 0 so that support = exactly 10% reads as "close to
+  // passing", not "slim margin". ProposalRow's pass logic is
+  // `support > 10`, so a row at exactly 10% is *not* passing and
+  // the chip copy must match that reality — otherwise a user sees
+  // "not enough votes" paired with "just above the pass threshold".
+  const above = delta > 0;
   return {
     kind: above ? 'margin-thin' : 'margin-near',
     label: above ? 'Slim margin' : 'Close to passing',

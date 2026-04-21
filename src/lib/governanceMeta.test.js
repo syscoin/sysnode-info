@@ -214,6 +214,20 @@ describe('marginChip', () => {
     expect(above).not.toBeNull();
     expect(above.kind).toBe('margin-thin');
   });
+
+  test('support at exactly the 10% threshold reads as "Close to passing" (matches ProposalRow\'s support > 10 pass check)', () => {
+    // Core's pass logic is strict >10%, so a row at exactly 10%
+    // is NOT passing. The chip must agree — otherwise the row
+    // shows "not enough votes" paired with "just above the pass
+    // threshold" copy, which is confusing.
+    const chip = marginChip({
+      proposal: { AbsoluteYesCount: 100 },
+      enabledCount: 1000,
+    });
+    expect(chip).not.toBeNull();
+    expect(chip.kind).toBe('margin-near');
+    expect(chip.label).toMatch(/close to passing/i);
+  });
 });
 
 describe('tier constants are sane relative to each other', () => {

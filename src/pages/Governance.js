@@ -418,30 +418,70 @@ export default function Governance() {
   }, []);
 
   // Smoothly scroll to a proposal by hash and briefly highlight
-  // it so the user's eye lands on the right row. We guard against
-  // unmount-after-timeout by clearing a ref on cleanup.
+  // it so the user's eye lands on the right row.
+  //
+  // Filter-aware: the activity card can surface jumps to proposals
+  // that are currently hidden by the search/filter switcher (e.g.
+  // the user filtered to "Passing" and then clicks a jump for a
+  // receipt on a watch-list proposal). Clicking a jump CTA that
+  // scrolls to nothing is a silent dead-end, which is the worst
+  // possible UX here — so before we look up the DOM id we clear
+  // any filter state that would be suppressing the target row,
+  // *only when* we can confirm the target exists in the full
+  // proposals list (we don't want to clobber the user's filter
+  // for a hash we wouldn't be able to show anyway).
+  //
+  // Scrolling happens inside a requestAnimationFrame so React has
+  // a chance to re-render the filtered list after the setState
+  // calls; otherwise the target row might not yet be in the DOM.
   const jumpToProposal = useCallback((key) => {
     if (typeof key !== 'string' || !key) return;
+    const normalizedKey = key.toLowerCase();
     const domId = proposalRowDomId(key);
     if (!domId) return;
-    if (typeof document !== 'undefined') {
-      const el = document.getElementById(domId);
-      if (el && typeof el.scrollIntoView === 'function') {
-        try {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        } catch (_e) {
-          // Older test environments / JSDOM may not accept the
-          // options object. Fall back to the plain scrollIntoView
-          // rather than throwing in a user-facing path.
-          try {
-            el.scrollIntoView();
-          } catch (_e2) {
-            // Nothing else we can do; the highlight alone will
-            // still hint to the user that we jumped.
-          }
-        }
+
+    const existsInFeed = proposals.some(
+      (p) => p && typeof p.Key === 'string' && p.Key.toLowerCase() === normalizedKey
+    );
+    if (existsInFeed) {
+      // Only touch filter state if the target would otherwise be
+      // hidden. Keeps the user's current filter intact when they
+      // click a jump CTA on an already-visible row.
+      const visibleInFeed = visibleProposals.some(
+        (p) =>
+          p && typeof p.Key === 'string' && p.Key.toLowerCase() === normalizedKey
+      );
+      if (!visibleInFeed) {
+        setFilter('all');
+        setQuery('');
       }
     }
+
+    const doScroll = () => {
+      if (typeof document === 'undefined') return;
+      const el = document.getElementById(domId);
+      if (!el || typeof el.scrollIntoView !== 'function') return;
+      try {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (_e) {
+        // Older test environments / JSDOM may not accept the
+        // options object. Fall back to the plain scrollIntoView
+        // rather than throwing in a user-facing path.
+        try {
+          el.scrollIntoView();
+        } catch (_e2) {
+          // Nothing else we can do; the highlight alone will
+          // still hint to the user that we jumped.
+        }
+      }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(doScroll);
+    } else {
+      doScroll();
+    }
+
     setHighlightKey(key);
     if (highlightTimerRef.current) {
       window.clearTimeout(highlightTimerRef.current);
@@ -450,7 +490,7 @@ export default function Governance() {
       setHighlightKey(null);
       highlightTimerRef.current = null;
     }, JUMP_HIGHLIGHT_MS);
-  }, []);
+  }, [proposals, visibleProposals]);
 
   useEffect(() => {
     return () => {
