@@ -937,3 +937,138 @@ describe('Governance page — jumpToProposal filter-aware behaviour', () => {
     expect(document.getElementById(`proposal-row-${A}`)).not.toBeNull();
   });
 });
+
+describe('Governance page — PR 6d chip accessibility', () => {
+  // Chips now publish their detail via three mutually-reinforcing
+  // channels so touch, keyboard, mouse, and screen-reader users all
+  // reach the same information:
+  //   - title=           (desktop mouse, legacy fallback)
+  //   - data-tip=        (CSS-driven tap/focus/hover popover)
+  //   - aria-label=      (screen readers; combines label + detail)
+  //   - tabIndex=0       (reachable via keyboard and tap focus)
+  //
+  // These tests lock that contract down so future refactors can't
+  // silently regress any of those channels.
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function summaryRow(partial) {
+    return {
+      proposalHash: 'a'.repeat(64),
+      total: 0,
+      relayed: 0,
+      confirmed: 0,
+      stale: 0,
+      failed: 0,
+      confirmedYes: 0,
+      confirmedNo: 0,
+      confirmedAbstain: 0,
+      latestSubmittedAt: 1700000000,
+      latestVerifiedAt: 1700000001,
+      ...partial,
+    };
+  }
+
+  test('cohort chip exposes tap/focus tooltip + aria-label including detail', () => {
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({ proposals: [makeProposal({ Key: 'a'.repeat(64) })] })
+    );
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({ total: 3, confirmed: 3, confirmedYes: 3 }),
+        ],
+        ownedCount: 3,
+      })
+    );
+
+    renderPage();
+
+    const chip = screen.getByTestId('proposal-row-cohort');
+    expect(chip.getAttribute('tabindex')).toBe('0');
+    expect(chip.getAttribute('role')).toBe('note');
+    expect(chip.getAttribute('data-tip')).toBeTruthy();
+    expect(chip.getAttribute('data-tip')).toEqual(chip.getAttribute('title'));
+    const aria = chip.getAttribute('aria-label') || '';
+    expect(aria).toMatch(/voted yes/i);
+    expect(aria).toMatch(/confirmed on chain/i);
+  });
+
+  test('verified pill exposes tap/focus tooltip + aria-label including detail', () => {
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(
+      baseData({ proposals: [makeProposal({ Key: 'a'.repeat(64) })] })
+    );
+    const now = Date.now();
+    useGovernanceReceipts.mockReturnValue(
+      makeReceipts({
+        summary: [
+          summaryRow({
+            total: 2,
+            confirmed: 2,
+            confirmedYes: 2,
+            latestVerifiedAt: now - 30_000,
+          }),
+        ],
+        ownedCount: 2,
+      })
+    );
+
+    renderPage();
+
+    const pill = screen.getByTestId('proposal-row-verified');
+    expect(pill.getAttribute('tabindex')).toBe('0');
+    expect(pill.getAttribute('role')).toBe('note');
+    expect(pill.getAttribute('data-tip')).toBeTruthy();
+    expect(pill.getAttribute('data-tip')).toEqual(pill.getAttribute('title'));
+    const aria = pill.getAttribute('aria-label') || '';
+    expect(aria).toMatch(/verified on-chain/i);
+    expect(aria).toMatch(/were last observed on-chain/i);
+  });
+
+  test('meta chips (closing / over-budget / margin) all expose the tooltip contract', () => {
+    // Give the row a chip by squeezing the superblock voting_deadline
+    // so the closing-urgent chip lights up. One chip is enough to
+    // assert the contract — computeOverBudgetMap / marginChip / closingChip
+    // all funnel through the same JSX branch.
+    useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+    useGovernanceData.mockReturnValue(
+      baseData({
+        stats: {
+          stats: {
+            mn_stats: { enabled: 1000 },
+            superblock_stats: {
+              budget: 1000000,
+              // 30 minutes from now — inside the closing-urgent window.
+              voting_deadline:
+                Math.floor(Date.now() / 1000) + 30 * 60,
+              superblock_date: Math.floor(Date.now() / 1000) + 24 * 3600,
+            },
+          },
+        },
+      })
+    );
+
+    renderPage();
+
+    const chips = screen.getAllByTestId('proposal-row-meta-chip');
+    expect(chips.length).toBeGreaterThan(0);
+    for (const chip of chips) {
+      expect(chip.getAttribute('tabindex')).toBe('0');
+      expect(chip.getAttribute('role')).toBe('note');
+      expect(chip.getAttribute('data-tip')).toBeTruthy();
+      expect(chip.getAttribute('data-tip')).toEqual(
+        chip.getAttribute('title')
+      );
+      const aria = chip.getAttribute('aria-label') || '';
+      // aria-label should be strictly richer than the chip's
+      // visible label — i.e. include the detail text too.
+      expect(aria.length).toBeGreaterThan(
+        (chip.textContent || '').trim().length
+      );
+    }
+  });
+});

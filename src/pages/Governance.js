@@ -159,6 +159,10 @@ function ProposalRow({
           <span
             className={`status-chip cohort-chip cohort-chip--${cohort.kind}`}
             title={cohort.detail}
+            data-tip={cohort.detail}
+            tabIndex={0}
+            role="note"
+            aria-label={`${cohort.label}. ${cohort.detail}`}
             data-testid="proposal-row-cohort"
             data-cohort-kind={cohort.kind}
           >
@@ -195,8 +199,11 @@ function ProposalRow({
             <span
               className="status-chip verified-chip"
               title={tooltip}
+              data-tip={tooltip}
+              tabIndex={0}
+              role="note"
               data-testid="proposal-row-verified"
-              aria-label="Verified on-chain"
+              aria-label={`Verified on-chain. ${tooltip}`}
             >
               <span aria-hidden="true" className="verified-chip__mark">
                 ✓
@@ -213,6 +220,10 @@ function ProposalRow({
                 key={chip.kind}
                 className={`status-chip meta-chip meta-chip--${chip.kind}`}
                 title={chip.detail}
+                data-tip={chip.detail}
+                tabIndex={0}
+                role="note"
+                aria-label={`${chip.label}. ${chip.detail}`}
                 data-testid="proposal-row-meta-chip"
                 data-meta-kind={chip.kind}
               >
