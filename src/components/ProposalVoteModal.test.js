@@ -1,6 +1,7 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -771,6 +772,132 @@ describe('ProposalVoteModal — error paths', () => {
       expect(
         within(errorState).queryByTestId('vote-modal-auto-retry-countdown')
       ).toBeNull();
+    });
+  });
+
+  test('online-event auto-resume drains the offline queue before rerunning', async () => {
+    // Codex P1: resumeOfflineQueue / discardOfflineQueue were the
+    // only code paths calling drainOfflineVote; the onOnline auto-
+    // resume fell straight through to rerunLastBatch() without
+    // clearing sessionStorage. A successful auto-retry therefore
+    // left the entry behind as a phantom that would re-surface on
+    // the next modal open. Lock in the contract: the `online`
+    // event drains the queue before calling rerun.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const netErr = new Error('net');
+      netErr.code = 'network_error';
+      const service = makeService({
+        submit: jest
+          .fn()
+          // First attempt: offline failure, enqueues intent.
+          .mockRejectedValueOnce(netErr)
+          // Second attempt (online-event rerun): succeeds.
+          .mockResolvedValueOnce({
+            accepted: 2,
+            rejected: 0,
+            results: [
+              { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+              { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+            ],
+          }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      await screen.findByTestId('vote-modal-error');
+      // Queue is populated by the failure path.
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeTruthy();
+
+      // Come back online: the onOnline handler must drain the
+      // queue BEFORE firing the rerun, so after the successful
+      // second attempt we end up with an empty queue (not a
+      // phantom entry that would re-surface on reopen).
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('auto-retry budget resets per user-initiated run', async () => {
+    // Codex P2: autoRetryAttemptsRef was only reset on modal open.
+    // After one server-error incident burned its maxAttempts
+    // window, a later independent server error in the same modal
+    // session would skip auto-retry entirely. Verify the budget is
+    // actually reset when the user clicks Try again — a fresh
+    // incident should show a fresh countdown.
+    const err = new Error('boom');
+    err.code = 'server_error';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    const errorState = await screen.findByTestId('vote-modal-error');
+    // First error session: countdown visible. Cancel to consume
+    // the budget manually (simpler and deterministic than waiting
+    // for two real timers to fire).
+    expect(
+      within(errorState).getByTestId('vote-modal-auto-retry-countdown')
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(errorState).getByTestId('vote-modal-cancel-auto-retry')
+    );
+    await waitFor(() => {
+      expect(
+        within(errorState).queryByTestId('vote-modal-auto-retry-countdown')
+      ).toBeNull();
+    });
+
+    // Click Try again. The submit rejects again with server_error
+    // → we land back in ERROR. If the budget had not been reset
+    // by the user-initiated run, the scheduler would skip the
+    // countdown. Assert the fresh countdown appears.
+    fireEvent.click(
+      within(errorState).getByTestId('vote-modal-error-try-again')
+    );
+    await waitFor(() => {
+      // submitVote was called twice (initial + Try again rerun).
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(
+        within(screen.getByTestId('vote-modal-error')).getByTestId(
+          'vote-modal-auto-retry-countdown'
+        )
+      ).toBeInTheDocument();
     });
   });
 

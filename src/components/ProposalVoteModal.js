@@ -773,6 +773,25 @@ export default function ProposalVoteModal({
     return runVotePass(chosenForRun);
   }, [chosenForRun, runVotePass]);
 
+  // Mark the start of a user-initiated vote pass — picker submit,
+  // CONFIRM_CHANGE confirm, Retry failed, Resume queue, or the
+  // "Try again" button in the ERROR view. The auto-retry budget
+  // is scoped to a single error incident, so every fresh user
+  // intent resets it; the auto-retry timer deliberately does NOT
+  // call this (it just increments the counter in-place).
+  //
+  // Without this reset, a server-error incident that burned its
+  // autoRetry.maxAttempts would leave the counter saturated for
+  // the rest of the modal session, and a later independent
+  // server error would skip the auto-retry UX entirely.
+  const beginUserInitiatedRun = useCallback(() => {
+    autoRetryAttemptsRef.current = 0;
+    if (autoRetryTimerRef.current) {
+      clearTimeout(autoRetryTimerRef.current);
+      autoRetryTimerRef.current = null;
+    }
+  }, []);
+
   // Auto-retry scheduler for transient errors whose descriptor
   // specifies a non-null `autoRetry` policy (server_error is the
   // canonical consumer today). Constraints, in priority order:
@@ -782,11 +801,12 @@ export default function ProposalVoteModal({
   //      phases and codes opt out.
   //   2. Count is bounded by `policy.maxAttempts` per error-phase
   //      session. The attempt counter resets on modal open and
-  //      when the user explicitly retries via the Try again
-  //      button (implicitly, because entering PHASE.ERROR again
-  //      from a successful rerun that later fails re-increments
-  //      only when the timer fires — so a user-driven retry that
-  //      still fails spends one auto-retry slot at most).
+  //      on every user-initiated run via `beginUserInitiatedRun`
+  //      (picker submit, CONFIRM_CHANGE confirm, Retry failed,
+  //      Try again, Resume queue, onOnline auto-resume). The
+  //      auto-retry timer itself does NOT reset, just increments
+  //      — so once the policy budget is consumed, the timer stops
+  //      scheduling until the user takes some action.
   //   3. Never auto-retry while the browser reports offline. The
   //      online-recovery effect below handles that transition.
   //   4. The timer is torn down on any phase change, proposal
@@ -904,6 +924,7 @@ export default function ProposalVoteModal({
       drainOfflineVote(proposal.Key);
       queuedSnapshotRef.current = null;
       setOfflineQueued(false);
+      beginUserInitiatedRun();
       rerunLastBatch();
       return;
     }
@@ -935,8 +956,16 @@ export default function ProposalVoteModal({
     setSubmitError(null);
     setRetryReadyAt(null);
     setAutoRetryAt(null);
+    beginUserInitiatedRun();
     runVotePass(chosen);
-  }, [proposal, chosenForRun, owned, rerunLastBatch, runVotePass]);
+  }, [
+    proposal,
+    chosenForRun,
+    owned,
+    rerunLastBatch,
+    runVotePass,
+    beginUserInitiatedRun,
+  ]);
 
   const discardOfflineQueue = useCallback(() => {
     if (!proposal || typeof proposal.Key !== 'string') return;
@@ -968,15 +997,33 @@ export default function ProposalVoteModal({
   // queuedSnapshotRef is cleared by resumeOfflineQueue /
   // discardOfflineQueue, so once the user has acknowledged the
   // surfaced queue this guard naturally drops.
+  //
+  // Drain the sessionStorage queue BEFORE rerunning: only
+  // resumeOfflineQueue / discardOfflineQueue called drain
+  // previously, so a successful auto-resume would leave the
+  // entry behind as a phantom that re-surfaces on the next
+  // modal open (and could cause duplicate re-submissions of
+  // already-processed targets). If the rerun itself fails with
+  // a fresh network_error, runVotePass's catch branch will
+  // re-enqueue the current intent, so the drain is safe.
   useEffect(() => {
     if (!open) return undefined;
     return onOnline(() => {
       if (phase !== PHASE.ERROR) return;
       if (submitError !== 'network_error') return;
       if (queuedSnapshotRef.current != null) return;
+      if (proposal && typeof proposal.Key === 'string') {
+        drainOfflineVote(proposal.Key);
+      }
+      setOfflineQueued(false);
+      // User-intent continuation: the failed batch the user just
+      // tried to send is about to rerun, so reset the auto-retry
+      // budget in case a prior incident in the same modal session
+      // had consumed it.
+      autoRetryAttemptsRef.current = 0;
       rerunLastBatch();
     });
-  }, [open, phase, submitError, rerunLastBatch]);
+  }, [open, phase, submitError, proposal, rerunLastBatch]);
 
   // Grouping for the picker render. Memoised so the sections don't
   // recompute on unrelated state transitions (selection changes,
@@ -1002,8 +1049,9 @@ export default function ProposalVoteModal({
       setPhase(PHASE.CONFIRM_CHANGE);
       return;
     }
+    beginUserInitiatedRun();
     return runVotePass(chosen);
-  }, [owned, effectiveSelected, outcome, runVotePass]);
+  }, [owned, effectiveSelected, outcome, runVotePass, beginUserInitiatedRun]);
 
   const confirmVoteChange = useCallback(() => {
     const chosen = pendingChosenRef.current;
@@ -1012,8 +1060,9 @@ export default function ProposalVoteModal({
       setPhase(PHASE.PICK);
       return;
     }
+    beginUserInitiatedRun();
     return runVotePass(chosen);
-  }, [runVotePass]);
+  }, [runVotePass, beginUserInitiatedRun]);
 
   const cancelVoteChange = useCallback(() => {
     pendingChosenRef.current = null;
@@ -1077,8 +1126,9 @@ export default function ProposalVoteModal({
       if (!(e.collateralHash && e.collateralIndex != null)) return true;
       return !retriedKeys.has(outpointKey(e.collateralHash, e.collateralIndex));
     });
+    beginUserInitiatedRun();
     return runVotePass(chosen, { mergeBase });
-  }, [owned, results, runVotePass]);
+  }, [owned, results, runVotePass, beginUserInitiatedRun]);
 
   if (!open) return null;
 
@@ -1457,6 +1507,11 @@ export default function ProposalVoteModal({
                 className="button button--primary button--small"
                 onClick={() => {
                   if (canRerun) {
+                    // User-initiated retry: reset the auto-retry
+                    // budget so a subsequent fresh server-error
+                    // incident in the same modal session still
+                    // gets its full autoRetry.maxAttempts window.
+                    beginUserInitiatedRun();
                     rerunLastBatch();
                   } else {
                     setPhase(PHASE.PICK);
