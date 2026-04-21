@@ -64,6 +64,7 @@ const VOTE_PATH = '/gov/vote';
 const RECEIPTS_PATH = '/gov/receipts';
 const RECEIPTS_RECONCILE_PATH = '/gov/receipts/reconcile';
 const RECEIPTS_SUMMARY_PATH = '/gov/receipts/summary';
+const RECEIPTS_RECENT_PATH = '/gov/receipts/recent';
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 
 function govError(code, status, cause) {
@@ -292,12 +293,43 @@ export function createGovernanceService(client = defaultClient) {
     }
   }
 
+  // Fetch the caller's most-recent receipts across all proposals.
+  // Drives the "Your activity" card on the authenticated Governance
+  // page. Pure read — no RPC, no reconciliation; rows reflect
+  // whatever the background reconciler last wrote.
+  //
+  // The server clamps `limit` to [1, 50]. We expose it here as an
+  // option and let the backend do the clamp; passing a value
+  // outside [1, 50] is allowed at the service layer (backend
+  // handles it) but we still pre-validate that it's a positive int
+  // so a UI bug doesn't send `NaN` or negative values.
+  async function fetchRecentReceipts({ limit } = {}) {
+    const params = {};
+    if (limit !== undefined && limit !== null) {
+      if (!Number.isInteger(limit) || limit <= 0) {
+        throw govError('invalid_limit', 0);
+      }
+      params.limit = limit;
+    }
+    try {
+      const res = await client.get(RECEIPTS_RECENT_PATH, { params });
+      const data = res.data || {};
+      return {
+        receipts: Array.isArray(data.receipts) ? data.receipts : [],
+      };
+    } catch (err) {
+      if (err && err.code) throw err;
+      throw govError('network_error', 0, err);
+    }
+  }
+
   return {
     lookupOwnedMasternodes,
     submitVote,
     fetchReceipts,
     reconcileReceipts,
     fetchReceiptsSummary,
+    fetchRecentReceipts,
   };
 }
 

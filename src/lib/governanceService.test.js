@@ -376,3 +376,81 @@ describe('governanceService.fetchReceiptsSummary', () => {
     });
   });
 });
+
+describe('governanceService.fetchRecentReceipts', () => {
+  test('GETs /gov/receipts/recent and returns the raw row list', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/recent').reply(200, {
+      receipts: [
+        {
+          id: 1,
+          proposalHash: H64('a'),
+          collateralHash: H64('b'),
+          collateralIndex: 0,
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          voteTime: 1_700_000_000,
+          status: 'confirmed',
+          lastError: null,
+          submittedAt: 1_700_000_050_000,
+          verifiedAt: 1_700_000_080_000,
+        },
+      ],
+    });
+    const out = await service.fetchRecentReceipts();
+    expect(out.receipts).toHaveLength(1);
+    expect(out.receipts[0].status).toBe('confirmed');
+  });
+
+  test('passes the limit param through to the server', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/recent').reply((config) => {
+      // Axios serialises `params` onto the query string for GETs;
+      // assert the server would have seen the integer we passed.
+      expect(config.params).toEqual({ limit: 5 });
+      return [200, { receipts: [] }];
+    });
+    await service.fetchRecentReceipts({ limit: 5 });
+  });
+
+  test('omits the limit param when the caller passes nothing', async () => {
+    // We want the backend's default (10) to apply rather than pinning
+    // a contract from the client. Pre-sending `limit=undefined` would
+    // serialise as "limit=" on the wire which would then fail the
+    // server's NaN guard.
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/recent').reply((config) => {
+      expect(config.params).toEqual({});
+      return [200, { receipts: [] }];
+    });
+    await service.fetchRecentReceipts();
+  });
+
+  test('rejects nonsense limits before making a request', async () => {
+    const { service } = makeService();
+    await expect(
+      service.fetchRecentReceipts({ limit: 0 })
+    ).rejects.toMatchObject({ code: 'invalid_limit' });
+    await expect(
+      service.fetchRecentReceipts({ limit: -1 })
+    ).rejects.toMatchObject({ code: 'invalid_limit' });
+    await expect(
+      service.fetchRecentReceipts({ limit: 2.5 })
+    ).rejects.toMatchObject({ code: 'invalid_limit' });
+  });
+
+  test('defaults receipts to [] on a malformed body', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/recent').reply(200, {});
+    const out = await service.fetchRecentReceipts();
+    expect(out.receipts).toEqual([]);
+  });
+
+  test('maps network failures to network_error', async () => {
+    const { service, adapter } = makeService();
+    adapter.onGet('/gov/receipts/recent').networkError();
+    await expect(service.fetchRecentReceipts()).rejects.toMatchObject({
+      code: 'network_error',
+    });
+  });
+});
