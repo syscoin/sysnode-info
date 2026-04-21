@@ -87,9 +87,12 @@ describe('Governance page — cohort affordances', () => {
       screen.getByRole('button', { name: /copy no vote command/i })
     ).toBeInTheDocument();
     expect(screen.queryByTestId('proposal-row-vote')).not.toBeInTheDocument();
-    expect(screen.getByTestId('modal-stub').getAttribute('data-open')).toBe(
-      'false'
-    );
+    // The vote modal is mounted only on demand (see note in
+    // Governance.js). Anonymous users never have a selected
+    // proposal, so the stub must not be in the tree at all —
+    // this guarantees its hooks (useOwnedMasternodes et al.)
+    // never fire on a plain page view.
+    expect(screen.queryByTestId('modal-stub')).not.toBeInTheDocument();
   });
 
   test('authenticated users see a Vote button instead of the copy buttons', () => {
@@ -118,8 +121,9 @@ describe('Governance page — cohort affordances', () => {
 
     renderPage();
 
-    const stubBefore = screen.getByTestId('modal-stub');
-    expect(stubBefore.getAttribute('data-open')).toBe('false');
+    // No proposal selected yet → modal is not mounted at all (its
+    // hooks don't run, no background /gov/mns/lookup traffic).
+    expect(screen.queryByTestId('modal-stub')).not.toBeInTheDocument();
 
     const voteButtons = screen.getAllByTestId('proposal-row-vote');
     fireEvent.click(voteButtons[1]);
@@ -127,5 +131,18 @@ describe('Governance page — cohort affordances', () => {
     const stubAfter = screen.getByTestId('modal-stub');
     expect(stubAfter.getAttribute('data-open')).toBe('true');
     expect(stubAfter.getAttribute('data-proposal')).toBe('b'.repeat(64));
+  });
+
+  test('vote modal is not mounted for authenticated users until they click Vote', () => {
+    // Complements the click test: the authenticated+unlocked case
+    // must not render the modal on idle page load, otherwise
+    // useOwnedMasternodes would hit /gov/mns/lookup before the
+    // user expressed vote intent.
+    useAuth.mockReturnValue({ isAuthenticated: true, user: { id: 1 } });
+    useGovernanceData.mockReturnValue(baseData());
+
+    renderPage();
+
+    expect(screen.queryByTestId('modal-stub')).not.toBeInTheDocument();
   });
 });

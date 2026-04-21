@@ -410,11 +410,23 @@ export default function Governance() {
         </section>
       ) : null}
 
-      <ProposalVoteModal
-        open={voteProposal !== null}
-        proposal={voteProposal}
-        onClose={closeVoteModal}
-      />
+      {/*
+        Mount the vote modal only when the user has actually picked
+        a proposal. Keeping it mounted unconditionally would fire
+        its hooks (useAuth / useVault / useOwnedMasternodes) on
+        every Governance page view — and even with the hook's
+        `enabled: open` gate in place as defense-in-depth, the
+        idiomatic React pattern is to not keep dormant dialogs in
+        the tree. Unmount on close means a fresh, clean state
+        next time the user clicks Vote.
+      */}
+      {voteProposal !== null ? (
+        <ProposalVoteModal
+          open
+          proposal={voteProposal}
+          onClose={closeVoteModal}
+        />
+      ) : null}
     </main>
   );
 }
