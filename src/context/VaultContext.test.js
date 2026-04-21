@@ -1267,3 +1267,362 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
     expect(last.status).toBe(STATUS.LOCKED);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PR 7 — rewrapForPasswordChange
+// ---------------------------------------------------------------------------
+//
+// rewrapForPasswordChange(newMaster) is the bridge point between the
+// AuthContext's password rotation and the VaultContext's in-memory key
+// material. It MUST:
+//
+//   1. Refuse to run unless the vault is UNLOCKED (we need the OLD
+//      vaultKey to rewrap). If the vault is EMPTY — a brand-new user
+//      with no keys imported — it returns null so the caller skips the
+//      vault leg of the atomic password change.
+//
+//   2. Produce a NEW blob whose payload ciphertext is byte-identical to
+//      the old one (rewrapEnvelope only swaps the outer wrap, not the
+//      inner DEK-protected payload). We assert this by re-decrypting
+//      with the new vaultKey and comparing the decoded data.
+//
+//   3. Leave VaultContext state untouched until the caller invokes
+//      rewrap.commit(newEtag). Before commit: the cached vaultKey is
+//      still the old one, the state.blob + state.etag still point at
+//      the original server blob. After commit: the new vaultKey is
+//      cached and state.blob/state.etag reflect the server's post-
+//      rotation response.
+//
+//   4. Be safe against reset()/logout() racing the commit — commit is
+//      a no-op once VaultContext is no longer UNLOCKED.
+
+describe('VaultProvider — rewrapForPasswordChange (PR 7)', () => {
+  test('returns null when the vault is EMPTY (new user, no rewrap needed)', async () => {
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+    const out = await last.rewrapForPasswordChange(
+      new Uint8Array(32).fill(0x42)
+    );
+    expect(out).toBeNull();
+  });
+
+  test(
+    'rejects when the vault is LOCKED (old vaultKey not in memory)',
+    async () => {
+      const { blob } = await makeEncryptedBlobFor({});
+      const vaultService = {
+        load: jest.fn().mockResolvedValue({
+          empty: false,
+          blob,
+          etag: 'E1',
+        }),
+        save: jest.fn(),
+      };
+      let last;
+      renderWithProviders({
+        authService: authedAuthService(),
+        vaultService,
+        onVault: (v) => {
+          last = v;
+        },
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await expect(
+        last.rewrapForPasswordChange(new Uint8Array(32).fill(0x42))
+      ).rejects.toMatchObject({ code: 'vault_not_unlocked' });
+    },
+    PBKDF2_TIMEOUT_MS
+  );
+
+  test(
+    'rewraps the blob so the NEW vaultKey can decrypt identical payload',
+    async () => {
+      const email = 'user@example.com';
+      const saltV = SALT_A;
+      const { blob, master, data } = await makeEncryptedBlobFor({
+        password: 'old password',
+        email,
+        saltV,
+      });
+      const vaultService = {
+        load: jest.fn().mockResolvedValue({
+          empty: false,
+          blob,
+          etag: 'E1',
+        }),
+        save: jest.fn(),
+      };
+      let last;
+      renderWithProviders({
+        authService: authedAuthService({ email, saltV }),
+        vaultService,
+        onVault: (v) => {
+          last = v;
+        },
+      });
+      // Wait for the initial auth effect to settle and VaultContext
+      // to land in LOCKED before calling unlockWithMaster, otherwise
+      // the saltV gate inside unlockWithMaster can trip synchronously.
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+      // Fresh "newMaster" — in production this is the PBKDF2 output
+      // for (newPassword, email). Any 32-byte key material works for
+      // exercising the rewrap path.
+      const newMaster = new Uint8Array(32).fill(0x11);
+      const rewrap = await last.rewrapForPasswordChange(newMaster);
+      expect(rewrap).not.toBeNull();
+      expect(typeof rewrap.blob).toBe('string');
+      expect(typeof rewrap.ifMatch).toBe('string');
+      expect(rewrap.ifMatch).toBe('E1');
+      // Blob ciphertext must have CHANGED (new outer wrap) but the
+      // payload must still decrypt to the original data under the
+      // new vaultKey.
+      expect(rewrap.blob).not.toBe(blob);
+      const newVaultKey = await deriveVaultKey(newMaster, saltV);
+      const decoded = await decryptEnvelope(rewrap.blob, newVaultKey);
+      expect(decoded.data).toEqual(data);
+    },
+    PBKDF2_TIMEOUT_MS
+  );
+
+  test(
+    'commit(newEtag) installs the new vaultKey + etag; save() under the new key works',
+    async () => {
+      const email = 'user@example.com';
+      const saltV = SALT_A;
+      const { blob, master } = await makeEncryptedBlobFor({
+        password: 'old password',
+        email,
+        saltV,
+      });
+      let currentEtag = 'E1';
+      const vaultService = {
+        load: jest.fn().mockImplementation(async () => ({
+          empty: false,
+          blob,
+          etag: currentEtag,
+        })),
+        save: jest.fn().mockImplementation(async () => {
+          const next = `E${Number(currentEtag.slice(1)) + 1}`;
+          currentEtag = next;
+          return { etag: next };
+        }),
+      };
+      let last;
+      renderWithProviders({
+        authService: authedAuthService({ email, saltV }),
+        vaultService,
+        onVault: (v) => {
+          last = v;
+        },
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+      const newMaster = new Uint8Array(32).fill(0x22);
+      const rewrap = await last.rewrapForPasswordChange(newMaster);
+      // Simulate the server accepting the rewrapped blob and echoing
+      // back a fresh etag. The commit MUST be invoked inside act()
+      // because it triggers a VaultContext state update.
+      await act(async () => {
+        rewrap.commit('E99');
+      });
+
+      // Post-commit: a save() under the new vaultKey should succeed.
+      // If the vaultKey had NOT been swapped, encryptEnvelope would
+      // produce a blob the future deriveVaultKey(newMaster, saltV)
+      // couldn't decrypt. We don't re-drive that full decrypt here;
+      // instead we assert save() passes the post-commit etag to
+      // the vaultService (proves state.etag was updated) AND that
+      // the blob it sends is NOT the original.
+      await act(async () => {
+        await last.save({ keys: [{ label: 'b', wif: 'L2...' }] });
+      });
+      expect(vaultService.save).toHaveBeenCalledTimes(1);
+      const sentBlob = vaultService.save.mock.calls[0][0].blob;
+      const sentIfMatch = vaultService.save.mock.calls[0][0].ifMatch;
+      expect(sentIfMatch).toBe('E99');
+      expect(sentBlob).not.toBe(blob);
+
+      // And decrypting that sent blob with the NEW vaultKey recovers
+      // the updated data — proof the cached vaultKey was rotated.
+      const newVaultKey = await deriveVaultKey(newMaster, saltV);
+      const decoded = await decryptEnvelope(sentBlob, newVaultKey);
+      expect(decoded.data).toEqual({
+        keys: [{ label: 'b', wif: 'L2...' }],
+      });
+    },
+    PBKDF2_TIMEOUT_MS
+  );
+
+  test(
+    'commit is a no-op after reset() (handles logout racing the commit)',
+    async () => {
+      const email = 'user@example.com';
+      const saltV = SALT_A;
+      const { blob, master } = await makeEncryptedBlobFor({
+        password: 'old password',
+        email,
+        saltV,
+      });
+      const vaultService = {
+        load: jest.fn().mockResolvedValue({
+          empty: false,
+          blob,
+          etag: 'E1',
+        }),
+        save: jest.fn(),
+      };
+      let last;
+      renderWithProviders({
+        authService: authedAuthService({ email, saltV }),
+        vaultService,
+        onVault: (v) => {
+          last = v;
+        },
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+      const newMaster = new Uint8Array(32).fill(0x33);
+      const rewrap = await last.rewrapForPasswordChange(newMaster);
+
+      // Tear down the vault (logout race) before the caller commits.
+      await act(async () => {
+        last.reset();
+      });
+      // Now commit — must NOT revive vault state or install keys
+      // into the reset provider.
+      await act(async () => {
+        rewrap.commit('E99');
+      });
+      expect(last.status).not.toBe(STATUS.UNLOCKED);
+    },
+    PBKDF2_TIMEOUT_MS
+  );
+
+  test(
+    'commit refreshes blob+etag when vault is locked mid-flight (cache short-circuit stays correct)',
+    async () => {
+      // Regression for Codex PR 7 round 1 P1:
+      //   If the user locks the vault between POST /auth/change-password
+      //   and rewrap.commit(), the server has already accepted the new
+      //   blob. If commit no-ops, state.{blob,etag} still point to the
+      //   OLD wrap. load()'s cache short-circuit then serves that stale
+      //   snapshot for every future unlock attempt, and decrypt under
+      //   the NEW vaultKey fails every time until a full page reload.
+      const email = 'user@example.com';
+      const saltV = SALT_A;
+      const { blob, master } = await makeEncryptedBlobFor({
+        password: 'old password',
+        email,
+        saltV,
+      });
+      const vaultService = {
+        load: jest.fn().mockResolvedValue({
+          empty: false,
+          blob,
+          etag: 'E1',
+        }),
+        save: jest.fn(),
+      };
+      let last;
+      renderWithProviders({
+        authService: authedAuthService({ email, saltV }),
+        vaultService,
+        onVault: (v) => {
+          last = v;
+        },
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+      const newMaster = new Uint8Array(32).fill(0x44);
+      const rewrap = await last.rewrapForPasswordChange(newMaster);
+
+      // Simulate the lock-mid-flight race: user locks the vault
+      // between POST and commit. vaultKey should be cleared.
+      await act(async () => {
+        last.lock();
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      expect(last._hasVaultKeyForTest()).toBe(false);
+
+      // Server accepted the rewrap; commit arrives.
+      await act(async () => {
+        rewrap.commit('E42');
+      });
+
+      // Still LOCKED — we did not revive plaintext — but the cached
+      // etag MUST have rotated so the next unlock sees the new wrap
+      // via load()'s cache short-circuit.
+      expect(last.status).toBe(STATUS.LOCKED);
+      expect(last._hasVaultKeyForTest()).toBe(false);
+      expect(last.etag).toBe('E42');
+
+      // The real proof: unlocking with the NEW master succeeds
+      // WITHOUT a fresh load() round-trip. If the cached blob were
+      // still the old wrap, deriveVaultKey(newMaster) would fail to
+      // decrypt it. The fact that the short-circuit returns a
+      // decryptable snapshot proves blob was refreshed in the commit.
+      vaultService.load.mockClear();
+      await act(async () => {
+        await last.unlockWithMaster(newMaster);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+      expect(vaultService.load).not.toHaveBeenCalled();
+    },
+    PBKDF2_TIMEOUT_MS
+  );
+
+  test('rejects a missing newMaster argument', async () => {
+    const { blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({
+        empty: false,
+        blob,
+        etag: 'E1',
+      }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    await expect(last.rewrapForPasswordChange()).rejects.toThrow(
+      /newMaster required/
+    );
+    await expect(
+      last.rewrapForPasswordChange(new Uint8Array(0))
+    ).rejects.toThrow(/newMaster required/);
+  });
+});

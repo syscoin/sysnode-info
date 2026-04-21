@@ -142,7 +142,14 @@ describe('Account page — vault status card', () => {
       await screen.findByTestId('vault-status-card');
       await waitFor(() => expect(getCardStatus()).toBe('locked'));
 
-      await userEvent.type(screen.getByLabelText(/password/i), password);
+      // The account page now renders several password inputs (vault
+      // unlock, change-password). Scope to the vault input by id to
+      // avoid the "multiple matches" error from getByLabelText
+      // (PR 7 added the Change password card).
+      await userEvent.type(
+        document.getElementById('vault-password'),
+        password
+      );
       await act(async () => {
         await userEvent.click(screen.getByTestId('vault-unlock'));
       });
@@ -184,7 +191,10 @@ describe('Account page — vault status card', () => {
       await screen.findByTestId('vault-status-card');
       await waitFor(() => expect(getCardStatus()).toBe('locked'));
 
-      await userEvent.type(screen.getByLabelText(/password/i), 'wrong');
+      await userEvent.type(
+        document.getElementById('vault-password'),
+        'wrong'
+      );
       await act(async () => {
         await userEvent.click(screen.getByTestId('vault-unlock'));
       });

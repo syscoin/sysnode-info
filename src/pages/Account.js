@@ -3,6 +3,9 @@ import { useHistory } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
 import VaultStatusCard from '../components/VaultStatusCard';
+import ChangePasswordCard from '../components/ChangePasswordCard';
+import NotificationPreferencesCard from '../components/NotificationPreferencesCard';
+import DeleteAccountCard from '../components/DeleteAccountCard';
 import { useAuth } from '../context/AuthContext';
 
 export default function Account() {
@@ -92,6 +95,12 @@ export default function Account() {
           </div>
 
           <VaultStatusCard user={user} />
+
+          <ChangePasswordCard />
+
+          <NotificationPreferencesCard />
+
+          <DeleteAccountCard />
         </div>
       </section>
     </>

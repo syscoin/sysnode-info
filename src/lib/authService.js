@@ -1,5 +1,5 @@
 import { apiClient as defaultClient } from './apiClient';
-import { deriveLoginKeys } from './crypto/kdf';
+import { deriveLoginKeys, deriveMaster, deriveAuthHash } from './crypto/kdf';
 
 // High-level façade for the auth surface.
 //
@@ -56,7 +56,117 @@ export function createAuthService(client = defaultClient) {
     return res.data;
   }
 
-  return { register, verifyEmail, login, logout, me };
+  // ------------------------------------------------------------------
+  // PR 7 — change password (with atomic vault rewrap)
+  // ------------------------------------------------------------------
+  //
+  // The browser is responsible for all crypto. To keep the orchestration
+  // in the component (which has access to BOTH useAuth() and useVault()
+  // hooks), we expose two separate primitives:
+  //
+  //   1. deriveChangePasswordKeys(oldPassword, newPassword, email)
+  //        – runs PBKDF2(600k) twice to produce:
+  //            { oldAuthHash, newAuthHash, newMaster }
+  //          The caller uses `newMaster` to have VaultContext rewrap
+  //          the blob BEFORE the POST.
+  //
+  //   2. changePassword({ oldAuthHash, newAuthHash, vault? })
+  //        – thin POST wrapper. Returns the server body as-is
+  //          ({ status, expiresAt, newVaultEtag? }).
+  //
+  // Splitting it this way preserves the "authService is blind to vault
+  // state" invariant: authService never touches the rewrap output
+  // beyond forwarding the already-rewrapped (blob, ifMatch) pair to
+  // the server.
+  //
+  // The API contract — what the backend expects in the POST body —
+  // is documented in sysnode-backend/routes/auth.js:ChangePasswordSchema.
+  async function deriveChangePasswordKeys(oldPassword, newPassword, email) {
+    const oldKeys = await deriveLoginKeys(oldPassword, email);
+    const newMaster = await deriveMaster(newPassword, email);
+    const newAuthHash = await deriveAuthHash(newMaster);
+    return {
+      oldAuthHash: oldKeys.authHash,
+      newAuthHash,
+      newMaster,
+    };
+  }
+
+  async function changePassword({ oldAuthHash, newAuthHash, vault }) {
+    if (typeof oldAuthHash !== 'string' || oldAuthHash.length === 0) {
+      throw new Error('changePassword: oldAuthHash required');
+    }
+    if (typeof newAuthHash !== 'string' || newAuthHash.length === 0) {
+      throw new Error('changePassword: newAuthHash required');
+    }
+    const body = { oldAuthHash, newAuthHash };
+    if (vault) {
+      if (typeof vault.blob !== 'string' || vault.blob.length === 0) {
+        throw new Error('changePassword: vault.blob required');
+      }
+      if (typeof vault.ifMatch !== 'string' || vault.ifMatch.length === 0) {
+        throw new Error('changePassword: vault.ifMatch required');
+      }
+      body.vault = { blob: vault.blob, ifMatch: vault.ifMatch };
+    }
+    const res = await client.post('/auth/change-password', body);
+    return res.data;
+  }
+
+  // ------------------------------------------------------------------
+  // PR 7 — notification preferences
+  // ------------------------------------------------------------------
+
+  async function getPrefs() {
+    const res = await client.get('/auth/prefs');
+    return res.data.notificationPrefs || {};
+  }
+
+  // PUT /auth/prefs is a whole-document overwrite of the whitelisted
+  // namespaces (see backend comments). The server validates shape via
+  // zod; anything this call sends that isn't whitelisted produces a
+  // 400. We echo the server's normalized response so callers can
+  // update local state without a follow-up GET.
+  async function updatePrefs(prefs) {
+    const res = await client.put('/auth/prefs', prefs || {});
+    return res.data.notificationPrefs || {};
+  }
+
+  // ------------------------------------------------------------------
+  // PR 7 — account deletion (GDPR right to erasure)
+  // ------------------------------------------------------------------
+  //
+  // The caller derives `oldAuthHash` from the user's current password
+  // via deriveLoginKeys, same as /login. This re-proves possession of
+  // the password (a stolen session alone is not enough to nuke an
+  // account). On success the server returns 204 and clears sid+csrf
+  // cookies; this facade returns `true` so the UI can `await` a
+  // boolean-ish result rather than destructuring an empty body.
+  //
+  // The DELETE verb is important: browsers preflight it as CORS-
+  // non-simple, which means misconfigured cross-origin embedders
+  // can't silently fire a destructive request without the app's
+  // allowlist explicitly permitting it.
+  async function deleteAccount({ oldAuthHash }) {
+    if (typeof oldAuthHash !== 'string' || oldAuthHash.length === 0) {
+      throw new Error('deleteAccount: oldAuthHash required');
+    }
+    await client.delete('/auth/account', { data: { oldAuthHash } });
+    return true;
+  }
+
+  return {
+    register,
+    verifyEmail,
+    login,
+    logout,
+    me,
+    deriveChangePasswordKeys,
+    changePassword,
+    getPrefs,
+    updatePrefs,
+    deleteAccount,
+  };
 }
 
 export const authService = createAuthService();

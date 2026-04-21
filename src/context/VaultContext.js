@@ -15,6 +15,7 @@ import {
   decryptEnvelope,
   encryptEnvelope,
   generateDataKey,
+  rewrapEnvelope,
 } from '../lib/crypto/envelope';
 
 // ---------------------------------------------------------------------------
@@ -670,6 +671,140 @@ export function VaultProvider({
   }, [bumpGen, commit, wipeKeys]);
 
   // -----------------------------------------------------------------------
+  // rewrapForPasswordChange(newMaster)
+  //
+  // Used exclusively by AuthContext.changePassword. Produces the new
+  // vault blob + ifMatch that the client submits alongside the auth
+  // rotation, and returns a `commit(newEtag)` callback the orchestrator
+  // calls AFTER the server reports success so the in-memory vaultKey
+  // and etag stay in sync.
+  //
+  // Contract:
+  //
+  //   - Vault must be UNLOCKED when this is called (we need the
+  //     current vaultKey to rewrap, and the dataKey to confirm
+  //     we're working off the right blob). If the vault is EMPTY
+  //     — the user has no vault row at all — we return `null` so
+  //     the orchestrator knows to submit the password change
+  //     without a vault payload.
+  //
+  //   - The rewrap is done entirely in WebCrypto; `rewrapEnvelope`
+  //     preserves the payload ciphertext byte-identically and only
+  //     swaps the outer AES-GCM wrap. That keeps "small change, big
+  //     cost" password-change UX snappy regardless of vault size.
+  //
+  //   - `commit(newEtag)` is deliberately separate from the return
+  //     because the etag is only known after the server accepts the
+  //     blob. If the POST fails (412 stale, 500 server error), the
+  //     caller simply doesn't call commit; vault state is untouched.
+  // -----------------------------------------------------------------------
+  const rewrapForPasswordChange = useCallback(
+    async (newMaster) => {
+      if (!(newMaster instanceof Uint8Array) || newMaster.length === 0) {
+        throw new Error('rewrapForPasswordChange: newMaster required');
+      }
+      const s = stateRef.current;
+      if (s.status === EMPTY) {
+        // Nothing to rewrap. Orchestrator should call changePassword
+        // without a vault payload.
+        return null;
+      }
+      if (s.status !== UNLOCKED) {
+        const err = new Error('vault_not_unlocked');
+        err.code = 'vault_not_unlocked';
+        throw err;
+      }
+      if (!s.blob || !s.etag) {
+        // Defensive: UNLOCKED implies we previously observed blob+etag.
+        const err = new Error('vault_missing_blob');
+        err.code = 'vault_missing_blob';
+        throw err;
+      }
+      const oldVaultKey = vaultKeyRef.current;
+      if (!oldVaultKey) {
+        // Defensive: UNLOCKED implies vaultKey is cached.
+        const err = new Error('vault_missing_key');
+        err.code = 'vault_missing_key';
+        throw err;
+      }
+
+      const saltV = userSaltVRef.current;
+      if (!saltV) {
+        const err = new Error('vault_missing_saltv');
+        err.code = 'vault_missing_saltv';
+        throw err;
+      }
+      // Derive the NEW vaultKey from the new master. We do this here
+      // (not in the caller) to keep all raw key material inside the
+      // vault module — callers only ever see the envelope output.
+      const newVaultKey = await deriveVaultKey(newMaster, saltV);
+
+      // rewrapEnvelope preserves the payload bytes, so `data` is
+      // unchanged. We only need to update `blob`, `etag`, and the
+      // cached vaultKey.
+      const newBlob = await rewrapEnvelope(s.blob, oldVaultKey, newVaultKey);
+
+      // Snapshot the current session generation BEFORE handing the
+      // commit callback back to the caller. If the user logs out
+      // (or a different user takes over this provider) between the
+      // POST and the commit, reset() bumps sessionGenRef and the
+      // commit becomes a no-op — we must not revive a torn-down
+      // provider's state with stale blob/etag for the wrong user.
+      const startingSessionGen = sessionGenRef.current;
+
+      return {
+        blob: newBlob,
+        ifMatch: s.etag,
+        commit: (newEtag) => {
+          if (typeof newEtag !== 'string' || newEtag.length === 0) {
+            throw new Error('rewrapForPasswordChange.commit: etag required');
+          }
+          // Logout / user-swap race: reset() bumped sessionGen. The
+          // server accepted the rewrapped blob for the OLD user, but
+          // this provider is no longer authoritative for them. Do
+          // nothing — the next login will load() fresh state anyway.
+          if (sessionGenRef.current !== startingSessionGen) return;
+
+          const current = stateRef.current;
+          // EMPTY shouldn't be reachable (we returned null up-front),
+          // and any other transient status (LOADING, ERROR, IDLE) is
+          // in the middle of a reshape we shouldn't stomp on.
+          if (current.status !== UNLOCKED && current.status !== LOCKED) {
+            return;
+          }
+
+          const myGen = bumpGen();
+          if (current.status === UNLOCKED) {
+            // Happy path: same session, still unlocked. Install the
+            // new vaultKey so subsequent save()s wrap under it, and
+            // refresh the wrap bookkeeping.
+            vaultKeyRef.current = newVaultKey;
+            commit({ blob: newBlob, etag: newEtag }, myGen);
+          } else {
+            // LOCKED mid-flight: the user called lock() between our
+            // POST and this commit. The server has already accepted
+            // the rewrapped blob, so our cached {blob, etag} would
+            // otherwise point at stale ciphertext. load()'s cache
+            // short-circuit serves that cached snapshot for every
+            // subsequent unlock attempt, which then tries to
+            // decrypt old ciphertext with a vaultKey derived from
+            // the NEW password and fails every time until a full
+            // page reload.
+            //
+            // Refreshing blob+etag here keeps the short-circuit
+            // correct. We deliberately do NOT install vaultKeyRef
+            // — the vault is locked, there's no live vaultKey to
+            // hold, and the next unlock re-derives it from the new
+            // master anyway.
+            commit({ blob: newBlob, etag: newEtag }, myGen);
+          }
+        },
+      };
+    },
+    [bumpGen, commit]
+  );
+
+  // -----------------------------------------------------------------------
   // Auth lifecycle hooks.
   // -----------------------------------------------------------------------
   const prevUserIdRef = useRef(null);
@@ -717,6 +852,7 @@ export function VaultProvider({
       save,
       lock,
       reset,
+      rewrapForPasswordChange,
       _hasDataKeyForTest: hasDataKeyForTest,
       _hasVaultKeyForTest: hasVaultKeyForTest,
     }),
@@ -728,6 +864,7 @@ export function VaultProvider({
       save,
       lock,
       reset,
+      rewrapForPasswordChange,
       hasDataKeyForTest,
       hasVaultKeyForTest,
     ]
