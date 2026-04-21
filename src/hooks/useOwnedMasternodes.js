@@ -53,7 +53,21 @@ const ERROR = 'error';
 const VAULT_LOCKED = 'vault_locked';
 const EMPTY_VAULT = 'empty_vault';
 
-export function useOwnedMasternodes({ governanceService = defaultService } = {}) {
+// `enabled`:
+//   Opt-out flag for callers that mount the hook before they actually
+//   need the data (e.g. a modal that is always present in the tree
+//   but only visible when a user clicks Vote). When false, the hook
+//   skips the POST to `/gov/mns/lookup` entirely — no background
+//   load, no early address-set leakage to the server. Defaults to
+//   true to preserve the historical no-arg contract; callers that
+//   want gating pass `enabled: open`. Transitions true → false
+//   cancel any in-flight fetch by bumping the generation counter
+//   and return the hook to IDLE so a later true transition re-fires
+//   the fetch cleanly.
+export function useOwnedMasternodes({
+  governanceService = defaultService,
+  enabled = true,
+} = {}) {
   const vault = useVault();
   const [status, setStatus] = useState(IDLE);
   const [error, setError] = useState(null);
@@ -150,6 +164,19 @@ export function useOwnedMasternodes({ governanceService = defaultService } = {})
   // render the logged-in / vault-locked CTA without a stale error
   // banner bleeding through.
   useEffect(() => {
+    if (!enabled) {
+      // Caller hasn't asked us to look anything up yet (e.g. the
+      // vote modal is mounted but closed). Cancel any prior in-
+      // flight fetch so a response can't land while we're meant
+      // to be dormant, and reset state so a later `enabled: true`
+      // transition doesn't flash stale results before the new
+      // fetch resolves.
+      genRef.current += 1;
+      setMatches([]);
+      setError(null);
+      setStatus(IDLE);
+      return;
+    }
     if (!vault.isUnlocked) {
       // Any in-flight lookup is cancelled by bumping the gen counter.
       genRef.current += 1;
@@ -174,12 +201,12 @@ export function useOwnedMasternodes({ governanceService = defaultService } = {})
     // vaultKeys is captured by value; the fingerprint guarantees
     // we re-fire only when the address set actually changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint]);
+  }, [enabled, vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint]);
 
   const refresh = useCallback(async () => {
-    if (!vault.isUnlocked) return;
+    if (!enabled || !vault.isUnlocked) return;
     await doFetch(vaultKeys);
-  }, [vault.isUnlocked, vaultKeys, doFetch]);
+  }, [enabled, vault.isUnlocked, vaultKeys, doFetch]);
 
   return {
     status,

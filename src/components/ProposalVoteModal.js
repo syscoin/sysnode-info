@@ -116,6 +116,15 @@ export default function ProposalVoteModal({
 }) {
   const { isAuthenticated } = useAuth();
   const vault = useVault();
+  // Gate the lookup on `open` so merely mounting the modal from a
+  // parent page (Governance always renders <ProposalVoteModal
+  // open={...} />) does NOT POST vault addresses to
+  // `/gov/mns/lookup`. Without this, every authenticated user with
+  // an unlocked vault would hit the backend on every Governance
+  // page view even if they never click Vote — unnecessary load +
+  // premature address disclosure. The hook resets itself to IDLE
+  // when `enabled` flips false, and re-fetches cleanly when the
+  // user opens the modal.
   const {
     owned,
     isLoading,
@@ -125,6 +134,7 @@ export default function ProposalVoteModal({
     isVaultEmpty,
   } = useOwnedMasternodes({
     governanceService,
+    enabled: open,
   });
 
   // `selected` is null while the user hasn't explicitly interacted

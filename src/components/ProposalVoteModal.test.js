@@ -160,6 +160,56 @@ describe('ProposalVoteModal — guard rails', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  test('open=false never POSTs to /gov/mns/lookup, even with unlocked vault', async () => {
+    // Governance.js always renders <ProposalVoteModal open={...} />,
+    // so the hook must stay dormant until the user actually opens
+    // the modal. Otherwise every authenticated user with an
+    // unlocked vault hits /gov/mns/lookup on every page view and
+    // leaks all their vault addresses pre-intent.
+    const service = makeService();
+    renderModal({
+      open: false,
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+  });
+
+  test('open flipping false → true triggers the lookup exactly once', async () => {
+    const service = makeService();
+    useAuth.mockReturnValue(makeAuth());
+    useVault.mockReturnValue(UNLOCKED_VAULT_WITH_TWO_KEYS);
+    const proposal = { Key: 'h'.repeat(64), name: 'Sponsor', title: 'Prop' };
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open={false}
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+
+    rerender(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+    await waitFor(() =>
+      expect(service.lookupOwnedMasternodes).toHaveBeenCalledTimes(1)
+    );
+  });
+
   test('unauthenticated users see the Login CTA', () => {
     renderModal({
       auth: makeAuth({ isAuthenticated: false, user: null }),

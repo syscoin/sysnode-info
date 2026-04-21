@@ -15,8 +15,11 @@ jest.mock('../context/VaultContext', () => ({
 // eslint-disable-next-line import/first
 const { useVault } = require('../context/VaultContext');
 
-function Probe({ service, onValue }) {
-  const v = useOwnedMasternodes({ governanceService: service });
+function Probe({ service, onValue, enabled }) {
+  const v = useOwnedMasternodes({
+    governanceService: service,
+    ...(enabled === undefined ? {} : { enabled }),
+  });
   React.useEffect(() => {
     onValue(v);
   });
@@ -222,6 +225,105 @@ describe('useOwnedMasternodes', () => {
       expect(values.at(-1).status).toBe('error');
     });
     expect(values.at(-1).error).toBe('lookup_failed');
+  });
+
+  test('enabled=false keeps hook idle and does not POST even with unlocked vault + keys', async () => {
+    // Scenario: modal is mounted but not yet opened. Governance.js
+    // keeps <ProposalVoteModal open={voteProposal !== null} /> in
+    // the tree at all times, so a hook that fetches unconditionally
+    // would leak vault addresses to /gov/mns/lookup on every page
+    // view. With enabled=false the hook must stay IDLE and not
+    // call the service.
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = { lookupOwnedMasternodes: jest.fn() };
+    const values = [];
+
+    render(
+      <Probe service={service} enabled={false} onValue={(v) => values.push(v)} />
+    );
+
+    // Give any would-be effect a chance to fire.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+    expect(values.at(-1).status).toBe('idle');
+    expect(values.at(-1).owned).toEqual([]);
+  });
+
+  test('enabled flipping false → true triggers the lookup', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: 'col1',
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+    };
+    const values = [];
+
+    const { rerender } = render(
+      <Probe service={service} enabled={false} onValue={(v) => values.push(v)} />
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+
+    rerender(
+      <Probe service={service} enabled={true} onValue={(v) => values.push(v)} />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.lookupOwnedMasternodes).toHaveBeenCalledTimes(1);
+  });
+
+  test('enabled flipping true → false cancels and resets to idle', async () => {
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: 'col1',
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+    };
+    const values = [];
+
+    const { rerender } = render(
+      <Probe service={service} enabled={true} onValue={(v) => values.push(v)} />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+
+    rerender(
+      <Probe service={service} enabled={false} onValue={(v) => values.push(v)} />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('idle'));
+    expect(values.at(-1).owned).toEqual([]);
   });
 
   test('refresh() re-invokes the backend with current keys', async () => {
