@@ -78,8 +78,22 @@ function outcomeLabel(o) {
 // for BOTH MNs when the user only sees one checkbox, and deselecting
 // "one" would silently skip the other. The collateral outpoint is
 // the only globally-unique per-MN identifier the backend provides.
+// Normalize to lowercase so the key is stable across backend
+// endpoints that historically disagreed on hash casing (`/gov/vote`
+// and `/gov/mns/lookup` both accept mixed-case hashes and are
+// consistent at the moment, but receipts / future producers may
+// return upper-case hex). Anything that builds outpoint keys from
+// arbitrary producers MUST go through this helper or `outpointKey`
+// below so that Set lookups never miss on a case mismatch.
 function mnId(m) {
-  return `${m.collateralHash}:${m.collateralIndex}`;
+  const h = typeof m.collateralHash === 'string'
+    ? m.collateralHash.toLowerCase()
+    : m.collateralHash;
+  return `${h}:${m.collateralIndex}`;
+}
+
+function outpointKey(collateralHash, collateralIndex) {
+  return mnId({ collateralHash, collateralIndex });
 }
 
 function errorCopy(code) {
@@ -108,6 +122,38 @@ function errorCopy(code) {
   }
 }
 
+// Per-row success copy. `skipped` comes from the backend short-circuit
+// paths (receipts.decideRelay) — surfacing the distinction in the DONE
+// view is what earns the difference between "the network accepted my
+// yes vote" and "the network already had my yes vote, we didn't
+// bother relaying it again".
+function successCopy({ outcome, skipped }) {
+  const label = outcomeLabel(outcome);
+  if (skipped === 'already_on_chain') return `${label} already on-chain`;
+  if (skipped === 'recently_relayed') return `${label} already submitted`;
+  return `${label} accepted`;
+}
+
+// Row-level receipt summary shown next to every owned MN in the
+// picker. Intentionally terse: a full status chip with colour + hover
+// detail is PR 6b territory. For PR 6a we just want the user to
+// understand why a row is unchecked when the default-selection logic
+// excluded it.
+function receiptBadge(receipt, currentOutcome) {
+  if (!receipt) return null;
+  if (receipt.status === 'confirmed') {
+    const sameOutcome = receipt.voteOutcome === currentOutcome;
+    if (sameOutcome) {
+      return `Already voted ${outcomeLabel(receipt.voteOutcome).toLowerCase()}`;
+    }
+    return `Voted ${outcomeLabel(receipt.voteOutcome).toLowerCase()} (will change)`;
+  }
+  if (receipt.status === 'failed') return 'Last attempt failed';
+  if (receipt.status === 'stale') return 'Needs retry';
+  if (receipt.status === 'relayed') return 'Awaiting confirmation';
+  return null;
+}
+
 export default function ProposalVoteModal({
   open,
   onClose,
@@ -132,9 +178,15 @@ export default function ProposalVoteModal({
     error,
     refresh,
     isVaultEmpty,
+    reconcileError,
   } = useOwnedMasternodes({
     governanceService,
     enabled: open,
+    // Passing the proposal hash here causes the hook to additionally
+    // fetch /gov/receipts and join per-MN receipt rows onto `owned`.
+    // When the modal is closed we pass null so no receipts request
+    // fires — same rationale as `enabled` above.
+    proposalHash: open && proposal && typeof proposal.Key === 'string' ? proposal.Key : null,
   });
 
   // `selected` is null while the user hasn't explicitly interacted
@@ -176,10 +228,44 @@ export default function ProposalVoteModal({
     };
   }, [open, proposal && proposal.Key]);
 
+  // Default selection is receipt-aware: when the user hasn't
+  // interacted yet, an owned MN with a confirmed on-chain receipt at
+  // the currently-chosen outcome is UN-checked by default (we don't
+  // want the user to burn a second voteraw on a vote the network
+  // already has — Core penalises duplicate votes as vote_too_often).
+  //
+  // Rows whose confirmed receipt has a DIFFERENT outcome from the
+  // current one remain checked: that's a legitimate vote-change,
+  // which decideRelay() on the backend will re-submit.
+  //
+  // Rows without a receipt, or with a receipt in a non-confirmed
+  // state (failed / stale / relayed), stay checked — they either
+  // haven't been counted yet or need another pass to make it.
+  //
+  // Once the user clicks any row / select-all / clear, `selected`
+  // becomes a concrete Set and we respect it verbatim even if the
+  // outcome radio changes. That's intentional: explicit user intent
+  // should not be overwritten by a receipt-driven recalculation.
+  const computeDefault = useCallback(
+    (ownedList, currentOutcome) => {
+      const set = new Set();
+      for (const m of ownedList) {
+        const r = m.receipt;
+        const alreadyVotedSameOutcome =
+          r &&
+          r.status === 'confirmed' &&
+          r.voteOutcome === currentOutcome;
+        if (!alreadyVotedSameOutcome) set.add(mnId(m));
+      }
+      return set;
+    },
+    []
+  );
+
   const effectiveSelected = useMemo(() => {
     if (selected !== null) return selected;
-    return new Set(owned.map(mnId));
-  }, [selected, owned]);
+    return computeDefault(owned, outcome);
+  }, [selected, owned, outcome, computeDefault]);
 
   // Reset local state whenever the modal opens or the proposal
   // changes. `proposal.Key` is the governance hash and is unique
@@ -199,14 +285,17 @@ export default function ProposalVoteModal({
   const toggle = useCallback(
     (id) => {
       setSelected((prev) => {
-        const base = prev === null ? new Set(owned.map(mnId)) : prev;
+        // First interaction: seed from the receipt-aware default so
+        // the user's click only changes *this* row rather than also
+        // implicitly selecting rows the default had excluded.
+        const base = prev === null ? computeDefault(owned, outcome) : prev;
         const next = new Set(base);
         if (next.has(id)) next.delete(id);
         else next.add(id);
         return next;
       });
     },
-    [owned]
+    [owned, outcome, computeDefault]
   );
 
   const selectAll = useCallback(() => {
@@ -225,164 +314,249 @@ export default function ProposalVoteModal({
     [phase, effectiveSelected.size, owned.length]
   );
 
-  const startVoting = useCallback(async () => {
-    if (!proposal || typeof proposal.Key !== 'string') {
-      setPhase(PHASE.ERROR);
-      setSubmitError('missing_proposal');
-      return;
-    }
-    const chosen = owned.filter((m) => effectiveSelected.has(mnId(m)));
-    if (chosen.length === 0) return;
+  // Core vote-run routine. Shared by the initial Sign & Submit click
+  // and the Retry failed button on the DONE screen.
+  //
+  // Parameters:
+  //   chosen     — concrete list of owned-masternode rows to sign and
+  //                submit. Caller is responsible for whatever
+  //                selection logic applies (effectiveSelected for the
+  //                initial run, failed-row filter for retry).
+  //   mergeBase  — optional list of prior successful per-row results
+  //                to prepend to this run's byEntry. Used by Retry
+  //                failed so the DONE screen keeps showing the rows
+  //                that succeeded on the previous attempt; without
+  //                this, a retry that only re-submits failed rows
+  //                would make the prior successes disappear and
+  //                undercount `accepted`.
+  const runVotePass = useCallback(
+    async (chosen, { mergeBase = null } = {}) => {
+      if (!proposal || typeof proposal.Key !== 'string') {
+        setPhase(PHASE.ERROR);
+        setSubmitError('missing_proposal');
+        return;
+      }
+      if (!Array.isArray(chosen) || chosen.length === 0) return;
 
-    // Pin the cancellation generation for this run. The cleanup
-    // effect on [open, proposal.Key] bumps runGenRef whenever the
-    // modal closes or switches proposals. Any post-await checkpoint
-    // that sees a mismatch aborts before side-effects (submitVote
-    // relay, setPhase/setResults on a stale view) can fire.
-    const myGen = runGenRef.current;
-    const isCancelled = () => runGenRef.current !== myGen;
+      // Pin the cancellation generation for this run. The cleanup
+      // effect on [open, proposal.Key] bumps runGenRef whenever the
+      // modal closes or switches proposals. Any post-await
+      // checkpoint that sees a mismatch aborts before side-effects
+      // (submitVote relay, setPhase/setResults on a stale view) can
+      // fire.
+      const myGen = runGenRef.current;
+      const isCancelled = () => runGenRef.current !== myGen;
 
-    setPhase(PHASE.SIGNING);
-    setSignProgress({ done: 0, total: chosen.length });
-    setSubmitError(null);
-    setResults(null);
+      setPhase(PHASE.SIGNING);
+      setSignProgress({ done: 0, total: chosen.length });
+      setSubmitError(null);
+      setResults(null);
 
-    // One timestamp for the whole batch. See file header for
-    // rationale.
-    const time = Math.floor(Date.now() / 1000);
-    const entries = [];
-    const signingErrors = [];
-    for (let i = 0; i < chosen.length; i++) {
-      const mn = chosen[i];
-      try {
-        // Yield to the event loop every few signatures so the modal
-        // can repaint the progress text. 0ms setTimeout is enough —
-        // secp256k1.sign is ~1ms so this is a rounding error on
-        // overall latency.
-        if (i > 0 && i % 4 === 0) {
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise((r) => setTimeout(r, 0));
-          if (isCancelled()) return;
+      const priorAccepted = Array.isArray(mergeBase)
+        ? mergeBase.filter((e) => e.ok).length
+        : 0;
+      // mergeBase may carry forward *failed* rows the caller opted
+      // to preserve (e.g. Retry failed can't re-sign a row whose
+      // masternode dropped off the owned list — it remains as an
+      // unresolved failure so the user still sees and counts it).
+      // Fold them into the rejected tally so the DONE summary
+      // reflects reality rather than hiding the unresolved work.
+      const priorRejected = Array.isArray(mergeBase)
+        ? mergeBase.filter((e) => !e.ok).length
+        : 0;
+      const baseEntries = Array.isArray(mergeBase) ? mergeBase : [];
+
+      // One timestamp for the whole batch. See file header for
+      // rationale.
+      const time = Math.floor(Date.now() / 1000);
+      const entries = [];
+      const signingErrors = [];
+      for (let i = 0; i < chosen.length; i++) {
+        const mn = chosen[i];
+        try {
+          if (i > 0 && i % 4 === 0) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => setTimeout(r, 0));
+            if (isCancelled()) return;
+          }
+          const { voteSig } = signVoteFromWif({
+            wif: mn.wif,
+            collateralHash: mn.collateralHash,
+            collateralIndex: mn.collateralIndex,
+            proposalHash: proposal.Key,
+            voteOutcome: outcome,
+            voteSignal: 'funding',
+            time,
+          });
+          entries.push({
+            collateralHash: mn.collateralHash,
+            collateralIndex: mn.collateralIndex,
+            voteSig,
+            _keyId: mn.keyId,
+            _label: mn.label,
+            _address: mn.address,
+          });
+        } catch (err) {
+          signingErrors.push({
+            keyId: mn.keyId,
+            label: mn.label,
+            address: mn.address,
+            collateralHash: mn.collateralHash,
+            collateralIndex: mn.collateralIndex,
+            code: (err && err.code) || 'sign_failed',
+          });
         }
-        const { voteSig } = signVoteFromWif({
-          wif: mn.wif,
-          collateralHash: mn.collateralHash,
-          collateralIndex: mn.collateralIndex,
+        if (isCancelled()) return;
+        setSignProgress({ done: i + 1, total: chosen.length });
+      }
+
+      if (isCancelled()) return;
+
+      if (entries.length === 0) {
+        setPhase(PHASE.DONE);
+        const signingRows = signingErrors.map((e) => ({
+          keyId: e.keyId,
+          label: e.label,
+          address: e.address,
+          collateralHash: e.collateralHash,
+          collateralIndex: e.collateralIndex,
+          ok: false,
+          error: e.code,
+          skipped: null,
+        }));
+        setResults({
+          accepted: priorAccepted,
+          rejected: signingErrors.length + priorRejected,
+          byEntry: [...baseEntries, ...signingRows],
+        });
+        return;
+      }
+
+      setPhase(PHASE.SUBMITTING);
+      try {
+        const payload = entries.map(
+          ({ collateralHash, collateralIndex, voteSig }) => ({
+            collateralHash,
+            collateralIndex,
+            voteSig,
+          })
+        );
+        if (isCancelled()) return;
+        const resp = await governanceService.submitVote({
           proposalHash: proposal.Key,
           voteOutcome: outcome,
           voteSignal: 'funding',
           time,
+          entries: payload,
         });
-        entries.push({
-          collateralHash: mn.collateralHash,
-          collateralIndex: mn.collateralIndex,
-          voteSig,
-          // Attached for per-row display only — NOT sent to the
-          // backend, which cares about the outpoint and sig only.
-          _keyId: mn.keyId,
-          _label: mn.label,
-          _address: mn.address,
-        });
-      } catch (err) {
-        signingErrors.push({
-          keyId: mn.keyId,
-          label: mn.label,
-          address: mn.address,
-          code: (err && err.code) || 'sign_failed',
-        });
-      }
-      if (isCancelled()) return;
-      setSignProgress({ done: i + 1, total: chosen.length });
-    }
-
-    if (isCancelled()) return;
-
-    if (entries.length === 0) {
-      // Nothing to relay — all selected keys failed to sign. Show
-      // errors as the final state.
-      setPhase(PHASE.DONE);
-      setResults({
-        accepted: 0,
-        rejected: signingErrors.length,
-        byEntry: signingErrors.map((e) => ({
-          keyId: e.keyId,
-          label: e.label,
-          address: e.address,
-          ok: false,
-          error: e.code,
-        })),
-      });
-      return;
-    }
-
-    setPhase(PHASE.SUBMITTING);
-    try {
-      // Strip client-only metadata before sending.
-      const payload = entries.map(({ collateralHash, collateralIndex, voteSig }) => ({
-        collateralHash,
-        collateralIndex,
-        voteSig,
-      }));
-      // Last cancellation check before the network hit. If the user
-      // closed the modal during signing, we must NOT relay votes
-      // they intended to cancel — Core treats vote replay as a rate-
-      // limit hit (vote_too_often) and the user sees confusing
-      // side-effects on other devices.
-      if (isCancelled()) return;
-      const resp = await governanceService.submitVote({
-        proposalHash: proposal.Key,
-        voteOutcome: outcome,
-        voteSignal: 'funding',
-        time,
-        entries: payload,
-      });
-      if (isCancelled()) return;
-      // Join the backend per-entry results back to our vault rows
-      // so the UI can show a friendly label / address per outcome.
-      // The backend keys each result row on (collateralHash, index);
-      // we match on the same tuple.
-      const byOutpoint = new Map();
-      for (const e of entries) {
-        byOutpoint.set(
-          `${e.collateralHash}:${e.collateralIndex}`,
-          e
-        );
-      }
-      const byEntry = (Array.isArray(resp.results) ? resp.results : []).map(
-        (r) => {
-          const k = byOutpoint.get(`${r.collateralHash}:${r.collateralIndex}`);
-          return {
-            keyId: k ? k._keyId : null,
-            label: k ? k._label : '',
-            address: k ? k._address : '',
-            ok: !!r.ok,
-            error: r.error || null,
-          };
+        if (isCancelled()) return;
+        const byOutpoint = new Map();
+        for (const e of entries) {
+          byOutpoint.set(outpointKey(e.collateralHash, e.collateralIndex), e);
         }
-      );
-      // Append per-row signing failures so the user sees every
-      // selected MN in the result list, not just the relayed ones.
-      for (const e of signingErrors) {
-        byEntry.push({
-          keyId: e.keyId,
-          label: e.label,
-          address: e.address,
-          ok: false,
-          error: e.code,
+        const byEntry = (Array.isArray(resp.results) ? resp.results : []).map(
+          (r) => {
+            const k = byOutpoint.get(
+              outpointKey(r.collateralHash, r.collateralIndex)
+            );
+            return {
+              keyId: k ? k._keyId : null,
+              label: k ? k._label : '',
+              address: k ? k._address : '',
+              collateralHash: r.collateralHash,
+              collateralIndex: r.collateralIndex,
+              ok: !!r.ok,
+              error: r.error || null,
+              // `skipped` is the backend decideRelay verdict: 'already_on_chain'
+              // or 'recently_relayed'. Preserved so successCopy() can
+              // render a distinct status string.
+              skipped: r.skipped || null,
+            };
+          }
+        );
+        for (const e of signingErrors) {
+          byEntry.push({
+            keyId: e.keyId,
+            label: e.label,
+            address: e.address,
+            collateralHash: e.collateralHash,
+            collateralIndex: e.collateralIndex,
+            ok: false,
+            error: e.code,
+            skipped: null,
+          });
+        }
+        setResults({
+          accepted: (resp.accepted || 0) + priorAccepted,
+          rejected:
+            (resp.rejected || 0) + signingErrors.length + priorRejected,
+          byEntry: [...baseEntries, ...byEntry],
         });
+        setPhase(PHASE.DONE);
+      } catch (err) {
+        if (isCancelled()) return;
+        setSubmitError((err && err.code) || 'submit_failed');
+        setPhase(PHASE.ERROR);
       }
-      setResults({
-        accepted: resp.accepted,
-        rejected: resp.rejected + signingErrors.length,
-        byEntry,
-      });
-      setPhase(PHASE.DONE);
-    } catch (err) {
-      if (isCancelled()) return;
-      setSubmitError((err && err.code) || 'submit_failed');
-      setPhase(PHASE.ERROR);
-    }
-  }, [proposal, owned, effectiveSelected, outcome, governanceService]);
+    },
+    [proposal, outcome, governanceService]
+  );
+
+  const startVoting = useCallback(() => {
+    const chosen = owned.filter((m) => effectiveSelected.has(mnId(m)));
+    return runVotePass(chosen);
+  }, [owned, effectiveSelected, runVotePass]);
+
+  // Retry only the failed rows from the current DONE view.
+  //
+  // Intentionally keeps the same outcome: changing outcome is a
+  // destructive operation (different signatures, different relay
+  // intent) and belongs in the picker, not a retry button. A user
+  // who wants to change their vote should close the modal and
+  // re-open it, or clear the selection and start over.
+  //
+  // mergeBase composition:
+  //   * Every prior SUCCESS is carried forward verbatim (we don't
+  //     want the successful rows to vanish on retry).
+  //   * Prior FAILURES whose MN is still in `owned` are being
+  //     retried — they DROP from mergeBase so the new attempt's
+  //     row replaces the old one instead of duplicating it.
+  //   * Prior FAILURES whose MN is no longer in `owned` (or whose
+  //     row is missing collateral info we can't map back) are
+  //     *also* carried forward. These are "unretryable" — the
+  //     user still deserves to see and count the unresolved
+  //     failure in the DONE summary, otherwise the rejected count
+  //     silently under-reports after retry.
+  const retryFailed = useCallback(() => {
+    if (!results || !Array.isArray(results.byEntry)) return;
+    // Outpoints of failed rows whose MN is still retryable (present
+    // in the current `owned` list). These are the ones we'll
+    // re-sign; everything else is preserved verbatim.
+    const ownedIds = new Set(owned.map(mnId));
+    const retriedKeys = new Set(
+      results.byEntry
+        .filter(
+          (e) =>
+            !e.ok &&
+            e.collateralHash &&
+            e.collateralIndex != null &&
+            ownedIds.has(outpointKey(e.collateralHash, e.collateralIndex))
+        )
+        .map((e) => outpointKey(e.collateralHash, e.collateralIndex))
+    );
+    if (retriedKeys.size === 0) return;
+    const chosen = owned.filter((m) => retriedKeys.has(mnId(m)));
+    const mergeBase = results.byEntry.filter((e) => {
+      if (e.ok) return true;
+      // Failures carried forward: (a) rows missing outpoint info
+      // we can't map, (b) rows whose MN is no longer retryable.
+      // In both cases dropping them would silently under-report
+      // the rejected count after retry.
+      if (!(e.collateralHash && e.collateralIndex != null)) return true;
+      return !retriedKeys.has(outpointKey(e.collateralHash, e.collateralIndex));
+    });
+    return runVotePass(chosen, { mergeBase });
+  }, [owned, results, runVotePass]);
 
   if (!open) return null;
 
@@ -516,6 +690,19 @@ export default function ProposalVoteModal({
       </div>
     );
   } else if (phase === PHASE.DONE) {
+    const hasFailures = results.byEntry.some((r) => !r.ok);
+    // "Retry failed" is only meaningful if at least one failed row
+    // maps back to a masternode we can still see in `owned` — if
+    // the failures are all for MNs that dropped off the list
+    // (deregistered, etc) there's nothing we could actually retry.
+    const ownedIds = new Set(owned.map(mnId));
+    const retryable = results.byEntry.some(
+      (r) =>
+        !r.ok &&
+        r.collateralHash &&
+        r.collateralIndex != null &&
+        ownedIds.has(outpointKey(r.collateralHash, r.collateralIndex))
+    );
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-done">
         <p>
@@ -529,19 +716,36 @@ export default function ProposalVoteModal({
               className={r.ok ? 'vote-result is-ok' : 'vote-result is-error'}
               data-testid="vote-result-row"
               data-ok={r.ok ? 'true' : 'false'}
+              data-skipped={r.skipped || ''}
             >
               <code>{r.address}</code>
               <span className="vote-result__label">{r.label || ''}</span>
               <span className="vote-result__status">
-                {r.ok ? `${outcomeLabel(outcome)} accepted` : errorCopy(r.error)}
+                {r.ok
+                  ? successCopy({ outcome, skipped: r.skipped })
+                  : errorCopy(r.error)}
               </span>
             </li>
           ))}
         </ul>
         <div className="vote-modal__actions">
+          {hasFailures && retryable ? (
+            <button
+              type="button"
+              className="button button--primary button--small"
+              onClick={retryFailed}
+              data-testid="vote-modal-retry-failed"
+            >
+              Retry failed
+            </button>
+          ) : null}
           <button
             type="button"
-            className="button button--primary button--small"
+            className={
+              hasFailures && retryable
+                ? 'button button--ghost button--small'
+                : 'button button--primary button--small'
+            }
             onClick={onClose}
           >
             Close
@@ -633,9 +837,22 @@ export default function ProposalVoteModal({
           </div>
         </div>
 
+        {reconcileError ? (
+          <p
+            className="vote-modal__reconcile-note"
+            data-testid="vote-modal-reconcile-error"
+          >
+            We couldn't verify your past votes against the network just
+            now ({reconcileError}). You can still vote — recent votes
+            may be re-submitted, which is harmless.
+          </p>
+        ) : null}
+
         <ul className="vote-modal__list" data-testid="vote-modal-list">
           {owned.map((m) => {
             const id = mnId(m);
+            const badge = receiptBadge(m.receipt, outcome);
+            const receiptStatus = m.receipt ? m.receipt.status : '';
             return (
               <li
                 key={id}
@@ -643,6 +860,7 @@ export default function ProposalVoteModal({
                 data-testid="vote-modal-row"
                 data-mn-id={id}
                 data-key-id={m.keyId}
+                data-receipt-status={receiptStatus}
               >
                 <label>
                   <input
@@ -655,6 +873,14 @@ export default function ProposalVoteModal({
                     <code className="vote-modal__row-address">{m.address}</code>
                     {m.label ? (
                       <span className="vote-modal__row-label">{m.label}</span>
+                    ) : null}
+                    {badge ? (
+                      <span
+                        className="vote-modal__row-receipt"
+                        data-testid="vote-modal-row-receipt"
+                      >
+                        {badge}
+                      </span>
                     ) : null}
                   </span>
                   <span className="vote-modal__row-status">

@@ -22,15 +22,38 @@ import { apiClient as defaultClient } from './apiClient';
 //       entries: [{ collateralHash, collateralIndex, voteSig }]
 //     }
 //     200  : { accepted, rejected, results: [{
-//               collateralHash, collateralIndex, ok, error?
+//               collateralHash, collateralIndex, ok, error?, skipped?
 //             }] }
 //
-// Both endpoints return backend-normalised `{ error: <code> }` on 4xx.
+//   GET /gov/receipts       auth
+//     query: ?proposalHash=<64-hex>[&refresh=1]
+//     200  : { receipts: [{
+//               collateralHash, collateralIndex,
+//               proposalHash, voteOutcome, voteSignal, voteTime,
+//               status, lastError, submittedAt, verifiedAt,
+//             }, ...],
+//             reconciled: boolean,
+//             reconcileError?: 'rpc_failed' | 'reconcile_failed',
+//             updated?: number,
+//           }
+//
+//   GET /gov/receipts/summary   auth
+//     200 : { summary: [{
+//              proposalHash, total,
+//              relayed, confirmed, stale, failed,
+//              confirmedYes, confirmedNo, confirmedAbstain,
+//              latestSubmittedAt, latestVerifiedAt,
+//            }, ...] }
+//
+// All endpoints return backend-normalised `{ error: <code> }` on 4xx.
 // We re-throw a typed Error(code) so UI components can switch on a
 // stable vocabulary without inspecting HTTP statuses.
 
 const LOOKUP_PATH = '/gov/mns/lookup';
 const VOTE_PATH = '/gov/vote';
+const RECEIPTS_PATH = '/gov/receipts';
+const RECEIPTS_SUMMARY_PATH = '/gov/receipts/summary';
+const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 
 function govError(code, status, cause) {
   const e = new Error(code);
@@ -138,7 +161,70 @@ export function createGovernanceService(client = defaultClient) {
     }
   }
 
-  return { lookupOwnedMasternodes, submitVote };
+  // Fetch the caller's vote receipts for a single proposal. The
+  // backend runs an on-demand reconciliation against
+  // `gobject_getcurrentvotes` before returning, unless every receipt
+  // is already confirmed within its freshness window (in which case
+  // `reconciled: false` and the rows come straight from the DB). Pass
+  // `{ refresh: true }` to force a reconcile regardless — useful
+  // right after a vote modal closes so the UI shows confirmed rows
+  // as soon as they propagate.
+  //
+  // Returned shape is always a plain object with `receipts` defaulted
+  // to `[]` so UI consumers don't need to defensive-default each
+  // field. A transient `reconcileError` surfaces when reconciliation
+  // itself failed; the receipt list is still the pre-reconcile DB
+  // state so the UI can render what it has and show a soft warning.
+  async function fetchReceipts(proposalHash, { refresh = false } = {}) {
+    if (typeof proposalHash !== 'string' || !HEX64_RE.test(proposalHash)) {
+      throw govError('invalid_proposal_hash', 0);
+    }
+    try {
+      const res = await client.get(RECEIPTS_PATH, {
+        params: {
+          proposalHash,
+          ...(refresh ? { refresh: 1 } : {}),
+        },
+      });
+      const data = res.data || {};
+      return {
+        receipts: Array.isArray(data.receipts) ? data.receipts : [],
+        reconciled: Boolean(data.reconciled),
+        reconcileError:
+          typeof data.reconcileError === 'string'
+            ? data.reconcileError
+            : null,
+        updated: Number.isInteger(data.updated) ? data.updated : 0,
+      };
+    } catch (err) {
+      if (err && err.code) throw err;
+      throw govError('network_error', 0, err);
+    }
+  }
+
+  // Compact per-proposal rollup of the caller's receipts. Cheap enough
+  // to call on every Governance page load — no RPC, one grouped
+  // SELECT. Use this to drive cohort-aware badges without fetching
+  // the full receipt list for every proposal upfront.
+  async function fetchReceiptsSummary() {
+    try {
+      const res = await client.get(RECEIPTS_SUMMARY_PATH);
+      const data = res.data || {};
+      return {
+        summary: Array.isArray(data.summary) ? data.summary : [],
+      };
+    } catch (err) {
+      if (err && err.code) throw err;
+      throw govError('network_error', 0, err);
+    }
+  }
+
+  return {
+    lookupOwnedMasternodes,
+    submitVote,
+    fetchReceipts,
+    fetchReceiptsSummary,
+  };
 }
 
 export const governanceService = createGovernanceService();

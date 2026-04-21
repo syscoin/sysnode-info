@@ -690,6 +690,269 @@ describe('ProposalVoteModal — error paths', () => {
     });
   });
 
+  test('Retry failed re-submits only the failed rows and preserves prior successes in the DONE view', async () => {
+    // First pass: one row succeeds, one row rejected. Second pass
+    // (Retry failed): only the previously-failed MN is re-signed
+    // and re-submitted; the prior success stays visible with its
+    // original status row, and the totals reflect the merged state.
+    const service = makeService({
+      submit: jest
+        .fn()
+        // First attempt: k2 rejected by voteraw.
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 1,
+          results: [
+            { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        })
+        // Retry attempt: only k2 re-signs/re-submits and is accepted.
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 0,
+          results: [
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    expect(signVoteFromWif).toHaveBeenCalledTimes(2);
+    // Retry button is visible because one row failed and it maps to
+    // an MN still present in the `owned` list.
+    const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      // Final totals: 1 prior success + 1 retry success = 2 accepted.
+      expect(screen.getByText(/2/).closest('p').textContent).toMatch(
+        /2 accepted/i
+      );
+    });
+    // k2 was the only row re-signed on the retry pass (k1 already ok).
+    expect(signVoteFromWif).toHaveBeenCalledTimes(3);
+    expect(signVoteFromWif.mock.calls[2][0].collateralHash).toBe('d'.repeat(64));
+    // The second submitVote payload contains only the failed row.
+    expect(service.submitVote).toHaveBeenCalledTimes(2);
+    const retryPayload = service.submitVote.mock.calls[1][0];
+    expect(retryPayload.entries).toHaveLength(1);
+    expect(retryPayload.entries[0].collateralHash).toBe('d'.repeat(64));
+
+    // After the retry succeeds the failed row should no longer be
+    // shown in the `is-error` state; both rows are now is-ok.
+    await waitFor(() => {
+      const rows = screen.getAllByTestId('vote-result-row');
+      expect(rows.every((r) => r.getAttribute('data-ok') === 'true')).toBe(
+        true
+      );
+    });
+    // Retry button is gone because there's nothing left to retry.
+    expect(screen.queryByTestId('vote-modal-retry-failed')).toBeNull();
+  });
+
+  test('Retry failed preserves unretryable failures in the merged summary', async () => {
+    // Scenario: first pass produces three failure rows — two for
+    // MNs that ARE still in `owned` (retryable) and one for an
+    // outpoint that is NOT in `owned` (simulating an MN that
+    // disappeared, or a phantom row the backend emitted). Retry
+    // must re-sign the two retryable rows while keeping the third
+    // failure visible and counted in the final rejected tally,
+    // otherwise the DONE summary silently under-reports the
+    // unresolved work.
+    const PHANTOM = 'e'.repeat(64);
+    const service = makeService({
+      submit: jest
+        .fn()
+        // First attempt: both selected MNs fail, and the backend
+        // additionally reports a failure for PHANTOM:0 (an
+        // outpoint the frontend never sent — modelling a stale
+        // row we have no way to retry).
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 3,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: PHANTOM,
+              collateralIndex: 0,
+              ok: false,
+              error: 'mn_not_found',
+            },
+          ],
+        })
+        // Retry attempt: the two retryable rows succeed.
+        .mockResolvedValueOnce({
+          accepted: 2,
+          rejected: 0,
+          results: [
+            { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    // First DONE: 3 rejections visible.
+    expect(screen.getAllByTestId('vote-result-row')).toHaveLength(3);
+
+    fireEvent.click(screen.getByTestId('vote-modal-retry-failed'));
+
+    await waitFor(() => {
+      // Retry payload contains ONLY the two retryable rows —
+      // PHANTOM is not re-sent because it isn't in `owned`.
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    const retryPayload = service.submitVote.mock.calls[1][0];
+    expect(retryPayload.entries).toHaveLength(2);
+    expect(retryPayload.entries.map((e) => e.collateralHash).sort()).toEqual(
+      ['c'.repeat(64), 'd'.repeat(64)].sort()
+    );
+
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      // 2 accepted (retry successes), 1 rejected (PHANTOM carried
+      // forward). The critical property: the phantom row is NOT
+      // silently dropped from the rejected count.
+      expect(summary.textContent).toMatch(/2 accepted/i);
+      expect(summary.textContent).toMatch(/1 rejected/i);
+    });
+    // And the PHANTOM row is still visible in the list so the user
+    // sees what's unresolved.
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(3);
+    const phantomRow = rows.find(
+      (r) => within(r).queryByText(/no longer active|vote failed/i) !== null
+    );
+    expect(phantomRow).toBeTruthy();
+    expect(phantomRow.getAttribute('data-ok')).toBe('false');
+  });
+
+  test('Retry failed tolerates case-mismatched collateral hashes between endpoints', async () => {
+    // Codex-review guard: if `/gov/mns/lookup` emits lowercase hashes
+    // but `/gov/vote`'s response echoes them uppercase (or any
+    // permutation), the retry path previously compared raw strings
+    // and would classify every real failure as "unretryable",
+    // silently hiding the Retry button. The outpoint-key helper
+    // normalizes casing on both sides so such misalignment cannot
+    // cause the user to lose the ability to retry.
+    const lookupHash = 'c'.repeat(64); // lowercase from /gov/mns/lookup
+    const voteHash = 'C'.repeat(64); // uppercase from /gov/vote
+    const service = makeService({
+      lookup: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: lookupHash,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      submit: jest
+        .fn()
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 1,
+          results: [
+            {
+              collateralHash: voteHash,
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 0,
+          results: [
+            { collateralHash: lookupHash, collateralIndex: 0, ok: true },
+          ],
+        }),
+    });
+    renderModal({
+      vault: {
+        ...makeVault({ isUnlocked: true }),
+        data: {
+          keys: [
+            {
+              keyId: 'k1',
+              wif: 'L4rK1eSyt6yJ2e7wGrHqH2Dq8oBFhrDpGZsJZxJV9Z1Kzcc2KP3e',
+              collateralHash: lookupHash,
+              collateralIndex: 0,
+              address: 'sys1qa',
+              label: 'mn-1',
+            },
+          ],
+        },
+      },
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    // Retry button must be visible — despite the backend echoing
+    // the hash in uppercase, the frontend recognises the failed
+    // row as retryable because case is normalized.
+    const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+    expect(retryBtn).toBeInTheDocument();
+
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      expect(summary.textContent).toMatch(/1 accepted/i);
+      expect(summary.textContent).toMatch(/0 rejected/i);
+    });
+  });
+
   test('per-signing-row failure surfaces in the DONE list alongside backend results', async () => {
     // Make signVoteFromWif throw for the second key; the first one
     // still signs. Backend relay should get only one entry, but the
@@ -738,5 +1001,296 @@ describe('ProposalVoteModal — error paths', () => {
     expect(within(bad).getByText(/vote failed/i)).toBeInTheDocument();
 
     expect(service.submitVote.mock.calls[0][0].entries).toHaveLength(1);
+  });
+});
+
+describe('ProposalVoteModal — receipts-aware default selection', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  function makeReceiptService({ receipts = [], reconcileError = null } = {}) {
+    const s = makeService();
+    s.fetchReceipts = jest.fn().mockResolvedValue({
+      receipts,
+      reconciled: !reconcileError,
+      reconcileError,
+      updated: 0,
+    });
+    return s;
+  }
+
+  function confirmedReceipt({ hash, index, outcome = 'yes' }) {
+    return {
+      collateralHash: hash,
+      collateralIndex: index,
+      status: 'confirmed',
+      voteOutcome: outcome,
+      voteSignal: 'funding',
+      voteTime: 1700000000,
+      verifiedAt: 1700000001,
+      updatedAt: 1700000001,
+      createdAt: 1700000000,
+      lastError: null,
+    };
+  }
+
+  test('default selection excludes MNs with a confirmed receipt at the current outcome', async () => {
+    // MN "A" (c:0) already has a confirmed 'yes' vote on this
+    // proposal. The initial outcome is 'yes', so A should render
+    // unchecked by default — we don't want to re-submit a vote the
+    // network already has. MN "B" has no receipt and stays checked.
+    const service = makeReceiptService({
+      receipts: [
+        confirmedReceipt({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' }),
+      ],
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    // fetchReceipts got called with the proposal hash.
+    expect(service.fetchReceipts).toHaveBeenCalledWith(
+      'h'.repeat(64),
+      expect.objectContaining({ refresh: false })
+    );
+
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      false
+    );
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`).checked).toBe(
+      true
+    );
+    // The submit button reflects the reduced default count.
+    expect(screen.getByTestId('vote-modal-submit').textContent).toMatch(
+      /1 vote/
+    );
+
+    // And row A shows a receipt badge telling the user why.
+    const rowA = screen.getByTestId('vote-modal-list').querySelector(
+      `[data-mn-id="${OUTPOINT_A}"]`
+    );
+    expect(within(rowA).getByTestId('vote-modal-row-receipt').textContent).toMatch(
+      /already voted yes/i
+    );
+  });
+
+  test('switching outcome recomputes the default to include a vote-change candidate', async () => {
+    // MN A has confirmed 'yes'. User switches outcome to 'no' → A
+    // should now be CHECKED by default because the intent is to
+    // change the vote. The badge flips to "(will change)".
+    const service = makeReceiptService({
+      receipts: [
+        confirmedReceipt({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' }),
+      ],
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      false
+    );
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+
+    // Default selection recomputes because the user hasn't interacted
+    // with any checkbox yet (selected === null).
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      true
+    );
+    const rowA = screen.getByTestId('vote-modal-list').querySelector(
+      `[data-mn-id="${OUTPOINT_A}"]`
+    );
+    expect(within(rowA).getByTestId('vote-modal-row-receipt').textContent).toMatch(
+      /voted yes \(will change\)/i
+    );
+  });
+
+  test('explicit user interaction freezes the selection across outcome changes', async () => {
+    // Same setup as above but the user deselects MN B before
+    // changing outcome. Once `selected` becomes a concrete Set we
+    // must not override it on outcome changes — otherwise a user
+    // who explicitly unchecked a row would see it silently get
+    // re-checked by the receipt-aware default.
+    const service = makeReceiptService({
+      receipts: [
+        confirmedReceipt({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' }),
+      ],
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    // Default: A unchecked (confirmed-yes), B checked.
+    fireEvent.click(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`));
+    // Now A unchecked, B unchecked. Submit should be disabled.
+    expect(screen.getByTestId('vote-modal-submit')).toBeDisabled();
+
+    // Change outcome to 'no'. Explicit selection must persist —
+    // A does NOT flip back to checked.
+    fireEvent.click(screen.getByTestId('vote-modal-outcome-no'));
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      false
+    );
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`).checked).toBe(
+      false
+    );
+  });
+
+  test('Select all overrides the receipt-aware default', async () => {
+    // Explicit "select all" is a user intent we must respect even
+    // if it re-submits votes that already succeeded on-chain. The
+    // backend decideRelay() will short-circuit them as skipped so
+    // this is harmless — but we still want the checkbox to reflect
+    // the selection the user chose.
+    const service = makeReceiptService({
+      receipts: [
+        confirmedReceipt({ hash: 'c'.repeat(64), index: 0, outcome: 'yes' }),
+      ],
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('vote-modal-select-all'));
+
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      true
+    );
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`).checked).toBe(
+      true
+    );
+  });
+
+  test('DONE view uses distinct copy for short-circuited backend results', async () => {
+    // decideRelay() on the backend can return ok:true with a
+    // skipped reason ('already_on_chain' or 'recently_relayed').
+    // The DONE view should surface the distinction so the user
+    // isn't told "Yes accepted" for a vote that wasn't actually
+    // relayed again.
+    const service = makeService({
+      submit: jest.fn().mockResolvedValue({
+        accepted: 2,
+        rejected: 0,
+        results: [
+          {
+            collateralHash: 'c'.repeat(64),
+            collateralIndex: 0,
+            ok: true,
+            skipped: 'already_on_chain',
+          },
+          {
+            collateralHash: 'd'.repeat(64),
+            collateralIndex: 1,
+            ok: true,
+            skipped: 'recently_relayed',
+          },
+        ],
+      }),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(2);
+    const alreadyOnChain = rows.find(
+      (r) => r.getAttribute('data-skipped') === 'already_on_chain'
+    );
+    const recentlyRelayed = rows.find(
+      (r) => r.getAttribute('data-skipped') === 'recently_relayed'
+    );
+    expect(alreadyOnChain).toBeTruthy();
+    expect(recentlyRelayed).toBeTruthy();
+    expect(within(alreadyOnChain).getByText(/already on-chain/i)).toBeInTheDocument();
+    expect(within(recentlyRelayed).getByText(/already submitted/i)).toBeInTheDocument();
+  });
+
+  test('reconcile error surfaces as a non-blocking banner', async () => {
+    // Receipts fetch failed (backend RPC down, etc). Voting still
+    // works — the banner warns the user that recent votes may be
+    // re-submitted, which is harmless thanks to decideRelay.
+    const service = makeReceiptService({
+      receipts: [],
+      reconcileError: 'rpc_failed',
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId('vote-modal-reconcile-error').textContent
+    ).toMatch(/rpc_failed/);
+    // Voting stays functional.
+    expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+  });
+
+  test('non-confirmed receipts (failed/stale) leave the row checked with a hint badge', async () => {
+    // A 'failed' receipt means the last attempt didn't land. We
+    // want the user to include that row by default (so another
+    // attempt actually happens) AND to see a label explaining the
+    // state, so the unchanged checkbox isn't a silent surprise.
+    const service = makeReceiptService({
+      receipts: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          status: 'failed',
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          lastError: 'vote_too_often',
+          voteTime: 1700000000,
+          verifiedAt: null,
+          updatedAt: 1700000100,
+          createdAt: 1700000000,
+        },
+      ],
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      true
+    );
+    const rowA = screen.getByTestId('vote-modal-list').querySelector(
+      `[data-mn-id="${OUTPOINT_A}"]`
+    );
+    expect(within(rowA).getByTestId('vote-modal-row-receipt').textContent).toMatch(
+      /last attempt failed/i
+    );
   });
 });
