@@ -347,6 +347,16 @@ export default function ProposalVoteModal({
   // (submitError stays `network_error` for the underlying cause).
   const [offlineQueued, setOfflineQueued] = useState(false);
 
+  // Cross-session snapshot of the queued offline intent. Populated
+  // by the peek-on-open effect when a sessionStorage entry survives
+  // from a prior modal session (close/reopen or full page reload).
+  // Null in the in-session flow — there the live `chosenForRun`
+  // state is still populated and Resume/rerun can go straight
+  // through `rerunLastBatch`. Stored in a ref because its only
+  // readers are event handlers (Resume / Discard click paths),
+  // and we don't want writes to trigger re-renders.
+  const queuedSnapshotRef = useRef(null);
+
   // Scheduled auto-retry timestamp (Date.now() at which the retry
   // fires). Null when no retry is pending. Separate from the
   // timer ref so the render path can drive a visible countdown
@@ -432,6 +442,7 @@ export default function ProposalVoteModal({
     setOfflineQueued(false);
     setAutoRetryAt(null);
     pendingChosenRef.current = null;
+    queuedSnapshotRef.current = null;
     autoRetryAttemptsRef.current = 0;
     if (autoRetryTimerRef.current) {
       clearTimeout(autoRetryTimerRef.current);
@@ -828,10 +839,31 @@ export default function ProposalVoteModal({
   // deliberately DO NOT auto-resume — the previous session ended
   // in an error state; asking the user to confirm restores their
   // sense of control over what's being sent to the network.
+  //
+  // The Resume/Discard UI lives inside the PHASE.ERROR branch, so
+  // merely setting `offlineQueued` isn't enough: on a close/reopen
+  // or full page reload the fresh modal starts in PHASE.PICK and
+  // the persisted intent would be invisible. Transition into the
+  // same ERROR+network_error state the in-session flow produces
+  // so the user sees the same recovery affordance regardless of
+  // whether they closed the modal in between. The queued entry
+  // itself is stashed in a ref for the Resume handler to rebuild
+  // the batch against the freshly-loaded `owned` list.
   useEffect(() => {
     if (!open || !proposal || typeof proposal.Key !== 'string') return;
     const queued = peekOfflineVote(proposal.Key);
-    if (queued) setOfflineQueued(true);
+    if (!queued) return;
+    queuedSnapshotRef.current = queued;
+    setOfflineQueued(true);
+    // Restore the outcome the user chose before going offline so
+    // the picker / confirmation copy stays consistent if they back
+    // out to PICK; resume uses the same value out of the queue.
+    if (queued.voteOutcome === 'yes' || queued.voteOutcome === 'no' ||
+        queued.voteOutcome === 'abstain') {
+      setOutcome(queued.voteOutcome);
+    }
+    setSubmitError('network_error');
+    setPhase(PHASE.ERROR);
   }, [open, proposal]);
 
   // Cancel a pending auto-retry on user request. Exposed in the
@@ -851,29 +883,76 @@ export default function ProposalVoteModal({
     setAutoRetryAt(null);
   }, [submitError]);
 
-  // Resume a queued-offline vote. Drains the sessionStorage
-  // entry and reruns the last batch; if the batch has already
-  // been cleared by a prior reset (e.g. proposal switched), we
-  // fall back to the picker so the user can rebuild selection.
+  // Resume a queued-offline vote. Two shapes:
+  //
+  //   In-session: the failed batch still lives in `chosenForRun`,
+  //     so we just drain the sessionStorage copy and rerun that
+  //     exact list. Trivial hand-off to rerunLastBatch.
+  //
+  //   Cross-session (close/reopen or page reload): `chosenForRun`
+  //     was reset to [] on open. We rehydrate it from the queued
+  //     snapshot by matching each stored target's outpoint against
+  //     the currently-loaded `owned` list (we need the live row
+  //     to pick up the WIF from the unlocked vault — the queued
+  //     entry deliberately never stored signatures or private
+  //     keys). Targets whose MN is no longer owned are silently
+  //     dropped; if the intersection is empty we fall back to
+  //     the picker so the user can rebuild selection manually.
   const resumeOfflineQueue = useCallback(() => {
     if (!proposal || typeof proposal.Key !== 'string') return;
-    drainOfflineVote(proposal.Key);
-    setOfflineQueued(false);
-    // If the chosen list is still around (modal stayed open
-    // throughout), rerun directly. Otherwise the user sees the
-    // picker repopulated from `owned` with their last outcome.
     if (Array.isArray(chosenForRun) && chosenForRun.length > 0) {
+      drainOfflineVote(proposal.Key);
+      queuedSnapshotRef.current = null;
+      setOfflineQueued(false);
       rerunLastBatch();
-    } else {
+      return;
+    }
+    const snap = queuedSnapshotRef.current;
+    if (!snap || !Array.isArray(snap.targets) || snap.targets.length === 0) {
+      drainOfflineVote(proposal.Key);
+      queuedSnapshotRef.current = null;
+      setOfflineQueued(false);
       setPhase(PHASE.PICK);
       setSubmitError(null);
+      return;
     }
-  }, [proposal, chosenForRun, rerunLastBatch]);
+    const ownedByOutpoint = new Map(owned.map((m) => [mnId(m), m]));
+    const chosen = [];
+    for (const t of snap.targets) {
+      if (!t || !t.collateralHash || t.collateralIndex == null) continue;
+      const key = outpointKey(t.collateralHash, t.collateralIndex);
+      const m = ownedByOutpoint.get(key);
+      if (m) chosen.push(m);
+    }
+    drainOfflineVote(proposal.Key);
+    queuedSnapshotRef.current = null;
+    setOfflineQueued(false);
+    if (chosen.length === 0) {
+      setPhase(PHASE.PICK);
+      setSubmitError(null);
+      return;
+    }
+    setSubmitError(null);
+    setRetryReadyAt(null);
+    setAutoRetryAt(null);
+    runVotePass(chosen);
+  }, [proposal, chosenForRun, owned, rerunLastBatch, runVotePass]);
 
   const discardOfflineQueue = useCallback(() => {
     if (!proposal || typeof proposal.Key !== 'string') return;
     drainOfflineVote(proposal.Key);
+    const wasCrossSession = queuedSnapshotRef.current != null;
+    queuedSnapshotRef.current = null;
     setOfflineQueued(false);
+    // Cross-session surfaces landed the modal in PHASE.ERROR on
+    // open just to render the Resume/Discard UI. Discarding the
+    // queued intent means the user wants a fresh start, so fall
+    // back to the picker rather than stranding them in an error
+    // view with no underlying error.
+    if (wasCrossSession) {
+      setPhase(PHASE.PICK);
+      setSubmitError(null);
+    }
   }, [proposal]);
 
   // Automatic resume on `online` event: only actually trigger the
@@ -881,11 +960,20 @@ export default function ProposalVoteModal({
   // phase AND the error was a network_error. Any other state
   // means the user has moved on, and firing off a relay would be
   // surprising.
+  //
+  // Cross-session queues (surfaced via peekOfflineVote on reopen)
+  // are explicitly NOT auto-resumed here: the user hasn't yet
+  // acknowledged the persisted intent, so going back online
+  // shouldn't silently submit a batch on their behalf. The
+  // queuedSnapshotRef is cleared by resumeOfflineQueue /
+  // discardOfflineQueue, so once the user has acknowledged the
+  // surfaced queue this guard naturally drops.
   useEffect(() => {
     if (!open) return undefined;
     return onOnline(() => {
       if (phase !== PHASE.ERROR) return;
       if (submitError !== 'network_error') return;
+      if (queuedSnapshotRef.current != null) return;
       rerunLastBatch();
     });
   }, [open, phase, submitError, rerunLastBatch]);

@@ -891,6 +891,150 @@ describe('ProposalVoteModal — error paths', () => {
     }
   });
 
+  test('cross-session: pre-existing offline queue surfaces as ERROR with Resume/Discard on reopen', async () => {
+    // Codex P1: closing the modal (or reloading the page) while a
+    // vote is queued offline must re-surface the pending intent
+    // the next time the modal opens. Simulate that by seeding
+    // sessionStorage with the canonical queue shape, opening a
+    // fresh modal, and asserting:
+    //
+    //   * The modal lands in PHASE.ERROR with the `offline`
+    //     descriptor (not the empty PICK that shipped originally).
+    //   * Resume rehydrates the batch from queued.targets ×
+    //     owned, calls submitVote with exactly those outpoints,
+    //     and drains the sessionStorage entry.
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'no',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+        {
+          collateralHash: 'd'.repeat(64),
+          collateralIndex: 1,
+          keyId: 'k2',
+          address: 'sys1qb',
+          label: 'beta',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      const service = makeService({
+        submit: jest.fn().mockResolvedValue({
+          accepted: 2,
+          rejected: 0,
+          results: [
+            { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The modal must surface the queued intent immediately —
+      // not render the empty PICK view.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(
+        within(errorState).getByTestId('vote-modal-offline-resume')
+      ).toBeInTheDocument();
+      expect(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      ).toBeInTheDocument();
+
+      // Wait for `owned` to load so resume has something to map
+      // targets against.
+      await waitFor(() => {
+        expect(service.lookupOwnedMasternodes).toHaveBeenCalled();
+      });
+
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-resume')
+      );
+
+      await waitFor(() => {
+        expect(service.submitVote).toHaveBeenCalledTimes(1);
+      });
+      const payload = service.submitVote.mock.calls[0][0];
+      expect(payload.proposalHash).toBe(PROPOSAL_HASH);
+      // Outcome is restored from the queued entry, not the default.
+      expect(payload.voteOutcome).toBe('no');
+      expect(payload.entries).toHaveLength(2);
+      const outpoints = payload.entries
+        .map((e) => `${e.collateralHash}:${e.collateralIndex}`)
+        .sort();
+      expect(outpoints).toEqual(
+        [`${'c'.repeat(64)}:0`, `${'d'.repeat(64)}:1`].sort()
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+      // Queue drained after resume.
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: Discard on a surfaced offline queue returns to PICK and drops the entry', async () => {
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      const service = makeService();
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      const errorState = await screen.findByTestId('vote-modal-error');
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+
+      // Back to the picker, and the queue entry is gone.
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('vote-modal-error')).toBeNull();
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      // No relay attempt.
+      expect(service.submitVote).not.toHaveBeenCalled();
+    } finally {
+      window.sessionStorage.clear();
+    }
+  });
+
   test('already_voted renders as a benign dedup, not a red failure', async () => {
     // When the backend echoes already_voted for a row, the
     // network already has the exact vote the user wanted — so
