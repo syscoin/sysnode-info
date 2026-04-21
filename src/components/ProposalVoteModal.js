@@ -451,16 +451,22 @@ export default function ProposalVoteModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, proposal && proposal.Key]);
 
-  // Tick for any visible countdown. Runs only while a retry
-  // timer is armed (rate-limit OR auto-retry) — picker/DONE
-  // phases leave it idle so we don't burn CPU on a background
-  // interval.
+  // Tick for any visible countdown. Runs only while the modal
+  // is open AND a retry timer is armed (rate-limit OR auto-
+  // retry) — picker/DONE phases leave it idle so we don't burn
+  // CPU on a background interval. The `open` guard is critical:
+  // retryReadyAt is set on rate-limited failure but is NOT
+  // cleared when the modal closes (the reset-on-open effect
+  // only fires on open=true). Without `open` in the armed
+  // check a user who closes the modal while a rate-limit
+  // countdown is showing would leave a 250ms interval and a
+  // re-render loop alive in the background until unmount.
   useEffect(() => {
-    const armed = retryReadyAt != null || autoRetryAt != null;
+    const armed = open && (retryReadyAt != null || autoRetryAt != null);
     if (!armed) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 250);
     return () => clearInterval(id);
-  }, [retryReadyAt, autoRetryAt]);
+  }, [open, retryReadyAt, autoRetryAt]);
 
   // Tear down any pending auto-retry timer when the modal closes
   // or the proposal changes. Without this, navigating away during
@@ -970,18 +976,23 @@ export default function ProposalVoteModal({
   const discardOfflineQueue = useCallback(() => {
     if (!proposal || typeof proposal.Key !== 'string') return;
     drainOfflineVote(proposal.Key);
-    const wasCrossSession = queuedSnapshotRef.current != null;
     queuedSnapshotRef.current = null;
     setOfflineQueued(false);
-    // Cross-session surfaces landed the modal in PHASE.ERROR on
-    // open just to render the Resume/Discard UI. Discarding the
-    // queued intent means the user wants a fresh start, so fall
-    // back to the picker rather than stranding them in an error
-    // view with no underlying error.
-    if (wasCrossSession) {
-      setPhase(PHASE.PICK);
-      setSubmitError(null);
-    }
+    // Discard is a definitive "don't send this batch" — the
+    // user is walking away from the intent. Both in-session
+    // and cross-session flows must exit PHASE.ERROR / clear
+    // submitError so:
+    //   (a) the ERROR body no longer renders (no stale
+    //       Resume/Discard UI),
+    //   (b) the onOnline auto-resume guard (which matches on
+    //       phase===ERROR && submitError==='network_error')
+    //       stops firing — otherwise reconnecting after Discard
+    //       would silently submit the batch anyway, violating
+    //       the explicit user intent.
+    setPhase(PHASE.PICK);
+    setSubmitError(null);
+    setRetryReadyAt(null);
+    setAutoRetryAt(null);
   }, [proposal]);
 
   // Automatic resume on `online` event: only actually trigger the

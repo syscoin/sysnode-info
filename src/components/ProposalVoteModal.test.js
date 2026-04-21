@@ -740,6 +740,87 @@ describe('ProposalVoteModal — error paths', () => {
     expect(seconds).toBeLessThanOrEqual(3);
   });
 
+  test('closing the modal during a rate-limit countdown clears the tick interval', async () => {
+    // Codex P2: the countdown tick effect was armed purely by
+    // retryReadyAt/autoRetryAt, and retryReadyAt wasn't cleared
+    // when `open` flipped to false — so closing on a
+    // rate-limited error left a 250ms interval (and a persistent
+    // setState→re-render loop) alive in the background until
+    // the component unmounted. Include `open` in the armed
+    // predicate so the interval is torn down on close.
+    const err = new Error('nope');
+    err.code = 'rate_limited';
+    err.retryAfterMs = 60_000;
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    useAuth.mockReturnValue(makeAuth());
+    useVault.mockReturnValue(UNLOCKED_VAULT_WITH_TWO_KEYS);
+
+    const setIntervalSpy = jest.spyOn(global, 'setInterval');
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    try {
+      const proposal = {
+        Key: 'h'.repeat(64),
+        name: 'SomeSponsor',
+        title: 'Test Prop',
+      };
+      const { rerender } = render(
+        <MemoryRouter>
+          <ProposalVoteModal
+            open
+            onClose={() => {}}
+            proposal={proposal}
+            governanceService={service}
+          />
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      await screen.findByTestId('vote-modal-rate-limit-countdown');
+
+      // The tick interval is armed while the countdown is shown.
+      const beforeCloseIntervalCalls = setIntervalSpy.mock.calls.filter(
+        (args) => args[1] === 250
+      ).length;
+      expect(beforeCloseIntervalCalls).toBeGreaterThan(0);
+      const beforeCloseClears = clearIntervalSpy.mock.calls.length;
+
+      // Close the modal without draining the countdown. The tick
+      // effect's cleanup MUST fire so no new 250ms interval is
+      // armed and the previous one is cleared.
+      rerender(
+        <MemoryRouter>
+          <ProposalVoteModal
+            open={false}
+            onClose={() => {}}
+            proposal={proposal}
+            governanceService={service}
+          />
+        </MemoryRouter>
+      );
+
+      // At least one cleared interval after close.
+      expect(clearIntervalSpy.mock.calls.length).toBeGreaterThan(
+        beforeCloseClears
+      );
+      // No NEW 250ms interval armed after close. (Arbitrarily
+      // sample a few rAFs / microtasks so we observe any stray
+      // re-arming attempts.)
+      await new Promise((r) => setTimeout(r, 50));
+      const afterCloseIntervalCalls = setIntervalSpy.mock.calls.filter(
+        (args) => args[1] === 250
+      ).length;
+      expect(afterCloseIntervalCalls).toBe(beforeCloseIntervalCalls);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
   test('server_error shows an auto-retry countdown and a cancel button', async () => {
     // The first submit returns a 5xx-style error; we verify the
     // modal schedules an auto-retry (visible countdown) and that
@@ -773,6 +854,63 @@ describe('ProposalVoteModal — error paths', () => {
         within(errorState).queryByTestId('vote-modal-auto-retry-countdown')
       ).toBeNull();
     });
+  });
+
+  test('in-session Discard stops the online-event auto-resume from firing', async () => {
+    // Codex P2: Discard on an in-session offline error only
+    // cleared offlineQueued/sessionStorage but left phase=ERROR
+    // and submitError='network_error'. The onOnline handler
+    // guard still matched, so on reconnect the batch would
+    // auto-submit — directly violating the user's Discard
+    // intent. Verify that Discard now exits PHASE.ERROR so the
+    // guard drops and no rerun fires on reconnect.
+    const originalOnLine = Object.getOwnPropertyDescriptor(
+      window.navigator,
+      'onLine'
+    );
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      get: () => false,
+    });
+    try {
+      window.sessionStorage.clear();
+      const netErr = new Error('net');
+      netErr.code = 'network_error';
+      const service = makeService({
+        submit: jest.fn().mockRejectedValueOnce(netErr),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+      const errorState = await screen.findByTestId('vote-modal-error');
+      // Discard the queued intent.
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      // Discard must exit the ERROR view entirely.
+      await waitFor(() => {
+        expect(screen.queryByTestId('vote-modal-error')).toBeNull();
+      });
+      expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      // Come back online: the auto-resume guard must NOT fire.
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        get: () => true,
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event('online'));
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // Only the initial (failed) submit ever ran.
+      expect(service.submitVote).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalOnLine) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnLine);
+      }
+      window.sessionStorage.clear();
+    }
   });
 
   test('online-event auto-resume drains the offline queue before rerunning', async () => {
