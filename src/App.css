@@ -1844,8 +1844,19 @@
   content: attr(data-tip);
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%) translateY(3px);
+  /* PR 6d (Codex r1): render tooltip BELOW the chip rather than
+   * above. The proposal table wraps every row in
+   * `.proposal-table { overflow: hidden }` (required so row
+   * background fills stay inside the table's rounded corners),
+   * which clipped the upward tooltip on the top row. Downward
+   * the tooltip renders inside the row's own cell or into the
+   * next row — both are still inside the table's clip region,
+   * so it stays visible for every row except the very bottom
+   * one. Other contexts that host chips (modal, hero, activity
+   * card) don't impose vertical clipping, so they benefit from
+   * downward rendering too without regressing. */
+  top: calc(100% + 6px);
+  transform: translateX(-50%) translateY(-3px);
   background: rgba(18, 21, 28, 0.95);
   color: #fff;
   font-size: 0.74rem;
@@ -1886,7 +1897,7 @@
 .status-chip[data-tip][data-tip-align='end']::after {
   left: auto;
   right: 0;
-  transform: translateX(0) translateY(3px);
+  transform: translateX(0) translateY(-3px);
 }
 
 .status-chip[data-tip][data-tip-align='end']:hover::after,
@@ -2781,7 +2792,15 @@
     gap: 6px 14px;
   }
   .vote-modal__actions {
-    flex-wrap: wrap-reverse;
+    /* PR 6d (Codex r1): use plain `wrap` rather than `wrap-reverse`.
+     * DOM order in every modal state is [primary, secondary], so
+     * `wrap` keeps the primary CTA on the first (top) wrapped line
+     * and the secondary on the second (bottom) wrapped line. That
+     * keeps tab order top-to-bottom aligned with visible order —
+     * `wrap-reverse` would invert tab order vs visual order, which
+     * Codex flagged as an a11y regression on error states that add
+     * extra buttons. */
+    flex-wrap: wrap;
     gap: 8px;
   }
   /* Buttons that live in the actions row grow to full width once
