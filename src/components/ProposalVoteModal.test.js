@@ -1018,12 +1018,13 @@ describe('ProposalVoteModal — error paths', () => {
     fireEvent.click(screen.getByTestId('vote-modal-submit'));
 
     const errorState = await screen.findByTestId('vote-modal-error');
-    // First error session: countdown visible. Cancel to consume
-    // the budget manually (simpler and deterministic than waiting
-    // for two real timers to fire).
-    expect(
-      within(errorState).getByTestId('vote-modal-auto-retry-countdown')
-    ).toBeInTheDocument();
+    // First error session: countdown visible. The countdown is
+    // armed by the scheduler useEffect which runs after React
+    // commits the error state, so use findByTestId to poll
+    // past that effect tick. Cancel to consume the budget
+    // manually (simpler and deterministic than waiting for
+    // two real timers to fire).
+    await within(errorState).findByTestId('vote-modal-auto-retry-countdown');
     fireEvent.click(
       within(errorState).getByTestId('vote-modal-cancel-auto-retry')
     );
@@ -1305,6 +1306,62 @@ describe('ProposalVoteModal — error paths', () => {
       if (originalOnLine) {
         Object.defineProperty(window.navigator, 'onLine', originalOnLine);
       }
+      window.sessionStorage.clear();
+    }
+  });
+
+  test('cross-session: queued-offline recovery is reachable even when the MN lookup fails', async () => {
+    // Codex P2: the lookup-error guard (`isError` branch) used
+    // to preempt the ERROR body unconditionally. If the user
+    // reopened the modal with a queued intent *and* the
+    // /gov/mns/lookup call was currently failing, they'd see
+    // the lookup-error view with only Retry/Close — no way to
+    // Discard or Resume the queued entry. The entry stayed in
+    // sessionStorage and re-surfaced on every reopen. Same fix
+    // pattern as the owned.length===0 case: yield to the
+    // offlineQueued ERROR body.
+    const PROPOSAL_HASH = 'h'.repeat(64);
+    const queuedEntry = {
+      proposalHash: PROPOSAL_HASH,
+      voteOutcome: 'yes',
+      voteSignal: 'funding',
+      targets: [
+        {
+          collateralHash: 'c'.repeat(64),
+          collateralIndex: 0,
+          keyId: 'k1',
+          address: 'sys1qa',
+          label: 'alpha',
+        },
+      ],
+      queuedAt: Date.now() - 1000,
+      retryAfterMs: null,
+    };
+    window.sessionStorage.clear();
+    window.sessionStorage.setItem(
+      'gov:pending:v1',
+      JSON.stringify({ [PROPOSAL_HASH]: queuedEntry })
+    );
+    try {
+      // Lookup rejects — simulates the upstream /gov/mns/lookup
+      // outage Codex flagged.
+      const service = makeService({
+        lookup: jest.fn().mockRejectedValue(new Error('upstream_down')),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      // The lookup-error guard must NOT preempt the offline
+      // ERROR body. Resume/Discard must be reachable.
+      const errorState = await screen.findByTestId('vote-modal-error');
+      expect(errorState.getAttribute('data-error-code')).toBe('offline');
+      expect(screen.queryByTestId('vote-modal-lookup-error')).toBeNull();
+      fireEvent.click(
+        within(errorState).getByTestId('vote-modal-offline-discard')
+      );
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('gov:pending:v1')).toBeNull();
+      });
+    } finally {
       window.sessionStorage.clear();
     }
   });

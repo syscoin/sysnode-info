@@ -1197,7 +1197,17 @@ export default function ProposalVoteModal({
         <p>Looking up your masternodes...</p>
       </div>
     );
-  } else if (isError) {
+  } else if (
+    isError &&
+    !(phase === PHASE.ERROR && offlineQueued)
+  ) {
+    // Same preemption story as `owned.length === 0`: the lookup
+    // error body has no path to drain a queued offline intent,
+    // so a user whose /gov/mns/lookup fails after reopening the
+    // modal would be stuck with the stale entry re-surfacing on
+    // every reopen. Yield to the ERROR branch whenever
+    // offlineQueued is set so Resume/Discard stay reachable;
+    // the ERROR body tolerates an empty `owned` list.
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-lookup-error">
         <p>Couldn't load your masternode list ({error || 'error'}).</p>
