@@ -866,6 +866,93 @@ describe('ProposalVoteModal — error paths', () => {
     expect(phantomRow.getAttribute('data-ok')).toBe('false');
   });
 
+  test('Retry failed tolerates case-mismatched collateral hashes between endpoints', async () => {
+    // Codex-review guard: if `/gov/mns/lookup` emits lowercase hashes
+    // but `/gov/vote`'s response echoes them uppercase (or any
+    // permutation), the retry path previously compared raw strings
+    // and would classify every real failure as "unretryable",
+    // silently hiding the Retry button. The outpoint-key helper
+    // normalizes casing on both sides so such misalignment cannot
+    // cause the user to lose the ability to retry.
+    const lookupHash = 'c'.repeat(64); // lowercase from /gov/mns/lookup
+    const voteHash = 'C'.repeat(64); // uppercase from /gov/vote
+    const service = makeService({
+      lookup: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: lookupHash,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      submit: jest
+        .fn()
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 1,
+          results: [
+            {
+              collateralHash: voteHash,
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 0,
+          results: [
+            { collateralHash: lookupHash, collateralIndex: 0, ok: true },
+          ],
+        }),
+    });
+    renderModal({
+      vault: {
+        ...makeVault({ isUnlocked: true }),
+        data: {
+          keys: [
+            {
+              keyId: 'k1',
+              wif: 'L4rK1eSyt6yJ2e7wGrHqH2Dq8oBFhrDpGZsJZxJV9Z1Kzcc2KP3e',
+              collateralHash: lookupHash,
+              collateralIndex: 0,
+              address: 'sys1qa',
+              label: 'mn-1',
+            },
+          ],
+        },
+      },
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    // Retry button must be visible — despite the backend echoing
+    // the hash in uppercase, the frontend recognises the failed
+    // row as retryable because case is normalized.
+    const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+    expect(retryBtn).toBeInTheDocument();
+
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      expect(summary.textContent).toMatch(/1 accepted/i);
+      expect(summary.textContent).toMatch(/0 rejected/i);
+    });
+  });
+
   test('per-signing-row failure surfaces in the DONE list alongside backend results', async () => {
     // Make signVoteFromWif throw for the second key; the first one
     // still signs. Backend relay should get only one entry, but the

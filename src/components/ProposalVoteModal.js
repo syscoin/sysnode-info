@@ -78,8 +78,22 @@ function outcomeLabel(o) {
 // for BOTH MNs when the user only sees one checkbox, and deselecting
 // "one" would silently skip the other. The collateral outpoint is
 // the only globally-unique per-MN identifier the backend provides.
+// Normalize to lowercase so the key is stable across backend
+// endpoints that historically disagreed on hash casing (`/gov/vote`
+// and `/gov/mns/lookup` both accept mixed-case hashes and are
+// consistent at the moment, but receipts / future producers may
+// return upper-case hex). Anything that builds outpoint keys from
+// arbitrary producers MUST go through this helper or `outpointKey`
+// below so that Set lookups never miss on a case mismatch.
 function mnId(m) {
-  return `${m.collateralHash}:${m.collateralIndex}`;
+  const h = typeof m.collateralHash === 'string'
+    ? m.collateralHash.toLowerCase()
+    : m.collateralHash;
+  return `${h}:${m.collateralIndex}`;
+}
+
+function outpointKey(collateralHash, collateralIndex) {
+  return mnId({ collateralHash, collateralIndex });
 }
 
 function errorCopy(code) {
@@ -438,15 +452,12 @@ export default function ProposalVoteModal({
         if (isCancelled()) return;
         const byOutpoint = new Map();
         for (const e of entries) {
-          byOutpoint.set(
-            `${e.collateralHash}:${e.collateralIndex}`,
-            e
-          );
+          byOutpoint.set(outpointKey(e.collateralHash, e.collateralIndex), e);
         }
         const byEntry = (Array.isArray(resp.results) ? resp.results : []).map(
           (r) => {
             const k = byOutpoint.get(
-              `${r.collateralHash}:${r.collateralIndex}`
+              outpointKey(r.collateralHash, r.collateralIndex)
             );
             return {
               keyId: k ? k._keyId : null,
@@ -529,9 +540,9 @@ export default function ProposalVoteModal({
             !e.ok &&
             e.collateralHash &&
             e.collateralIndex != null &&
-            ownedIds.has(`${e.collateralHash}:${e.collateralIndex}`)
+            ownedIds.has(outpointKey(e.collateralHash, e.collateralIndex))
         )
-        .map((e) => `${e.collateralHash}:${e.collateralIndex}`)
+        .map((e) => outpointKey(e.collateralHash, e.collateralIndex))
     );
     if (retriedKeys.size === 0) return;
     const chosen = owned.filter((m) => retriedKeys.has(mnId(m)));
@@ -542,8 +553,7 @@ export default function ProposalVoteModal({
       // In both cases dropping them would silently under-report
       // the rejected count after retry.
       if (!(e.collateralHash && e.collateralIndex != null)) return true;
-      const id = `${e.collateralHash}:${e.collateralIndex}`;
-      return !retriedKeys.has(id);
+      return !retriedKeys.has(outpointKey(e.collateralHash, e.collateralIndex));
     });
     return runVotePass(chosen, { mergeBase });
   }, [owned, results, runVotePass]);
@@ -691,7 +701,7 @@ export default function ProposalVoteModal({
         !r.ok &&
         r.collateralHash &&
         r.collateralIndex != null &&
-        ownedIds.has(`${r.collateralHash}:${r.collateralIndex}`)
+        ownedIds.has(outpointKey(r.collateralHash, r.collateralIndex))
     );
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-done">
