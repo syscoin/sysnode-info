@@ -29,15 +29,24 @@ import { governanceService as defaultService } from '../lib/governanceService';
 //   }
 //
 // `proposalHash` (optional): when provided, the hook additionally
-// calls /gov/receipts after the /gov/mns/lookup join and annotates
-// every owned row with a `receipt` field (or null for rows with no
-// stored receipt). Receipts power the modal's "default-exclude
-// already-confirmed MNs" and "Retry failed" behaviour. The receipts
-// fetch runs in the SAME loading cycle as the lookup so the UI
-// transitions IDLE → LOADING → READY in one step — consumers don't
-// need to orchestrate two overlapping spinners.
+// calls POST /gov/receipts/reconcile after the /gov/mns/lookup join
+// and annotates every owned row with a `receipt` field (or null for
+// rows with no stored receipt). Receipts power the modal's
+// "default-exclude already-confirmed MNs" and "Retry failed"
+// behaviour. The reconcile call runs in the SAME loading cycle as
+// the lookup so the UI transitions IDLE → LOADING → READY in one
+// step — consumers don't need to orchestrate two overlapping
+// spinners.
 //
-// A failure to FETCH receipts does not fail the hook: owned rows are
+// Why reconcile (POST) on open instead of fetch (GET)? Opening the
+// modal is explicit user intent to see up-to-the-moment chain state,
+// so we trade one extra RPC for an authoritative view. The backend
+// freshness window keeps repeated opens cheap (returns stored rows
+// without hitting Core). GET /gov/receipts exists for cheaper,
+// side-effect-free reads — e.g. page-level cohort chips — but the
+// vote modal wants the reconciled view.
+//
+// A failure to reconcile does not fail the hook: owned rows are
 // still correct and usable for a fresh vote. We surface the failure
 // as a soft `reconcileError` the modal can render as a banner
 // without blocking the user.
@@ -175,15 +184,29 @@ export function useOwnedMasternodes({
         // absent we short-circuit with `receipt: null` on every row
         // so consumers can render a uniform shape regardless of
         // whether they asked for receipts.
+        //
+        // We POST to /gov/receipts/reconcile (not GET) because
+        // opening the modal is explicit user intent to see fresh
+        // on-chain state, and reconcile is the authoritative
+        // source. The backend freshness window keeps repeated
+        // opens cheap.
         let receiptList = [];
         let reconciledFlag = false;
         let reconcileErr = null;
-        if (
-          propHash &&
-          typeof governanceService.fetchReceipts === 'function'
-        ) {
+        const reconcileFn =
+          (typeof governanceService.reconcileReceipts === 'function' &&
+            governanceService.reconcileReceipts) ||
+          // Back-compat for any caller passing in a service mock that
+          // predates the POST /reconcile split — fall through to the
+          // old fetchReceipts name so tests written against the old
+          // shape still work. New code should provide
+          // `reconcileReceipts`.
+          (typeof governanceService.fetchReceipts === 'function' &&
+            governanceService.fetchReceipts) ||
+          null;
+        if (propHash && reconcileFn) {
           try {
-            const r = await governanceService.fetchReceipts(propHash, {
+            const r = await reconcileFn(propHash, {
               refresh: refreshReceipts,
             });
             if (!mountedRef.current || genRef.current !== myGen) return;

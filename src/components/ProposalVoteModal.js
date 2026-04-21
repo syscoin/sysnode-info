@@ -183,9 +183,9 @@ export default function ProposalVoteModal({
     governanceService,
     enabled: open,
     // Passing the proposal hash here causes the hook to additionally
-    // fetch /gov/receipts and join per-MN receipt rows onto `owned`.
-    // When the modal is closed we pass null so no receipts request
-    // fires — same rationale as `enabled` above.
+    // POST /gov/receipts/reconcile and join per-MN receipt rows
+    // onto `owned`. When the modal is closed we pass null so no
+    // receipts request fires — same rationale as `enabled` above.
     proposalHash: open && proposal && typeof proposal.Key === 'string' ? proposal.Key : null,
   });
 

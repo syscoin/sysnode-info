@@ -26,12 +26,22 @@ import { apiClient as defaultClient } from './apiClient';
 //             }] }
 //
 //   GET /gov/receipts       auth
-//     query: ?proposalHash=<64-hex>[&refresh=1]
+//     query: ?proposalHash=<64-hex>
+//     PURE READ — no RPC, no DB writes, no reconciliation.
 //     200  : { receipts: [{
 //               collateralHash, collateralIndex,
 //               proposalHash, voteOutcome, voteSignal, voteTime,
 //               status, lastError, submittedAt, verifiedAt,
 //             }, ...],
+//             reconciled: false,  // always false on GET
+//           }
+//
+//   POST /gov/receipts/reconcile   auth+csrf
+//     body : { proposalHash: 64-hex, refresh?: boolean }
+//     State-changing: may update receipt status + verified_at and
+//     may issue `gobject_getcurrentvotes`. Split off GET so the
+//     read path stays side-effect-free (CSRF-exempt).
+//     200  : { receipts: [...],
 //             reconciled: boolean,
 //             reconcileError?: 'rpc_failed' | 'reconcile_failed',
 //             updated?: number,
@@ -52,6 +62,7 @@ import { apiClient as defaultClient } from './apiClient';
 const LOOKUP_PATH = '/gov/mns/lookup';
 const VOTE_PATH = '/gov/vote';
 const RECEIPTS_PATH = '/gov/receipts';
+const RECEIPTS_RECONCILE_PATH = '/gov/receipts/reconcile';
 const RECEIPTS_SUMMARY_PATH = '/gov/receipts/summary';
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 
@@ -161,30 +172,72 @@ export function createGovernanceService(client = defaultClient) {
     }
   }
 
-  // Fetch the caller's vote receipts for a single proposal. The
-  // backend runs an on-demand reconciliation against
-  // `gobject_getcurrentvotes` before returning, unless every receipt
-  // is already confirmed within its freshness window (in which case
-  // `reconciled: false` and the rows come straight from the DB). Pass
-  // `{ refresh: true }` to force a reconcile regardless — useful
-  // right after a vote modal closes so the UI shows confirmed rows
-  // as soon as they propagate.
+  // Fetch the caller's stored vote receipts for a single proposal.
   //
-  // Returned shape is always a plain object with `receipts` defaulted
-  // to `[]` so UI consumers don't need to defensive-default each
-  // field. A transient `reconcileError` surfaces when reconciliation
-  // itself failed; the receipt list is still the pre-reconcile DB
-  // state so the UI can render what it has and show a soft warning.
-  async function fetchReceipts(proposalHash, { refresh = false } = {}) {
+  // PURE READ: this hits the side-effect-free GET /gov/receipts path.
+  // The backend returns the last known DB state without contacting
+  // Syscoin Core and without writing receipt bookkeeping. Use this
+  // for cheap cohort-aware UI (chips, summaries, prefetch) that
+  // does NOT need up-to-the-moment chain confirmation.
+  //
+  // If you need the rows reconciled against
+  // `gobject_getcurrentvotes` (e.g. immediately after a relay, or
+  // when opening the vote modal), use `reconcileReceipts` below —
+  // that call is CSRF-protected so the GET path can stay safe to
+  // invoke from any context without amplifying RPC traffic.
+  //
+  // Returned shape mirrors `reconcileReceipts` for consumer
+  // compatibility: `reconciled` is always false on this path and
+  // `reconcileError` / `updated` default to null / 0.
+  async function fetchReceipts(proposalHash) {
     if (typeof proposalHash !== 'string' || !HEX64_RE.test(proposalHash)) {
       throw govError('invalid_proposal_hash', 0);
     }
     try {
       const res = await client.get(RECEIPTS_PATH, {
-        params: {
-          proposalHash,
-          ...(refresh ? { refresh: 1 } : {}),
-        },
+        params: { proposalHash },
+      });
+      const data = res.data || {};
+      return {
+        receipts: Array.isArray(data.receipts) ? data.receipts : [],
+        reconciled: Boolean(data.reconciled),
+        reconcileError:
+          typeof data.reconcileError === 'string'
+            ? data.reconcileError
+            : null,
+        updated: Number.isInteger(data.updated) ? data.updated : 0,
+      };
+    } catch (err) {
+      if (err && err.code) throw err;
+      throw govError('network_error', 0, err);
+    }
+  }
+
+  // Reconcile the caller's stored receipts against the chain before
+  // returning them. POSTs to /gov/receipts/reconcile; the backend
+  // runs `gobject_getcurrentvotes`, flips any matching receipts to
+  // 'confirmed' with a fresh `verified_at`, and marks beyond-grace
+  // relayed rows as 'stale'. State-changing, so this call goes
+  // through the apiClient's CSRF interceptor.
+  //
+  // Pass `{ refresh: true }` to force a reconcile even if every
+  // receipt is already confirmed within the backend freshness
+  // window (default 2 min). Without `refresh`, repeated calls
+  // inside that window short-circuit with the existing DB state
+  // (`reconciled: false`) so polling stays cheap.
+  //
+  // A transient `reconcileError` ('rpc_failed' | 'reconcile_failed')
+  // surfaces when reconciliation itself failed; `receipts` is the
+  // pre-reconcile DB state so the UI can render what it has and
+  // show a soft warning instead of blocking the user.
+  async function reconcileReceipts(proposalHash, { refresh = false } = {}) {
+    if (typeof proposalHash !== 'string' || !HEX64_RE.test(proposalHash)) {
+      throw govError('invalid_proposal_hash', 0);
+    }
+    try {
+      const res = await client.post(RECEIPTS_RECONCILE_PATH, {
+        proposalHash,
+        refresh: Boolean(refresh),
       });
       const data = res.data || {};
       return {
@@ -223,6 +276,7 @@ export function createGovernanceService(client = defaultClient) {
     lookupOwnedMasternodes,
     submitVote,
     fetchReceipts,
+    reconcileReceipts,
     fetchReceiptsSummary,
   };
 }

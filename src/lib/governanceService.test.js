@@ -166,9 +166,10 @@ describe('governanceService.submitVote', () => {
 });
 
 describe('governanceService.fetchReceipts', () => {
-  test('GETs /gov/receipts with the proposalHash query param', async () => {
+  test('GETs /gov/receipts with the proposalHash query param (pure read)', async () => {
     const { service, adapter } = makeService();
     adapter.onGet('/gov/receipts').reply((config) => {
+      // No `refresh` param ever — fetchReceipts is a pure read now.
       expect(config.params).toEqual({ proposalHash: H64('a') });
       return [
         200,
@@ -187,52 +188,18 @@ describe('governanceService.fetchReceipts', () => {
               verifiedAt: 1_700_000_456_000,
             },
           ],
-          reconciled: true,
-          updated: 1,
+          reconciled: false,
         },
       ];
     });
     const out = await service.fetchReceipts(H64('a'));
-    expect(out.reconciled).toBe(true);
-    expect(out.updated).toBe(1);
+    // GET is non-reconciling by contract — carry whatever the
+    // backend reports through but expect false here.
+    expect(out.reconciled).toBe(false);
     expect(out.reconcileError).toBeNull();
+    expect(out.updated).toBe(0);
     expect(out.receipts).toHaveLength(1);
     expect(out.receipts[0].status).toBe('confirmed');
-  });
-
-  test('passes refresh=1 through when requested', async () => {
-    const { service, adapter } = makeService();
-    adapter.onGet('/gov/receipts').reply((config) => {
-      expect(config.params).toEqual({ proposalHash: H64('a'), refresh: 1 });
-      return [200, { receipts: [], reconciled: true }];
-    });
-    await service.fetchReceipts(H64('a'), { refresh: true });
-  });
-
-  test('surfaces a reconcileError when the backend reports one', async () => {
-    const { service, adapter } = makeService();
-    adapter.onGet('/gov/receipts').reply(200, {
-      receipts: [
-        {
-          collateralHash: H64('b'),
-          collateralIndex: 0,
-          proposalHash: H64('a'),
-          voteOutcome: 'yes',
-          voteSignal: 'funding',
-          voteTime: 1_700_000_000,
-          status: 'relayed',
-          lastError: null,
-          submittedAt: 1_700_000_123_000,
-          verifiedAt: null,
-        },
-      ],
-      reconciled: false,
-      reconcileError: 'rpc_failed',
-    });
-    const out = await service.fetchReceipts(H64('a'));
-    expect(out.reconciled).toBe(false);
-    expect(out.reconcileError).toBe('rpc_failed');
-    expect(out.receipts).toHaveLength(1);
   });
 
   test('defaults receipts to [] on a malformed success body', async () => {
@@ -259,6 +226,112 @@ describe('governanceService.fetchReceipts', () => {
     await expect(service.fetchReceipts(H64('a'))).rejects.toMatchObject({
       code: 'invalid_proposal_hash',
       status: 400,
+    });
+  });
+});
+
+describe('governanceService.reconcileReceipts', () => {
+  test('POSTs /gov/receipts/reconcile with the proposalHash body', async () => {
+    const { service, adapter } = makeService();
+    adapter.onPost('/gov/receipts/reconcile').reply((config) => {
+      const body = JSON.parse(config.data);
+      expect(body).toEqual({ proposalHash: H64('a'), refresh: false });
+      return [
+        200,
+        {
+          receipts: [
+            {
+              collateralHash: H64('b'),
+              collateralIndex: 0,
+              proposalHash: H64('a'),
+              voteOutcome: 'yes',
+              voteSignal: 'funding',
+              voteTime: 1_700_000_000,
+              status: 'confirmed',
+              lastError: null,
+              submittedAt: 1_700_000_123_000,
+              verifiedAt: 1_700_000_456_000,
+            },
+          ],
+          reconciled: true,
+          updated: 1,
+        },
+      ];
+    });
+    const out = await service.reconcileReceipts(H64('a'));
+    expect(out.reconciled).toBe(true);
+    expect(out.updated).toBe(1);
+    expect(out.reconcileError).toBeNull();
+    expect(out.receipts).toHaveLength(1);
+  });
+
+  test('forwards refresh:true to the backend body', async () => {
+    const { service, adapter } = makeService();
+    adapter.onPost('/gov/receipts/reconcile').reply((config) => {
+      const body = JSON.parse(config.data);
+      expect(body).toEqual({ proposalHash: H64('a'), refresh: true });
+      return [200, { receipts: [], reconciled: true }];
+    });
+    await service.reconcileReceipts(H64('a'), { refresh: true });
+  });
+
+  test('surfaces a reconcileError when the backend reports one', async () => {
+    const { service, adapter } = makeService();
+    adapter.onPost('/gov/receipts/reconcile').reply(200, {
+      receipts: [
+        {
+          collateralHash: H64('b'),
+          collateralIndex: 0,
+          proposalHash: H64('a'),
+          voteOutcome: 'yes',
+          voteSignal: 'funding',
+          voteTime: 1_700_000_000,
+          status: 'relayed',
+          lastError: null,
+          submittedAt: 1_700_000_123_000,
+          verifiedAt: null,
+        },
+      ],
+      reconciled: false,
+      reconcileError: 'rpc_failed',
+    });
+    const out = await service.reconcileReceipts(H64('a'));
+    expect(out.reconciled).toBe(false);
+    expect(out.reconcileError).toBe('rpc_failed');
+    expect(out.receipts).toHaveLength(1);
+  });
+
+  test('rejects an invalid proposalHash locally (no network call)', async () => {
+    const { service, adapter } = makeService();
+    await expect(service.reconcileReceipts('nope')).rejects.toThrow(
+      /invalid_proposal_hash/
+    );
+    expect(adapter.history.post).toHaveLength(0);
+  });
+
+  test('propagates 4xx error codes from the backend', async () => {
+    const { service, adapter } = makeService();
+    adapter
+      .onPost('/gov/receipts/reconcile')
+      .reply(400, { error: 'invalid_proposal_hash' });
+    await expect(
+      service.reconcileReceipts(H64('a'))
+    ).rejects.toMatchObject({
+      code: 'invalid_proposal_hash',
+      status: 400,
+    });
+  });
+
+  test('propagates 403 csrf_missing from the backend (CSRF-protected)', async () => {
+    const { service, adapter } = makeService();
+    adapter
+      .onPost('/gov/receipts/reconcile')
+      .reply(403, { error: 'csrf_missing' });
+    await expect(
+      service.reconcileReceipts(H64('a'))
+    ).rejects.toMatchObject({
+      code: 'csrf_missing',
+      status: 403,
     });
   });
 });

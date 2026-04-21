@@ -387,7 +387,7 @@ describe('useOwnedMasternodes — receipts join', () => {
   function mkService({ lookupRows, receipts }) {
     return {
       lookupOwnedMasternodes: jest.fn().mockResolvedValue(lookupRows),
-      fetchReceipts: jest.fn().mockResolvedValue({
+      reconcileReceipts: jest.fn().mockResolvedValue({
         receipts,
         reconciled: true,
         reconcileError: null,
@@ -455,7 +455,7 @@ describe('useOwnedMasternodes — receipts join', () => {
     );
 
     await waitFor(() => expect(values.at(-1).status).toBe('ready'));
-    expect(service.fetchReceipts).toHaveBeenCalledWith(PROPOSAL, {
+    expect(service.reconcileReceipts).toHaveBeenCalledWith(PROPOSAL, {
       refresh: false,
     });
     const last = values.at(-1);
@@ -540,7 +540,7 @@ describe('useOwnedMasternodes — receipts join', () => {
           status: 'ENABLED',
         },
       ]),
-      fetchReceipts: jest.fn().mockResolvedValue({
+      reconcileReceipts: jest.fn().mockResolvedValue({
         receipts: [
           {
             collateralHash: COL1,
@@ -576,7 +576,7 @@ describe('useOwnedMasternodes — receipts join', () => {
     expect(last.owned[0].receipt).toMatchObject({ status: 'relayed' });
   });
 
-  test('fetchReceipts throwing does not fail the hook — owned rows still delivered', async () => {
+  test('reconcileReceipts throwing does not fail the hook — owned rows still delivered', async () => {
     useVault.mockReturnValue(
       makeVault({
         isUnlocked: true,
@@ -597,7 +597,7 @@ describe('useOwnedMasternodes — receipts join', () => {
           status: 'ENABLED',
         },
       ]),
-      fetchReceipts: jest.fn().mockRejectedValue(err),
+      reconcileReceipts: jest.fn().mockRejectedValue(err),
     };
     const values = [];
 
@@ -616,7 +616,7 @@ describe('useOwnedMasternodes — receipts join', () => {
     expect(last.owned[0].receipt).toBeNull();
   });
 
-  test('refresh({ refreshReceipts: true }) forwards to fetchReceipts', async () => {
+  test('refresh({ refreshReceipts: true }) forwards to reconcileReceipts', async () => {
     useVault.mockReturnValue(
       makeVault({
         isUnlocked: true,
@@ -648,14 +648,14 @@ describe('useOwnedMasternodes — receipts join', () => {
     );
 
     await waitFor(() => expect(values.at(-1).status).toBe('ready'));
-    expect(service.fetchReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
+    expect(service.reconcileReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
       refresh: false,
     });
 
     await act(async () => {
       await values.at(-1).refresh({ refreshReceipts: true });
     });
-    expect(service.fetchReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
+    expect(service.reconcileReceipts).toHaveBeenLastCalledWith(PROPOSAL, {
       refresh: true,
     });
   });
@@ -692,7 +692,7 @@ describe('useOwnedMasternodes — receipts join', () => {
       />
     );
     await waitFor(() => expect(values.at(-1).status).toBe('ready'));
-    expect(service.fetchReceipts).toHaveBeenCalledWith(PROPOSAL, {
+    expect(service.reconcileReceipts).toHaveBeenCalledWith(PROPOSAL, {
       refresh: false,
     });
 
@@ -705,7 +705,7 @@ describe('useOwnedMasternodes — receipts join', () => {
     );
     await waitFor(() =>
       expect(
-        service.fetchReceipts.mock.calls.some((c) => c[0] === PROP_B)
+        service.reconcileReceipts.mock.calls.some((c) => c[0] === PROP_B)
       ).toBe(true)
     );
     expect(service.lookupOwnedMasternodes).toHaveBeenCalledTimes(2);
@@ -742,7 +742,52 @@ describe('useOwnedMasternodes — receipts join', () => {
       />
     );
     await waitFor(() => expect(values.at(-1).status).toBe('ready'));
-    expect(service.fetchReceipts).not.toHaveBeenCalled();
+    expect(service.reconcileReceipts).not.toHaveBeenCalled();
     expect(values.at(-1).owned[0].receipt).toBeNull();
+  });
+
+  test('falls back to fetchReceipts when service only exposes the legacy name', async () => {
+    // Back-compat: older code paths / mocks may still expose only
+    // `fetchReceipts`. The hook keeps working but the UI consumers
+    // get the same shape.
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: COL1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      // No reconcileReceipts, only fetchReceipts.
+      fetchReceipts: jest.fn().mockResolvedValue({
+        receipts: [],
+        reconciled: false,
+        reconcileError: null,
+        updated: 0,
+      }),
+    };
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    expect(service.fetchReceipts).toHaveBeenCalledWith(PROPOSAL, {
+      refresh: false,
+    });
   });
 });
