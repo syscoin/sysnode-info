@@ -1011,7 +1011,7 @@ describe('ProposalVoteModal — receipts-aware default selection', () => {
 
   function makeReceiptService({ receipts = [], reconcileError = null } = {}) {
     const s = makeService();
-    s.fetchReceipts = jest.fn().mockResolvedValue({
+    s.reconcileReceipts = jest.fn().mockResolvedValue({
       receipts,
       reconciled: !reconcileError,
       reconcileError,
@@ -1054,8 +1054,8 @@ describe('ProposalVoteModal — receipts-aware default selection', () => {
       expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
     });
 
-    // fetchReceipts got called with the proposal hash.
-    expect(service.fetchReceipts).toHaveBeenCalledWith(
+    // reconcileReceipts got called with the proposal hash.
+    expect(service.reconcileReceipts).toHaveBeenCalledWith(
       'h'.repeat(64),
       expect.objectContaining({ refresh: false })
     );
