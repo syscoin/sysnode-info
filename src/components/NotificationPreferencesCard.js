@@ -55,7 +55,7 @@ function remindersEnabledFromPrefs(prefs) {
 export default function NotificationPreferencesCard({
   authService = defaultAuthService,
 }) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, handleAuthLost } = useAuth();
   // `user.notificationPrefs` is whatever /auth/me returned. It may
   // be `{}` (no explicit preferences saved yet), a populated object,
   // or missing entirely (older backends / partial hydration). We
@@ -128,10 +128,22 @@ export default function NotificationPreferencesCard({
       })
       .catch((err) => {
         if (cancelled || !mountedRef.current) return;
-        setErrCode((err && err.code) || 'http_error');
-        // Even on failure, reveal the form with whatever default
-        // value we have so the user isn't stuck behind an infinite
-        // "Loading…" spinner — they can still toggle + retry save.
+        const code = (err && err.code) || 'http_error';
+        // `unauthorized` during hydration means the server no longer
+        // considers this client signed in (session expired, or was
+        // revoked in another tab). /auth/* calls bypass the global
+        // auth-loss interceptor, so we flip AuthContext to ANONYMOUS
+        // explicitly — PrivateRoute then redirects to /login. We do
+        // NOT reveal the form here; the whole page is about to
+        // unmount.
+        if (code === 'unauthorized') {
+          handleAuthLost();
+          return;
+        }
+        setErrCode(code);
+        // Even on non-auth failure, reveal the form with whatever
+        // default value we have so the user isn't stuck behind an
+        // infinite "Loading…" spinner — they can still toggle + retry.
         setHydrated(true);
       })
       .finally(() => {
@@ -141,7 +153,7 @@ export default function NotificationPreferencesCard({
     return () => {
       cancelled = true;
     };
-  }, [needsHydration, authService]);
+  }, [needsHydration, authService, handleAuthLost]);
 
   const dirty = remindersEnabled !== savedRemindersEnabled;
 
@@ -167,12 +179,20 @@ export default function NotificationPreferencesCard({
         setSuccess(true);
       } catch (err) {
         if (!mountedRef.current) return;
-        setErrCode((err && err.code) || 'http_error');
+        const code = (err && err.code) || 'http_error';
+        // See the hydration catch above for the rationale — same
+        // story on save: unauthorized means the server has moved on
+        // without us, and local auth state must match.
+        if (code === 'unauthorized') {
+          handleAuthLost();
+          return;
+        }
+        setErrCode(code);
       } finally {
         if (mountedRef.current) setSaving(false);
       }
     },
-    [authService, dirty, remindersEnabled, saving]
+    [authService, dirty, handleAuthLost, remindersEnabled, saving]
   );
 
   return (

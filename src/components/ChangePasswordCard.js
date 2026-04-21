@@ -87,7 +87,7 @@ function errorCopy(code) {
 export default function ChangePasswordCard({
   authService = defaultAuthService,
 }) {
-  const { user, refresh } = useAuth();
+  const { user, refresh, handleAuthLost } = useAuth();
   const vault = useVault();
 
   const [oldPassword, setOldPassword] = useState('');
@@ -179,7 +179,19 @@ export default function ChangePasswordCard({
               : null,
           });
         } catch (err) {
-          setErrCode((err && err.code) || 'http_error');
+          const code = (err && err.code) || 'http_error';
+          // `unauthorized` = server considers this client signed
+          // out (session expired, or revoked in another tab). The
+          // /auth/* apiClient path skips the global auth-loss
+          // interceptor, so this branch must flip AuthContext to
+          // ANONYMOUS explicitly — otherwise the user stays on the
+          // Account page with a stale signed-in state. PrivateRoute
+          // will then redirect to /login on the next render.
+          if (code === 'unauthorized') {
+            handleAuthLost();
+            return;
+          }
+          setErrCode(code);
           return;
         }
 
@@ -218,6 +230,7 @@ export default function ChangePasswordCard({
       authService,
       clearFeedback,
       confirmPassword,
+      handleAuthLost,
       newPassword,
       oldPassword,
       refresh,

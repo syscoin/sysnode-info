@@ -24,7 +24,21 @@ import userEvent from '@testing-library/user-event';
 //   clicks where the full sequence matters.
 
 import NotificationPreferencesCard from './NotificationPreferencesCard';
-import { AuthProvider } from '../context/AuthContext';
+import { AuthProvider, useAuth } from '../context/AuthContext';
+
+// AuthProbe — a sibling component that surfaces AuthContext state into
+// the DOM so tests can assert on auth transitions (e.g. the card
+// triggering handleAuthLost on a 401 should flip the probe to
+// `anonymous`).
+function AuthProbe() {
+  const { isAuthenticated, isBooting } = useAuth();
+  const state = isBooting
+    ? 'booting'
+    : isAuthenticated
+    ? 'authenticated'
+    : 'anonymous';
+  return <div data-testid="auth-probe">{state}</div>;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -54,10 +68,11 @@ function makeAuthService({ notificationPrefs } = {}) {
   };
 }
 
-function renderCard({ authService, cardAuthService }) {
+function renderCard({ authService, cardAuthService, withProbe = false }) {
   return render(
     <AuthProvider authService={authService}>
       <NotificationPreferencesCard authService={cardAuthService} />
+      {withProbe ? <AuthProbe /> : null}
     </AuthProvider>
   );
 }
@@ -207,6 +222,83 @@ describe('NotificationPreferencesCard', () => {
     expect(
       screen.queryByTestId('notification-prefs-success')
     ).not.toBeInTheDocument();
+  });
+
+  test('save returning unauthorized flips AuthContext to anonymous (Codex PR 7 round 2 P2)', async () => {
+    const authService = makeAuthService({ notificationPrefs: {} });
+    const err = new Error('unauthorized');
+    err.code = 'unauthorized';
+    err.status = 401;
+    const cardAuthService = {
+      getPrefs: jest.fn(),
+      updatePrefs: jest.fn().mockRejectedValue(err),
+    };
+    renderCard({ authService, cardAuthService, withProbe: true });
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('authenticated')
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('notification-prefs-vote-reminders')
+      ).toBeChecked()
+    );
+    fireEvent.click(
+      screen.getByTestId('notification-prefs-vote-reminders')
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('notification-prefs-vote-reminders')
+      ).not.toBeChecked()
+    );
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('notification-prefs-card'));
+    });
+    await waitFor(() =>
+      expect(cardAuthService.updatePrefs).toHaveBeenCalled()
+    );
+    // Auth state must mirror the server's rejection.
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('anonymous')
+    );
+    // And we do NOT surface a spurious inline error — the user is
+    // about to be redirected by PrivateRoute.
+    expect(
+      screen.queryByTestId('notification-prefs-error')
+    ).not.toBeInTheDocument();
+  });
+
+  test('hydration returning unauthorized flips AuthContext to anonymous (Codex PR 7 round 2 P2)', async () => {
+    // /auth/me omitted notificationPrefs → card falls back to GET
+    // /auth/prefs, which then 401s. The expired-session path must
+    // not leave us stuck rendering the Account page.
+    const authService = {
+      me: jest.fn().mockResolvedValue({
+        user: {
+          id: 1,
+          email: 'u@e.com',
+          emailVerified: true,
+          saltV: 'ab'.repeat(32),
+        },
+      }),
+      login: jest.fn(),
+      logout: jest.fn(),
+      register: jest.fn(),
+      verifyEmail: jest.fn(),
+    };
+    const err = new Error('unauthorized');
+    err.code = 'unauthorized';
+    err.status = 401;
+    const cardAuthService = {
+      getPrefs: jest.fn().mockRejectedValue(err),
+      updatePrefs: jest.fn(),
+    };
+    renderCard({ authService, cardAuthService, withProbe: true });
+    await waitFor(() =>
+      expect(cardAuthService.getPrefs).toHaveBeenCalled()
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('anonymous')
+    );
   });
 
   test('falls back to GET /auth/prefs only when /auth/me omitted notificationPrefs', async () => {
