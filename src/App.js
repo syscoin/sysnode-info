@@ -16,6 +16,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import VerifyEmail from './pages/VerifyEmail';
 import Account from './pages/Account';
+import NewProposal from './pages/NewProposal';
+import ProposalStatus from './pages/ProposalStatus';
 
 import { AuthProvider } from './context/AuthContext';
 import { VaultProvider } from './context/VaultContext';
@@ -45,6 +47,11 @@ export default function App() {
             <Route path="/network" component={Network} />
             <Route path="/stats" render={() => <Redirect to="/network" />} />
             <Route path="/setup" component={Setup} />
+            <PrivateRoute path="/governance/new" component={NewProposal} />
+            <PrivateRoute
+              path="/governance/proposal/:id"
+              component={ProposalStatus}
+            />
             <Route path="/governance" component={Governance} />
             <Route path="/learn" component={Learn} />
             <Route path="/about" render={() => <Redirect to="/learn" />} />

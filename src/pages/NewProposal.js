@@ -1,0 +1,1018 @@
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
+import { Link, useHistory, useLocation } from 'react-router-dom';
+
+import PageMeta from '../components/PageMeta';
+import UnsavedChangesModal from '../components/UnsavedChangesModal';
+import { useAuth } from '../context/AuthContext';
+import { proposalService } from '../lib/proposalService';
+import {
+  COLLATERAL_FEE_SATS,
+  MAX_DATA_SIZE,
+  MAX_PAYMENT_COUNT,
+  draftBodyFromForm,
+  emptyForm,
+  estimatePayloadBytes,
+  formsEqual,
+  fromDraft,
+  prepareBodyFromForm,
+  validateBasics,
+  validatePayment,
+} from '../lib/proposalForm';
+import { HEX64_RE } from '../lib/proposalService';
+
+// NewProposal wizard — /governance/new[?draft=<id>]
+// -------------------------------------------------
+// Apple-level UX goals for this page (see the product brief):
+//
+//  - Four clearly-signposted steps: Basics, Payment, Review, Submit.
+//    Users can freely move backwards without losing anything; forwards
+//    is gated on the step's validators so we never 400 the user at
+//    /prepare time for something we could have surfaced inline.
+//
+//  - Draft lives on the server; nothing is saved automatically. The
+//    user explicitly presses "Save draft" OR confirms save on the
+//    leave-guard modal. This mirrors Twitter's "you have unsent tweet
+//    — save draft?" flow, which is the single most-loved draft UX in
+//    the consumer web.
+//
+//  - Submit step is two lanes: Pali (stubbed for this PR — the module
+//    rejects payWithOpReturn with `pali_psbt_builder_not_wired`) and
+//    the manual Syscoin-Qt / syscoin-cli fallback. The copy makes
+//    clear that 150 SYS is BURNED (not refunded) and that 6
+//    confirmations are required before the backend auto-submits.
+//
+//  - All state transitions are idempotent. Reloading the page at any
+//    point picks up the draft (or the prepared submission) and lets
+//    the user continue. The prepare step is safe to double-press —
+//    the backend dedupes on (userId, proposalHash).
+
+const STEPS = ['basics', 'payment', 'review', 'submit'];
+const STEP_LABELS = {
+  basics: 'Basics',
+  payment: 'Payment',
+  review: 'Review',
+  submit: 'Submit',
+};
+
+// Reducer so the leave-guard's "Discard" path can reset dirty state
+// atomically (setting form + baseline in lockstep) without stacking
+// setStates. Keeps formsEqual(form, baseline) correct throughout.
+function formReducer(state, action) {
+  switch (action.type) {
+    case 'set': {
+      return {
+        ...state,
+        form: { ...state.form, [action.field]: action.value },
+      };
+    }
+    case 'replace': {
+      return {
+        form: action.form,
+        baseline: action.baseline != null ? action.baseline : action.form,
+      };
+    }
+    case 'mark_saved': {
+      return { ...state, baseline: state.form };
+    }
+    default:
+      return state;
+  }
+}
+
+function useQueryParam(name) {
+  const location = useLocation();
+  return useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get(name);
+  }, [location.search, name]);
+}
+
+// Human-readable SYS from sats. 150_00000000n → "150".
+function fmtSys(sats) {
+  try {
+    const n = BigInt(sats);
+    const whole = n / 100000000n;
+    const frac = n % 100000000n;
+    if (frac === 0n) return whole.toString();
+    const fs = frac.toString().padStart(8, '0').replace(/0+$/, '');
+    return `${whole.toString()}.${fs}`;
+  } catch (_e) {
+    return String(sats);
+  }
+}
+
+// Map backend error codes emitted by /gov/proposals/* into
+// human-readable copy. Unknown codes render verbatim as a last resort
+// — every code we actually emit server-side is listed here.
+function describePrepareError(err) {
+  if (!err) return 'Something went wrong. Try again.';
+  switch (err.code) {
+    case 'validation_failed':
+      return 'Some fields are invalid. Go back and check each step.';
+    case 'payload_too_large':
+      return `Your proposal exceeds the ${MAX_DATA_SIZE}-byte on-chain limit. Trim the URL or name.`;
+    case 'submission_exists':
+      return 'You already prepared an identical proposal. Opening it now.';
+    case 'draft_not_found':
+      return "We couldn't find that draft. It may have been deleted on another device.";
+    case 'network_error':
+      return 'Network hiccup. Check your connection and try again.';
+    case 'http_error':
+      return 'The server returned an error. Try again in a moment.';
+    default:
+      return err.code || 'Unknown error.';
+  }
+}
+
+export default function NewProposal() {
+  const history = useHistory();
+  const { isAuthenticated, isBooting } = useAuth();
+  const draftIdParam = useQueryParam('draft');
+  const draftIdFromUrl = useMemo(() => {
+    const n = Number(draftIdParam);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [draftIdParam]);
+
+  const [stepIdx, setStepIdx] = useState(0);
+  const [formState, dispatch] = useReducer(formReducer, null, () => ({
+    form: emptyForm(),
+    baseline: emptyForm(),
+  }));
+  const { form, baseline } = formState;
+
+  const [draftId, setDraftId] = useState(null);
+  const [loadingDraft, setLoadingDraft] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [touched, setTouched] = useState({});
+
+  // Preparation / submission state
+  const [preparing, setPreparing] = useState(false);
+  const [prepared, setPrepared] = useState(null); // full envelope from /prepare
+  const [prepareError, setPrepareError] = useState(null);
+
+  // Attach-collateral state
+  const [txidInput, setTxidInput] = useState('');
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState(null);
+
+  // Save-draft state (used both by the explicit "Save draft" button
+  // and by the leave-guard modal).
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [saveDraftError, setSaveDraftError] = useState(null);
+
+  // Leave-guard state.
+  const [leaveModal, setLeaveModal] = useState({ open: false, pending: null });
+
+  // Track if user has clicked Save draft from toolbar (vs. modal) for
+  // toast-like feedback.
+  const [draftSavedAt, setDraftSavedAt] = useState(0);
+
+  const dirty = !formsEqual(form, baseline) && prepared == null;
+
+  // ---- Draft load -------------------------------------------------------
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!draftIdFromUrl) return () => {};
+    setLoadingDraft(true);
+    setLoadError(null);
+    proposalService
+      .getDraft(draftIdFromUrl)
+      .then((d) => {
+        if (cancelled) return;
+        const loaded = fromDraft(d);
+        dispatch({ type: 'replace', form: loaded, baseline: loaded });
+        setDraftId(d.id);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDraft(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draftIdFromUrl]);
+
+  // ---- Before-unload guard ---------------------------------------------
+
+  useEffect(() => {
+    function beforeUnload(e) {
+      if (!dirty) return undefined;
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [dirty]);
+
+  // In-app navigation guard using react-router. Blocks all transitions
+  // while dirty and routes through the modal.
+  const unblockRef = useRef(null);
+  useEffect(() => {
+    if (!dirty) {
+      if (unblockRef.current) {
+        unblockRef.current();
+        unblockRef.current = null;
+      }
+      return undefined;
+    }
+    unblockRef.current = history.block((location) => {
+      // If the modal is already visible with a pending nav, accept it.
+      if (leaveModal.open && leaveModal.pending) return true;
+      setLeaveModal({
+        open: true,
+        pending: `${location.pathname}${location.search || ''}${location.hash || ''}`,
+      });
+      return false;
+    });
+    return () => {
+      if (unblockRef.current) {
+        unblockRef.current();
+        unblockRef.current = null;
+      }
+    };
+  }, [dirty, history, leaveModal]);
+
+  // ---- Validation -------------------------------------------------------
+
+  const basicsErrors = useMemo(() => validateBasics(form), [form]);
+  const paymentErrors = useMemo(
+    () => validatePayment(form, { nowSec: Math.floor(Date.now() / 1000) }),
+    [form]
+  );
+  const payloadBytes = useMemo(() => estimatePayloadBytes(form), [form]);
+
+  const stepValid = useMemo(() => {
+    if (stepIdx === 0) return Object.keys(basicsErrors).length === 0;
+    if (stepIdx === 1) return Object.keys(paymentErrors).length === 0;
+    return true;
+  }, [stepIdx, basicsErrors, paymentErrors]);
+
+  // ---- Handlers ---------------------------------------------------------
+
+  const setField = useCallback((field, value) => {
+    dispatch({ type: 'set', field, value });
+  }, []);
+
+  const markTouched = useCallback((field) => {
+    setTouched((t) => ({ ...t, [field]: true }));
+  }, []);
+
+  async function saveDraft() {
+    setSavingDraft(true);
+    setSaveDraftError(null);
+    const body = draftBodyFromForm(form);
+    try {
+      let result;
+      if (draftId) {
+        result = await proposalService.updateDraft(draftId, body);
+      } else {
+        result = await proposalService.createDraft(body);
+        setDraftId(result.id);
+        // Reflect the new id in the URL so a reload reopens the draft.
+        const params = new URLSearchParams(history.location.search);
+        params.set('draft', String(result.id));
+        history.replace({
+          pathname: history.location.pathname,
+          search: `?${params.toString()}`,
+        });
+      }
+      // Sync baseline — we are no longer "dirty" relative to storage.
+      dispatch({ type: 'mark_saved' });
+      setDraftSavedAt(Date.now());
+      return result;
+    } catch (err) {
+      setSaveDraftError(err);
+      throw err;
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  async function discardDraft() {
+    if (draftId) {
+      try {
+        await proposalService.deleteDraft(draftId);
+      } catch (err) {
+        // Swallow — user wants to abandon the draft locally either way.
+        // The leave modal surfaces a gentle "we couldn't clean up on
+        // the server" toast via the error slot.
+        console.warn('discardDraft failed:', err && err.code);
+      }
+    }
+    dispatch({ type: 'replace', form: emptyForm(), baseline: emptyForm() });
+    setDraftId(null);
+  }
+
+  async function onModalSave() {
+    try {
+      await saveDraft();
+      const pending = leaveModal.pending;
+      setLeaveModal({ open: false, pending: null });
+      if (pending) history.push(pending);
+    } catch (_err) {
+      // Error already in saveDraftError — keep modal open.
+    }
+  }
+
+  async function onModalDiscard() {
+    await discardDraft();
+    const pending = leaveModal.pending;
+    setLeaveModal({ open: false, pending: null });
+    if (pending) history.push(pending);
+  }
+
+  function onModalCancel() {
+    setLeaveModal({ open: false, pending: null });
+  }
+
+  async function onPrepare() {
+    setPreparing(true);
+    setPrepareError(null);
+    try {
+      const body = prepareBodyFromForm(form, {
+        draftId: draftId || undefined,
+        consumeDraft: true,
+      });
+      const envelope = await proposalService.prepare(body);
+      setPrepared(envelope);
+      // The backend consumed the draft atomically on success — clear
+      // our local handle. Also sync the baseline so the leave-guard
+      // disengages (the wizard is now in post-prepare state and the
+      // only remaining action is pasting a txid or walking away).
+      setDraftId(null);
+      dispatch({ type: 'replace', form, baseline: form });
+      setStepIdx(3);
+    } catch (err) {
+      setPrepareError(err);
+      // If the backend says "you already prepared this", pivot to
+      // the status page for the existing submission.
+      if (err && err.code === 'submission_exists' && err.details && err.details.id) {
+        history.push(`/governance/proposal/${err.details.id}`);
+      }
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  async function onAttachCollateral() {
+    if (!prepared || !prepared.submission) return;
+    setAttachError(null);
+    if (!HEX64_RE.test(txidInput.trim())) {
+      setAttachError({ code: 'malformed_txid' });
+      return;
+    }
+    setAttaching(true);
+    try {
+      const updated = await proposalService.attachCollateral(
+        prepared.submission.id,
+        txidInput.trim()
+      );
+      history.push(`/governance/proposal/${updated.id}`);
+    } catch (err) {
+      setAttachError(err);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  // ---- Auth gate --------------------------------------------------------
+
+  if (isBooting) {
+    return (
+      <main className="page-main">
+        <section className="page-section">
+          <div className="site-wrap">
+            <p>Loading…</p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+  if (!isAuthenticated) {
+    return (
+      <main className="page-main">
+        <section className="page-section">
+          <div className="site-wrap">
+            <p>
+              Please <Link to="/login">log in</Link> to create a proposal.
+            </p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  // ---- Render -----------------------------------------------------------
+
+  const currentStep = STEPS[stepIdx];
+
+  return (
+    <main className="page-main proposal-wizard">
+      <PageMeta
+        title="Create proposal"
+        description="Create a Syscoin governance proposal end-to-end: draft, prepare, pay collateral, submit."
+      />
+      <section className="page-hero">
+        <div className="site-wrap">
+          <p className="eyebrow">Governance</p>
+          <h1>Create a proposal</h1>
+          <p className="page-hero__copy">
+            Draft a Syscoin governance proposal. We'll canonicalize it,
+            hash it for the OP_RETURN commitment, and watch the 150 SYS
+            collateral transaction until it has 6 confirmations — then
+            submit it on-chain for you automatically.
+          </p>
+        </div>
+      </section>
+
+      <section className="page-section page-section--tight page-section--last">
+        <div className="site-wrap">
+          <ol
+            className="proposal-wizard__steps"
+            aria-label="Proposal wizard progress"
+          >
+            {STEPS.map((s, i) => (
+              <li
+                key={s}
+                className={
+                  i === stepIdx
+                    ? 'is-active'
+                    : i < stepIdx
+                    ? 'is-done'
+                    : 'is-future'
+                }
+                data-testid={`wizard-step-${s}`}
+              >
+                <span className="proposal-wizard__step-number">{i + 1}</span>
+                <span className="proposal-wizard__step-label">
+                  {STEP_LABELS[s]}
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          {loadingDraft ? <p>Loading draft…</p> : null}
+          {loadError ? (
+            <div className="auth-alert auth-alert--error" role="alert">
+              Couldn't load draft: {loadError.code || 'unknown_error'}
+            </div>
+          ) : null}
+
+          {currentStep === 'basics' ? (
+            <BasicsStep
+              form={form}
+              errors={basicsErrors}
+              touched={touched}
+              onField={setField}
+              onBlur={markTouched}
+              payloadBytes={payloadBytes}
+            />
+          ) : null}
+          {currentStep === 'payment' ? (
+            <PaymentStep
+              form={form}
+              errors={paymentErrors}
+              touched={touched}
+              onField={setField}
+              onBlur={markTouched}
+              payloadBytes={payloadBytes}
+            />
+          ) : null}
+          {currentStep === 'review' ? (
+            <ReviewStep form={form} payloadBytes={payloadBytes} />
+          ) : null}
+          {currentStep === 'submit' ? (
+            <SubmitStep
+              prepared={prepared}
+              txidInput={txidInput}
+              onTxidChange={setTxidInput}
+              attaching={attaching}
+              attachError={attachError}
+              onAttachCollateral={onAttachCollateral}
+            />
+          ) : null}
+
+          <div className="proposal-wizard__toolbar">
+            <div className="proposal-wizard__toolbar-left">
+              {stepIdx > 0 && currentStep !== 'submit' ? (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => setStepIdx((i) => Math.max(0, i - 1))}
+                  data-testid="wizard-back"
+                >
+                  Back
+                </button>
+              ) : null}
+              {currentStep !== 'submit' ? (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={saveDraft}
+                  disabled={savingDraft}
+                  data-testid="wizard-save-draft"
+                >
+                  {savingDraft ? 'Saving…' : 'Save draft'}
+                </button>
+              ) : null}
+              {draftSavedAt && !savingDraft && !saveDraftError ? (
+                <span
+                  className="proposal-wizard__saved-indicator"
+                  role="status"
+                  data-testid="wizard-saved-indicator"
+                >
+                  Saved
+                </span>
+              ) : null}
+              {saveDraftError ? (
+                <span
+                  className="proposal-wizard__saved-indicator proposal-wizard__saved-indicator--error"
+                  role="alert"
+                >
+                  Save failed: {saveDraftError.code || 'error'}
+                </span>
+              ) : null}
+            </div>
+
+            <div className="proposal-wizard__toolbar-right">
+              {currentStep === 'basics' || currentStep === 'payment' ? (
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={() => setStepIdx((i) => i + 1)}
+                  disabled={!stepValid}
+                  data-testid="wizard-next"
+                >
+                  Next
+                </button>
+              ) : null}
+              {currentStep === 'review' ? (
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={onPrepare}
+                  disabled={
+                    preparing ||
+                    payloadBytes > MAX_DATA_SIZE ||
+                    Object.keys(basicsErrors).length > 0 ||
+                    Object.keys(paymentErrors).length > 0
+                  }
+                  data-testid="wizard-prepare"
+                >
+                  {preparing ? 'Preparing…' : 'Prepare proposal'}
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {prepareError ? (
+            <div className="auth-alert auth-alert--error" role="alert">
+              {describePrepareError(prepareError)}
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <UnsavedChangesModal
+        open={leaveModal.open}
+        saving={savingDraft}
+        error={saveDraftError ? `Save failed: ${saveDraftError.code || 'error'}` : null}
+        onSave={onModalSave}
+        onDiscard={onModalDiscard}
+        onCancel={onModalCancel}
+      />
+    </main>
+  );
+}
+
+// ---- Step components --------------------------------------------------
+
+function FieldError({ id, message }) {
+  if (!message) return null;
+  return (
+    <p className="form-error" id={id} role="alert">
+      {message}
+    </p>
+  );
+}
+
+function BasicsStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
+  return (
+    <div className="proposal-wizard__panel" data-testid="wizard-panel-basics">
+      <h2>Basics</h2>
+      <p className="proposal-wizard__help">
+        Give your proposal a short, slug-friendly name and a public URL
+        where voters can read the full write-up. Both are committed
+        on-chain and cannot be changed after submission.
+      </p>
+
+      <label className="form-field">
+        <span>Proposal name</span>
+        <input
+          type="text"
+          value={form.name}
+          onChange={(e) => onField('name', e.target.value)}
+          onBlur={() => onBlur('name')}
+          maxLength={40}
+          placeholder="my-community-grant"
+          aria-invalid={touched.name && !!errors.name}
+          aria-describedby={errors.name ? 'err-name' : undefined}
+          data-testid="wizard-field-name"
+        />
+        <small>Letters, numbers, hyphens, underscores. Max 40 characters.</small>
+      </label>
+      {touched.name ? <FieldError id="err-name" message={errors.name} /> : null}
+
+      <label className="form-field">
+        <span>Proposal URL</span>
+        <input
+          type="url"
+          value={form.url}
+          onChange={(e) => onField('url', e.target.value)}
+          onBlur={() => onBlur('url')}
+          placeholder="https://forum.syscoin.org/..."
+          aria-invalid={touched.url && !!errors.url}
+          aria-describedby={errors.url ? 'err-url' : undefined}
+          data-testid="wizard-field-url"
+        />
+        <small>
+          Must be a permanent link to your full proposal write-up (forum
+          thread, GitHub, etc.).
+        </small>
+      </label>
+      {touched.url ? <FieldError id="err-url" message={errors.url} /> : null}
+
+      <PayloadSizeMeter bytes={payloadBytes} />
+    </div>
+  );
+}
+
+function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
+  return (
+    <div className="proposal-wizard__panel" data-testid="wizard-panel-payment">
+      <h2>Payment details</h2>
+      <p className="proposal-wizard__help">
+        Specify the Syscoin address that will receive the monthly
+        superblock payment, the amount per month, and the voting
+        window. Start and end times are UTC epoch seconds.
+      </p>
+
+      <label className="form-field">
+        <span>Payment address</span>
+        <input
+          type="text"
+          value={form.paymentAddress}
+          onChange={(e) => onField('paymentAddress', e.target.value)}
+          onBlur={() => onBlur('paymentAddress')}
+          placeholder="sys1q…"
+          aria-invalid={touched.paymentAddress && !!errors.paymentAddress}
+          aria-describedby={
+            errors.paymentAddress ? 'err-paymentAddress' : undefined
+          }
+          data-testid="wizard-field-address"
+        />
+        <small>Syscoin mainnet address (bech32 or legacy).</small>
+      </label>
+      {touched.paymentAddress ? (
+        <FieldError id="err-paymentAddress" message={errors.paymentAddress} />
+      ) : null}
+
+      <div className="proposal-wizard__row">
+        <label className="form-field">
+          <span>Amount per payment (SYS)</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={form.paymentAmount}
+            onChange={(e) => onField('paymentAmount', e.target.value)}
+            onBlur={() => onBlur('paymentAmount')}
+            placeholder="1000"
+            aria-invalid={touched.paymentAmount && !!errors.paymentAmount}
+            aria-describedby={
+              errors.paymentAmount ? 'err-paymentAmount' : undefined
+            }
+            data-testid="wizard-field-amount"
+          />
+          <small>Positive number, up to 8 decimals.</small>
+        </label>
+        {touched.paymentAmount ? (
+          <FieldError id="err-paymentAmount" message={errors.paymentAmount} />
+        ) : null}
+
+        <label className="form-field">
+          <span>Number of payments (months)</span>
+          <input
+            type="number"
+            min={1}
+            max={MAX_PAYMENT_COUNT}
+            value={form.paymentCount}
+            onChange={(e) => onField('paymentCount', e.target.value)}
+            onBlur={() => onBlur('paymentCount')}
+            aria-invalid={touched.paymentCount && !!errors.paymentCount}
+            aria-describedby={
+              errors.paymentCount ? 'err-paymentCount' : undefined
+            }
+            data-testid="wizard-field-count"
+          />
+          <small>
+            Informational only. Voters see this in the UI; not stored
+            on-chain. Max {MAX_PAYMENT_COUNT}.
+          </small>
+        </label>
+        {touched.paymentCount ? (
+          <FieldError id="err-paymentCount" message={errors.paymentCount} />
+        ) : null}
+      </div>
+
+      <div className="proposal-wizard__row">
+        <label className="form-field">
+          <span>Start (UTC epoch seconds)</span>
+          <input
+            type="number"
+            value={form.startEpoch}
+            onChange={(e) => onField('startEpoch', e.target.value)}
+            onBlur={() => onBlur('startEpoch')}
+            aria-invalid={touched.startEpoch && !!errors.startEpoch}
+            aria-describedby={
+              errors.startEpoch ? 'err-startEpoch' : undefined
+            }
+            data-testid="wizard-field-start"
+          />
+          <small>
+            {form.startEpoch && Number(form.startEpoch) > 0
+              ? new Date(Number(form.startEpoch) * 1000).toUTCString()
+              : 'Use a future UTC time.'}
+          </small>
+        </label>
+        {touched.startEpoch ? (
+          <FieldError id="err-startEpoch" message={errors.startEpoch} />
+        ) : null}
+
+        <label className="form-field">
+          <span>End (UTC epoch seconds)</span>
+          <input
+            type="number"
+            value={form.endEpoch}
+            onChange={(e) => onField('endEpoch', e.target.value)}
+            onBlur={() => onBlur('endEpoch')}
+            aria-invalid={touched.endEpoch && !!errors.endEpoch}
+            aria-describedby={errors.endEpoch ? 'err-endEpoch' : undefined}
+            data-testid="wizard-field-end"
+          />
+          <small>
+            {form.endEpoch && Number(form.endEpoch) > 0
+              ? new Date(Number(form.endEpoch) * 1000).toUTCString()
+              : 'Must be after start.'}
+          </small>
+        </label>
+        {touched.endEpoch ? (
+          <FieldError id="err-endEpoch" message={errors.endEpoch} />
+        ) : null}
+      </div>
+
+      <PayloadSizeMeter bytes={payloadBytes} />
+    </div>
+  );
+}
+
+function ReviewStep({ form, payloadBytes }) {
+  return (
+    <div className="proposal-wizard__panel" data-testid="wizard-panel-review">
+      <h2>Review your proposal</h2>
+      <p className="proposal-wizard__help">
+        Double-check every field. Once prepared and the collateral
+        transaction is sent, the on-chain record is immutable.
+      </p>
+      <dl className="proposal-wizard__summary">
+        <dt>Name</dt>
+        <dd data-testid="review-name">{form.name}</dd>
+        <dt>URL</dt>
+        <dd data-testid="review-url">
+          <a href={form.url} target="_blank" rel="noopener noreferrer">
+            {form.url}
+          </a>
+        </dd>
+        <dt>Payment address</dt>
+        <dd data-testid="review-address">{form.paymentAddress}</dd>
+        <dt>Amount per month</dt>
+        <dd data-testid="review-amount">{form.paymentAmount} SYS</dd>
+        <dt>Number of payments</dt>
+        <dd data-testid="review-count">{form.paymentCount}</dd>
+        <dt>Voting window</dt>
+        <dd>
+          {new Date(Number(form.startEpoch) * 1000).toUTCString()}
+          <br />→{' '}
+          {new Date(Number(form.endEpoch) * 1000).toUTCString()}
+        </dd>
+      </dl>
+
+      <div className="proposal-wizard__burn-warning" role="note">
+        <strong>Heads up — 150 SYS will be burned.</strong>
+        <p>
+          When you press <em>Prepare proposal</em> the next step will
+          ask you to send a <strong>150 SYS</strong> collateral
+          transaction. This amount is <strong>not refundable</strong>
+          — it is burned to the network by consensus design. You'll
+          also pay standard transaction fees.
+        </p>
+      </div>
+
+      <PayloadSizeMeter bytes={payloadBytes} />
+    </div>
+  );
+}
+
+function SubmitStep({
+  prepared,
+  txidInput,
+  onTxidChange,
+  attaching,
+  attachError,
+  onAttachCollateral,
+}) {
+  // IMPORTANT: every hook must run on every render regardless of
+  // `prepared` — React's rules-of-hooks forbid conditional calls.
+  // Compute the CLI command up-front with a safe fallback and only
+  // branch the JSX below.
+  const submission = prepared && prepared.submission;
+  const cliCommand = useMemo(() => {
+    if (!submission) return '';
+    // Exactly matches the backend's hash inputs:
+    //   parent_hash = "0", revision = 1, time = timeUnix
+    // so pasting this into Syscoin-Qt produces the same proposal_hash
+    // we already committed to in submission.proposalHash.
+    const parent =
+      submission.parentHash != null ? String(submission.parentHash) : '0';
+    const revision =
+      submission.revision != null ? String(submission.revision) : '1';
+    const time =
+      submission.timeUnix != null
+        ? String(submission.timeUnix)
+        : String(Math.floor(Date.now() / 1000));
+    const dataHex = submission.dataHex || '';
+    return `gobject prepare ${parent} ${revision} ${time} ${dataHex}`;
+  }, [submission]);
+
+  if (!prepared) {
+    return (
+      <div className="proposal-wizard__panel" data-testid="wizard-panel-submit">
+        <p>
+          No prepared submission yet. Go back to Review and prepare
+          the proposal.
+        </p>
+      </div>
+    );
+  }
+
+  const { opReturnHex, collateralFeeSats, requiredConfirmations } = prepared;
+
+  async function copy(str) {
+    try {
+      await navigator.clipboard.writeText(str);
+    } catch (_e) {
+      /* best effort */
+    }
+  }
+
+  return (
+    <div className="proposal-wizard__panel" data-testid="wizard-panel-submit">
+      <h2>Pay the 150 SYS collateral</h2>
+
+      <div className="proposal-wizard__burn-warning" role="note">
+        <strong>The 150 SYS collateral is burned, not refunded.</strong>
+        <p>
+          Syscoin consensus requires a 150 SYS burn fee to create a
+          governance object. You will not get this back. Plan
+          accordingly.
+        </p>
+      </div>
+
+      <p>
+        We committed your proposal to{' '}
+        <code data-testid="submit-gov-hash">{submission.proposalHash}</code>.
+        When the collateral transaction has{' '}
+        <strong>{requiredConfirmations} confirmations</strong>, we'll
+        automatically submit your governance object on-chain — nothing
+        more to do on your end.
+      </p>
+
+      <h3>Option A — Pay manually from Syscoin-Qt or syscoin-cli</h3>
+      <ol className="proposal-wizard__steps-list">
+        <li>
+          Open Syscoin-Qt's <em>Debug console</em> (or your CLI) and
+          paste:
+          <pre
+            className="proposal-wizard__cli"
+            data-testid="submit-cli-command"
+          >
+            <code>{cliCommand}</code>
+          </pre>
+          <button
+            type="button"
+            className="button button--ghost button--small"
+            onClick={() => copy(cliCommand)}
+            data-testid="submit-copy-cli"
+          >
+            Copy command
+          </button>
+        </li>
+        <li>
+          Core will broadcast the 150 SYS burn transaction and print
+          the <strong>collateral TXID</strong>. Paste it below.
+        </li>
+      </ol>
+
+      <h3>Option B — Using a different wallet?</h3>
+      <p>
+        Any wallet that can send to an address with an extra{' '}
+        <code>OP_RETURN</code> output works. Send{' '}
+        <strong>{fmtSys(collateralFeeSats || COLLATERAL_FEE_SATS)} SYS</strong>{' '}
+        to an unspendable burn output alongside an <code>OP_RETURN</code>{' '}
+        carrying the following bytes:
+      </p>
+      <pre
+        className="proposal-wizard__cli proposal-wizard__cli--mono"
+        data-testid="submit-op-return"
+      >
+        <code>{opReturnHex}</code>
+      </pre>
+      <button
+        type="button"
+        className="button button--ghost button--small"
+        onClick={() => copy(opReturnHex)}
+      >
+        Copy OP_RETURN bytes
+      </button>
+
+      <h3>Paste the collateral TXID</h3>
+      <label className="form-field">
+        <span>Collateral TXID</span>
+        <input
+          type="text"
+          value={txidInput}
+          onChange={(e) => onTxidChange(e.target.value)}
+          placeholder="64-character hex txid"
+          aria-invalid={!!attachError}
+          data-testid="submit-txid-input"
+        />
+        <small>
+          We'll watch it and auto-submit once it has{' '}
+          {requiredConfirmations} confirmations.
+        </small>
+      </label>
+      {attachError ? (
+        <div className="auth-alert auth-alert--error" role="alert">
+          {attachError.code === 'malformed_txid'
+            ? 'That does not look like a 64-character hex TXID.'
+            : `Could not attach TXID: ${attachError.code || 'unknown_error'}`}
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        className="button button--primary"
+        onClick={onAttachCollateral}
+        disabled={attaching || !txidInput}
+        data-testid="submit-attach-btn"
+      >
+        {attaching ? 'Submitting…' : 'Attach TXID & watch'}
+      </button>
+    </div>
+  );
+}
+
+function PayloadSizeMeter({ bytes }) {
+  const pct = Math.min(100, Math.round((bytes / MAX_DATA_SIZE) * 100));
+  const over = bytes > MAX_DATA_SIZE;
+  return (
+    <div
+      className={
+        'proposal-wizard__meter' +
+        (over ? ' proposal-wizard__meter--over' : '')
+      }
+      data-testid="wizard-payload-meter"
+    >
+      <div
+        className="proposal-wizard__meter-bar"
+        style={{ width: `${pct}%` }}
+        aria-hidden="true"
+      />
+      <span>
+        {bytes} / {MAX_DATA_SIZE} bytes
+        {over ? ' — over the on-chain limit' : ''}
+      </span>
+    </div>
+  );
+}
