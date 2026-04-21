@@ -144,6 +144,42 @@ describe('ChangePasswordCard', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('submit is refused while vault is still loading (no PBKDF2 work) (Codex PR 7 round 2 P2)', async () => {
+    // The vault transitions IDLE -> LOADING -> (EMPTY|LOCKED|
+    // UNLOCKED|ERROR). Before the old patch, a submit during
+    // LOADING ran the double-PBKDF2 derivation (~1.2s) before
+    // failing inside rewrapForPasswordChange with the misleading
+    // `vault_not_unlocked` copy. The card must short-circuit
+    // ahead of derivation and surface a "still loading" message.
+    const authService = makeAuthService();
+    const cardAuthService = makeCardAuthService();
+    const loadingVault = {
+      isIdle: false,
+      isLoading: true,
+      isEmpty: false,
+      isLocked: false,
+      isUnlocked: false,
+      isError: false,
+      rewrapForPasswordChange: jest.fn().mockResolvedValue(null),
+    };
+
+    renderCard({ authService, cardAuthService, vault: loadingVault });
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('authenticated')
+    );
+    await fillAndSubmit();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('change-password-error')).toHaveTextContent(
+        /vault is still loading/i
+      )
+    );
+    // Critically: neither derivation nor the POST should have run.
+    expect(cardAuthService.deriveChangePasswordKeys).not.toHaveBeenCalled();
+    expect(cardAuthService.changePassword).not.toHaveBeenCalled();
+    expect(loadingVault.rewrapForPasswordChange).not.toHaveBeenCalled();
+  });
+
   test('non-auth failures (e.g. invalid_credentials) still render inline error and stay signed in', async () => {
     // Companion case — proves the unauthorized handling is targeted
     // and didn't silently gate ALL failures through handleAuthLost.

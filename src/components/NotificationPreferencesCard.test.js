@@ -301,6 +301,96 @@ describe('NotificationPreferencesCard', () => {
     );
   });
 
+  test('re-runs fallback hydration when the authenticated user identity changes (Codex PR 7 round 2 P2)', async () => {
+    // Scenario: /auth/me omits notificationPrefs for BOTH users (so
+    // the fallback GET /auth/prefs path is exercised), then the
+    // session is refreshed and /auth/me now returns a different
+    // user. Without keying hydration on user.id, the component
+    // would keep user A's in-memory toggle state — and a Save
+    // would PUT that stale value under user B's credentials.
+    //
+    // We drive the swap through a dedicated test-only button that
+    // calls refresh() on AuthContext, since that's the same
+    // mechanism real code uses (e.g. after login on the existing
+    // tab, or after /auth/me is re-queried).
+    function RefreshButton() {
+      const { refresh } = useAuth();
+      return (
+        <button
+          type="button"
+          data-testid="trigger-refresh"
+          onClick={() => {
+            refresh();
+          }}
+        >
+          refresh
+        </button>
+      );
+    }
+    const me = jest
+      .fn()
+      .mockResolvedValueOnce({
+        user: {
+          id: 1,
+          email: 'a@e.com',
+          emailVerified: true,
+          saltV: 'ab'.repeat(32),
+        },
+      })
+      .mockResolvedValueOnce({
+        user: {
+          id: 2,
+          email: 'b@e.com',
+          emailVerified: true,
+          saltV: 'cd'.repeat(32),
+        },
+      });
+    const authService = {
+      me,
+      login: jest.fn(),
+      logout: jest.fn(),
+      register: jest.fn(),
+      verifyEmail: jest.fn(),
+    };
+    const getPrefs = jest
+      .fn()
+      .mockResolvedValueOnce({ voteReminders: { enabled: true } })
+      .mockResolvedValueOnce({ voteReminders: { enabled: false } });
+    const cardAuthService = {
+      getPrefs,
+      updatePrefs: jest.fn(),
+    };
+
+    render(
+      <AuthProvider authService={authService}>
+        <NotificationPreferencesCard authService={cardAuthService} />
+        <RefreshButton />
+      </AuthProvider>
+    );
+
+    // User A hydrates via GET /auth/prefs → enabled=true.
+    await waitFor(() => expect(getPrefs).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('notification-prefs-vote-reminders')
+      ).toBeChecked()
+    );
+
+    // Swap to user B (different id, still no notificationPrefs).
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('trigger-refresh'));
+    });
+
+    // The hydration effect MUST re-fire for the new identity and
+    // the form MUST reflect user B's stored preference (disabled).
+    await waitFor(() => expect(getPrefs).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('notification-prefs-vote-reminders')
+      ).not.toBeChecked()
+    );
+  });
+
   test('falls back to GET /auth/prefs only when /auth/me omitted notificationPrefs', async () => {
     const authService = makeAuthService({ notificationPrefs: null });
     // Simulate an older backend that didn't include notificationPrefs

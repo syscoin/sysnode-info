@@ -87,11 +87,16 @@ export default function NotificationPreferencesCard({
   const [errCode, setErrCode] = useState(null);
   const [success, setSuccess] = useState(false);
 
-  // Sync the local toggle with /auth/me whenever it changes (e.g.
-  // after a refresh completes and user.notificationPrefs populates).
-  // We only run this ONCE per user identity, and only before the
-  // form has become hydrated — once the user can interact, their
-  // local choice is authoritative until Save runs.
+  // Both hydration paths (the fast one from /auth/me, and the
+  // fallback GET /auth/prefs) are keyed on user.id rather than a
+  // boolean gate. Otherwise, if user A hydrates via GET /auth/prefs
+  // (initialPrefs stays null) and the app then swaps to user B who
+  // also has initialPrefs null, no dependency changes — the fallback
+  // effect would not re-fire, and the card would submit user A's
+  // in-memory toggle value for user B. Keying on identity collapses
+  // that window and guarantees the form reflects THIS user's prefs.
+  // Codex round-2 P2.
+  const userId = user ? user.id : null;
   const lastHydratedUserIdRef = useRef(null);
   useEffect(() => {
     if (!user) return;
@@ -112,9 +117,19 @@ export default function NotificationPreferencesCard({
   // Fallback GET /auth/prefs — ONLY when we're authenticated AND
   // /auth/me didn't include notificationPrefs. This guards against
   // firing the request during BOOTING (before auth resolves) or
-  // while anonymous.
+  // while anonymous. Keyed on userId so an identity change (logout +
+  // different sign-in without page reload) re-triggers hydration
+  // instead of holding the previous user's in-memory state.
   useEffect(() => {
     if (!needsHydration) return;
+    if (!userId) return;
+    if (lastHydratedUserIdRef.current === userId) return;
+    // Identity may have just changed under our feet. Hide the
+    // interactive form until the fetch below lands so the user
+    // cannot submit stale toggle state for the new account.
+    setHydrated(false);
+    setErrCode(null);
+    setSuccess(false);
     let cancelled = false;
     setLoading(true);
     authService
@@ -125,6 +140,7 @@ export default function NotificationPreferencesCard({
         setRemindersEnabled(enabled);
         setSavedRemindersEnabled(enabled);
         setHydrated(true);
+        lastHydratedUserIdRef.current = userId;
       })
       .catch((err) => {
         if (cancelled || !mountedRef.current) return;
@@ -145,6 +161,10 @@ export default function NotificationPreferencesCard({
         // default value we have so the user isn't stuck behind an
         // infinite "Loading…" spinner — they can still toggle + retry.
         setHydrated(true);
+        // Mark hydration "done for this user" so the effect doesn't
+        // retry in a loop. A real recovery path is the Save retry,
+        // or a fresh /auth/me refresh.
+        lastHydratedUserIdRef.current = userId;
       })
       .finally(() => {
         if (cancelled || !mountedRef.current) return;
@@ -153,7 +173,7 @@ export default function NotificationPreferencesCard({
     return () => {
       cancelled = true;
     };
-  }, [needsHydration, authService, handleAuthLost]);
+  }, [needsHydration, userId, authService, handleAuthLost]);
 
   const dirty = remindersEnabled !== savedRemindersEnabled;
 

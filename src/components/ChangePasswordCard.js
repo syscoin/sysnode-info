@@ -72,6 +72,8 @@ const ERROR_COPY = {
     "We couldn't reach the sysnode server. Check your connection and try again.",
   vault_not_unlocked:
     'Unlock your vault first (right panel) so we can rewrap it under the new password.',
+  vault_still_loading:
+    'Your vault is still loading. Give it a moment and try again.',
   vault_missing_blob:
     "Your vault didn't load correctly. Refresh this page and try again.",
   vault_missing_saltv:
@@ -133,6 +135,18 @@ export default function ChangePasswordCard({
         return;
       }
 
+      // Gate the expensive PBKDF2 path on a resolved vault state.
+      //
+      // The vault passes through IDLE -> LOADING -> (EMPTY | LOCKED |
+      // UNLOCKED | ERROR). Submitting before we've landed in a
+      // terminal state would burn ~1.2 seconds on a double PBKDF2
+      // only to fail inside rewrapForPasswordChange with a misleading
+      // "vault_not_unlocked" — so short-circuit here with a "still
+      // loading" copy. Codex round-2 P2.
+      if (vault.isIdle || vault.isLoading) {
+        setErrCode('vault_still_loading');
+        return;
+      }
       // If the user has a vault but it isn't UNLOCKED, we can't
       // rewrap — the rewrap needs the old vaultKey in memory.
       // Surface a clear instruction instead of a cryptic 409.
