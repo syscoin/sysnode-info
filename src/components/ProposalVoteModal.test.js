@@ -144,6 +144,12 @@ const UNLOCKED_VAULT_WITH_TWO_KEYS = makeVault({
   },
 });
 
+// Selection identity is keyed on collateralHash:collateralIndex (see
+// `mnId` in the component). These match the fixture returned by
+// makeService() below so tests can address individual checkboxes.
+const OUTPOINT_A = `${'c'.repeat(64)}:0`;
+const OUTPOINT_B = `${'d'.repeat(64)}:1`;
+
 describe('ProposalVoteModal — guard rails', () => {
   afterEach(() => {
     jest.clearAllMocks();
@@ -246,8 +252,12 @@ describe('ProposalVoteModal — happy-path voting', () => {
     });
 
     expect(screen.getAllByTestId('vote-modal-row')).toHaveLength(2);
-    expect(screen.getByTestId('vote-modal-toggle-k1').checked).toBe(true);
-    expect(screen.getByTestId('vote-modal-toggle-k2').checked).toBe(true);
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_A}`).checked).toBe(
+      true
+    );
+    expect(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`).checked).toBe(
+      true
+    );
     expect(screen.getByTestId('vote-modal-submit').textContent).toMatch(
       /2 votes/i
     );
@@ -306,7 +316,7 @@ describe('ProposalVoteModal — happy-path voting', () => {
       expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('vote-modal-toggle-k2'));
+    fireEvent.click(screen.getByTestId(`vote-modal-toggle-${OUTPOINT_B}`));
     expect(screen.getByTestId('vote-modal-submit').textContent).toMatch(
       /1 vote/
     );
@@ -321,6 +331,91 @@ describe('ProposalVoteModal — happy-path voting', () => {
     expect(service.submitVote.mock.calls[0][0].entries[0].voteSig).toBe(
       'sig(Lwif1)'
     );
+  });
+
+  test('two masternodes sharing one voting key are selectable independently', async () => {
+    // Operators sometimes reuse a single voting key across multiple
+    // masternodes. The backend returns one row per MN keyed on the
+    // collateral outpoint, so one vault key can produce N `owned`
+    // rows. Keying selection on vault-key-id would deduplicate
+    // those rows into a single checkbox and force the user to vote
+    // all-or-nothing. Selection MUST be keyed on outpoint so each
+    // MN is an independent toggle.
+    const SHARED_HASH_1 = 'c'.repeat(64);
+    const SHARED_HASH_2 = 'e'.repeat(64);
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        {
+          votingaddress: 'sys1qa',
+          proTxHash: 'pro1',
+          collateralHash: SHARED_HASH_1,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+        {
+          votingaddress: 'sys1qa', // SAME voting address, different MN
+          proTxHash: 'pro2',
+          collateralHash: SHARED_HASH_2,
+          collateralIndex: 0,
+          status: 'ENABLED',
+        },
+      ]),
+      submitVote: jest.fn().mockResolvedValue({
+        accepted: 1,
+        rejected: 0,
+        results: [
+          { collateralHash: SHARED_HASH_1, collateralIndex: 0, ok: true },
+        ],
+      }),
+    };
+    renderModal({
+      vault: makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [
+            { id: 'k1', label: 'shared', wif: 'LwifS', address: 'sys1qa' },
+          ],
+        },
+      }),
+      service,
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument()
+    );
+
+    // Two distinct rows must render even though both share keyId 'k1'.
+    expect(screen.getAllByTestId('vote-modal-row')).toHaveLength(2);
+
+    // Each checkbox has a distinct outpoint-based testid.
+    const tog1 = screen.getByTestId(`vote-modal-toggle-${SHARED_HASH_1}:0`);
+    const tog2 = screen.getByTestId(`vote-modal-toggle-${SHARED_HASH_2}:0`);
+    expect(tog1.checked).toBe(true);
+    expect(tog2.checked).toBe(true);
+
+    // Deselecting one must leave the other selected.
+    fireEvent.click(tog2);
+    expect(tog1.checked).toBe(true);
+    expect(tog2.checked).toBe(false);
+    expect(screen.getByTestId('vote-modal-submit').textContent).toMatch(
+      /1 vote/
+    );
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument()
+    );
+
+    // Only the selected MN got signed + relayed.
+    expect(signVoteFromWif).toHaveBeenCalledTimes(1);
+    expect(signVoteFromWif.mock.calls[0][0].collateralHash).toBe(SHARED_HASH_1);
+    expect(service.submitVote.mock.calls[0][0].entries).toEqual([
+      {
+        collateralHash: SHARED_HASH_1,
+        collateralIndex: 0,
+        voteSig: 'sig(LwifS)',
+      },
+    ]);
   });
 
   test('Clear button disables the submit button', async () => {

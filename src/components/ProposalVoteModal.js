@@ -66,6 +66,22 @@ function outcomeLabel(o) {
   return 'Abstain';
 }
 
+// Stable per-masternode identity used for selection and React keys.
+//
+// Using `keyId` (the vault entry that holds the voting WIF) would be
+// wrong: Syscoin lets one voting address be configured on multiple
+// masternodes (an operator who reuses a key across several of their
+// MNs). `lookupOwnedMasternodes` returns one row per MN keyed on the
+// collateral outpoint, so a single vault key legitimately produces
+// multiple `owned` rows. Keying selection on `keyId` would dedupe
+// those rows into a single toggle — submitting would then cast votes
+// for BOTH MNs when the user only sees one checkbox, and deselecting
+// "one" would silently skip the other. The collateral outpoint is
+// the only globally-unique per-MN identifier the backend provides.
+function mnId(m) {
+  return `${m.collateralHash}:${m.collateralIndex}`;
+}
+
 function errorCopy(code) {
   switch (code) {
     case 'rate_limited':
@@ -119,6 +135,9 @@ export default function ProposalVoteModal({
   // with a useEffect-driven bootstrap, where the modal briefly
   // renders with empty checkboxes between "owned arrived" and
   // "effect ran".
+  //
+  // The Set stores collateral-outpoint strings (see `mnId`), NOT
+  // vault key ids — see the comment on `mnId` for why that matters.
   const [selected, setSelected] = useState(null);
   const [outcome, setOutcome] = useState('yes');
   const [phase, setPhase] = useState(PHASE.PICK);
@@ -149,7 +168,7 @@ export default function ProposalVoteModal({
 
   const effectiveSelected = useMemo(() => {
     if (selected !== null) return selected;
-    return new Set(owned.map((m) => m.keyId));
+    return new Set(owned.map(mnId));
   }, [selected, owned]);
 
   // Reset local state whenever the modal opens or the proposal
@@ -170,7 +189,7 @@ export default function ProposalVoteModal({
   const toggle = useCallback(
     (id) => {
       setSelected((prev) => {
-        const base = prev === null ? new Set(owned.map((m) => m.keyId)) : prev;
+        const base = prev === null ? new Set(owned.map(mnId)) : prev;
         const next = new Set(base);
         if (next.has(id)) next.delete(id);
         else next.add(id);
@@ -181,7 +200,7 @@ export default function ProposalVoteModal({
   );
 
   const selectAll = useCallback(() => {
-    setSelected(new Set(owned.map((m) => m.keyId)));
+    setSelected(new Set(owned.map(mnId)));
   }, [owned]);
 
   const selectNone = useCallback(() => {
@@ -202,7 +221,7 @@ export default function ProposalVoteModal({
       setSubmitError('missing_proposal');
       return;
     }
-    const chosen = owned.filter((m) => effectiveSelected.has(m.keyId));
+    const chosen = owned.filter((m) => effectiveSelected.has(mnId(m)));
     if (chosen.length === 0) return;
 
     // Pin the cancellation generation for this run. The cleanup
@@ -605,32 +624,36 @@ export default function ProposalVoteModal({
         </div>
 
         <ul className="vote-modal__list" data-testid="vote-modal-list">
-          {owned.map((m) => (
-            <li
-              key={m.keyId}
-              className="vote-modal__row"
-              data-testid="vote-modal-row"
-              data-key-id={m.keyId}
-            >
-              <label>
-                <input
-                  type="checkbox"
-                  checked={effectiveSelected.has(m.keyId)}
-                  onChange={() => toggle(m.keyId)}
-                  data-testid={`vote-modal-toggle-${m.keyId}`}
-                />
-                <span className="vote-modal__row-main">
-                  <code className="vote-modal__row-address">{m.address}</code>
-                  {m.label ? (
-                    <span className="vote-modal__row-label">{m.label}</span>
-                  ) : null}
-                </span>
-                <span className="vote-modal__row-status">
-                  {m.masternodeStatus || ''}
-                </span>
-              </label>
-            </li>
-          ))}
+          {owned.map((m) => {
+            const id = mnId(m);
+            return (
+              <li
+                key={id}
+                className="vote-modal__row"
+                data-testid="vote-modal-row"
+                data-mn-id={id}
+                data-key-id={m.keyId}
+              >
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={effectiveSelected.has(id)}
+                    onChange={() => toggle(id)}
+                    data-testid={`vote-modal-toggle-${id}`}
+                  />
+                  <span className="vote-modal__row-main">
+                    <code className="vote-modal__row-address">{m.address}</code>
+                    {m.label ? (
+                      <span className="vote-modal__row-label">{m.label}</span>
+                    ) : null}
+                  </span>
+                  <span className="vote-modal__row-status">
+                    {m.masternodeStatus || ''}
+                  </span>
+                </label>
+              </li>
+            );
+          })}
         </ul>
 
         <div className="vote-modal__actions">
