@@ -2,6 +2,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { Link } from 'react-router-dom';
@@ -99,7 +100,14 @@ export default function ProposalVoteModal({
 }) {
   const { isAuthenticated } = useAuth();
   const vault = useVault();
-  const { owned, isLoading, isError, error, refresh } = useOwnedMasternodes({
+  const {
+    owned,
+    isLoading,
+    isError,
+    error,
+    refresh,
+    isVaultEmpty,
+  } = useOwnedMasternodes({
     governanceService,
   });
 
@@ -117,6 +125,27 @@ export default function ProposalVoteModal({
   const [signProgress, setSignProgress] = useState({ done: 0, total: 0 });
   const [submitError, setSubmitError] = useState(null);
   const [results, setResults] = useState(null);
+
+  // Cancellation generation. Every voting run captures the current
+  // value; after every async boundary (sign loop yield, submitVote
+  // await) we compare it to the live counter and bail if it's moved.
+  // The counter advances whenever the modal closes, unmounts, or
+  // switches to a different proposal — so a user closing mid-flight
+  // cannot cause a late submitVote() relay, and late state updates
+  // from the previous run cannot race with a newly-opened modal.
+  const runGenRef = useRef(0);
+  useEffect(() => {
+    const proposalKey = proposal && proposal.Key;
+    return () => {
+      // Cleanup fires when `open` or `proposalKey` change AND on
+      // unmount. Any in-flight run sees a generation mismatch and
+      // becomes a no-op.
+      runGenRef.current += 1;
+      // Silence a lint warning about the unused capture — reading
+      // proposalKey here pins the dep to the useEffect deps list.
+      void proposalKey;
+    };
+  }, [open, proposal && proposal.Key]);
 
   const effectiveSelected = useMemo(() => {
     if (selected !== null) return selected;
@@ -176,6 +205,14 @@ export default function ProposalVoteModal({
     const chosen = owned.filter((m) => effectiveSelected.has(m.keyId));
     if (chosen.length === 0) return;
 
+    // Pin the cancellation generation for this run. The cleanup
+    // effect on [open, proposal.Key] bumps runGenRef whenever the
+    // modal closes or switches proposals. Any post-await checkpoint
+    // that sees a mismatch aborts before side-effects (submitVote
+    // relay, setPhase/setResults on a stale view) can fire.
+    const myGen = runGenRef.current;
+    const isCancelled = () => runGenRef.current !== myGen;
+
     setPhase(PHASE.SIGNING);
     setSignProgress({ done: 0, total: chosen.length });
     setSubmitError(null);
@@ -196,6 +233,7 @@ export default function ProposalVoteModal({
         if (i > 0 && i % 4 === 0) {
           // eslint-disable-next-line no-await-in-loop
           await new Promise((r) => setTimeout(r, 0));
+          if (isCancelled()) return;
         }
         const { voteSig } = signVoteFromWif({
           wif: mn.wif,
@@ -224,8 +262,11 @@ export default function ProposalVoteModal({
           code: (err && err.code) || 'sign_failed',
         });
       }
+      if (isCancelled()) return;
       setSignProgress({ done: i + 1, total: chosen.length });
     }
+
+    if (isCancelled()) return;
 
     if (entries.length === 0) {
       // Nothing to relay — all selected keys failed to sign. Show
@@ -253,6 +294,12 @@ export default function ProposalVoteModal({
         collateralIndex,
         voteSig,
       }));
+      // Last cancellation check before the network hit. If the user
+      // closed the modal during signing, we must NOT relay votes
+      // they intended to cancel — Core treats vote replay as a rate-
+      // limit hit (vote_too_often) and the user sees confusing
+      // side-effects on other devices.
+      if (isCancelled()) return;
       const resp = await governanceService.submitVote({
         proposalHash: proposal.Key,
         voteOutcome: outcome,
@@ -260,6 +307,7 @@ export default function ProposalVoteModal({
         time,
         entries: payload,
       });
+      if (isCancelled()) return;
       // Join the backend per-entry results back to our vault rows
       // so the UI can show a friendly label / address per outcome.
       // The backend keys each result row on (collateralHash, index);
@@ -301,6 +349,7 @@ export default function ProposalVoteModal({
       });
       setPhase(PHASE.DONE);
     } catch (err) {
+      if (isCancelled()) return;
       setSubmitError((err && err.code) || 'submit_failed');
       setPhase(PHASE.ERROR);
     }
@@ -374,6 +423,33 @@ export default function ProposalVoteModal({
           >
             Retry
           </button>
+          <button
+            type="button"
+            className="button button--ghost button--small"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  } else if (isVaultEmpty) {
+    // First-time user: vault is unlocked but no voting keys have been
+    // imported yet. Keep this distinct from the "keys present but no
+    // matching MNs" state below — different problem, different CTA.
+    body = (
+      <div className="vote-modal__state" data-testid="vote-modal-guard-empty-vault">
+        <p>
+          Your vault is empty. Import your masternode voting keys on the
+          Account page, then come back here to vote with them.
+        </p>
+        <div className="vote-modal__actions">
+          <Link
+            className="button button--primary button--small"
+            to="/account"
+          >
+            Go to Account
+          </Link>
           <button
             type="button"
             className="button button--ghost button--small"

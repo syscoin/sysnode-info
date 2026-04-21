@@ -171,6 +171,33 @@ describe('ProposalVoteModal — guard rails', () => {
     expect(screen.getByTestId('vote-modal-guard-locked')).toBeInTheDocument();
   });
 
+  test('authenticated + unlocked vault with zero imported keys shows the empty-vault CTA', async () => {
+    // First-time user path: vault is unlocked but no voting keys have
+    // been imported yet. Must NOT be conflated with "keys present but
+    // none match a live MN" — different copy, different CTA.
+    const service = {
+      lookupOwnedMasternodes: jest.fn(),
+      submitVote: jest.fn(),
+    };
+    renderModal({
+      vault: makeVault({ isUnlocked: true, data: { keys: [] } }),
+      service,
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('vote-modal-guard-empty-vault')
+      ).toBeInTheDocument();
+    });
+    // Backend must not be hit — we know there are no addresses to look up.
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+    // The "no matching MNs" guard MUST NOT render in parallel.
+    expect(screen.queryByTestId('vote-modal-no-owned')).toBeNull();
+    expect(screen.getByRole('link', { name: /go to account/i })).toHaveAttribute(
+      'href',
+      '/account'
+    );
+  });
+
   test('unlocked vault with no matching masternodes shows the empty state', async () => {
     const service = makeService({
       lookup: jest.fn().mockResolvedValue([]),
@@ -309,6 +336,180 @@ describe('ProposalVoteModal — happy-path voting', () => {
 
     fireEvent.click(screen.getByTestId('vote-modal-select-none'));
     expect(screen.getByTestId('vote-modal-submit')).toBeDisabled();
+  });
+});
+
+describe('ProposalVoteModal — cancellation', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('closing the modal mid-signing aborts before submitVote is called', async () => {
+    // Five vault keys force the sign loop into a yield checkpoint
+    // (the modal yields to the event loop every 4 signatures). We
+    // close the modal while that yield is pending, then let it
+    // resume. The guarded code MUST NOT call submitVote on a cancelled
+    // run — otherwise votes the user intended to cancel are still
+    // relayed to Core.
+    useAuth.mockReturnValue(makeAuth());
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [
+            { id: 'k1', label: 'alpha', wif: 'Lwif1', address: 'sys1qa' },
+            { id: 'k2', label: 'beta', wif: 'Lwif2', address: 'sys1qb' },
+            { id: 'k3', label: 'gamma', wif: 'Lwif3', address: 'sys1qc' },
+            { id: 'k4', label: 'delta', wif: 'Lwif4', address: 'sys1qd' },
+            { id: 'k5', label: 'epsilon', wif: 'Lwif5', address: 'sys1qe' },
+          ],
+        },
+      })
+    );
+
+    // Pending promise we never resolve — if the cancellation guard
+    // isn't wired, submitVote would still be called post-yield and
+    // setState would race.
+    let submitVoteCalled = false;
+    const service = {
+      lookupOwnedMasternodes: jest.fn().mockResolvedValue([
+        { votingaddress: 'sys1qa', proTxHash: 'p1', collateralHash: 'c'.repeat(64), collateralIndex: 0, status: 'ENABLED' },
+        { votingaddress: 'sys1qb', proTxHash: 'p2', collateralHash: 'd'.repeat(64), collateralIndex: 0, status: 'ENABLED' },
+        { votingaddress: 'sys1qc', proTxHash: 'p3', collateralHash: 'e'.repeat(64), collateralIndex: 0, status: 'ENABLED' },
+        { votingaddress: 'sys1qd', proTxHash: 'p4', collateralHash: 'f'.repeat(64), collateralIndex: 0, status: 'ENABLED' },
+        { votingaddress: 'sys1qe', proTxHash: 'p5', collateralHash: 'a'.repeat(64), collateralIndex: 0, status: 'ENABLED' },
+      ]),
+      submitVote: jest.fn(() => {
+        submitVoteCalled = true;
+        return new Promise(() => {});
+      }),
+    };
+
+    const proposal = { Key: 'h'.repeat(64), name: 'Sponsor', title: 'Prop' };
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled()
+    );
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    // Wait for the SIGNING phase to render — that only happens after
+    // the first batch of 4 signs completed and the loop hit its 0-ms
+    // setTimeout yield. At this point the run is pending inside the
+    // yield, waiting on the macrotask queue.
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-progress')).toBeInTheDocument()
+    );
+
+    // Close the modal. This is the trigger Codex flagged: the parent
+    // unmounts / sets open=false, and the cleanup effect must bump
+    // the run generation so the resumed sign loop bails.
+    rerender(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open={false}
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+
+    // Give the setTimeout(0) a chance to fire and any microtasks to
+    // drain. If the guard is working, the resumed loop sees the
+    // generation mismatch and returns before calling submitVote.
+    await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(submitVoteCalled).toBe(false);
+    expect(service.submitVote).not.toHaveBeenCalled();
+  });
+
+  test('closing during submitVote suppresses the late DONE transition', async () => {
+    // Guard against the other race: submitVote is in-flight when the
+    // user closes. The response must NOT transition the (now-gone)
+    // modal into DONE with stale results — otherwise reopening the
+    // modal on a different proposal would show the previous run's
+    // acceptance count for a split second.
+    let resolveSubmit;
+    const submitPromise = new Promise((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const service = makeService({
+      submit: jest.fn(() => submitPromise),
+    });
+
+    useAuth.mockReturnValue(makeAuth());
+    useVault.mockReturnValue(UNLOCKED_VAULT_WITH_TWO_KEYS);
+
+    const proposal = { Key: 'h'.repeat(64), name: 'Sponsor', title: 'Prop' };
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled()
+    );
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => expect(service.submitVote).toHaveBeenCalled());
+
+    rerender(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open={false}
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+
+    resolveSubmit({
+      accepted: 2,
+      rejected: 0,
+      results: [
+        { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+        { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+      ],
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Re-open on same proposal and confirm we're back at the picker
+    // phase, NOT the stale DONE view.
+    rerender(
+      <MemoryRouter>
+        <ProposalVoteModal
+          open
+          onClose={() => {}}
+          proposal={proposal}
+          governanceService={service}
+        />
+      </MemoryRouter>
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vote-modal-list')).toBeInTheDocument()
+    );
+    expect(screen.queryByTestId('vote-modal-done')).toBeNull();
   });
 });
 

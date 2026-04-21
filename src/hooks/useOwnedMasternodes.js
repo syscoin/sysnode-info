@@ -11,7 +11,8 @@ import { governanceService as defaultService } from '../lib/governanceService';
 // Shape:
 //
 //   {
-//     status: 'idle' | 'loading' | 'ready' | 'error' | 'vault_locked',
+//     status: 'idle' | 'loading' | 'ready' | 'error' | 'vault_locked'
+//           | 'empty_vault',
 //     error:  null | <code>,
 //     owned:  [{
 //       keyId, label, wif, address,          // from the vault
@@ -20,6 +21,13 @@ import { governanceService as defaultService } from '../lib/governanceService';
 //     }, ...],
 //     refresh: () => Promise<void>,
 //   }
+//
+// Why `empty_vault` is a distinct state: "vault unlocked but zero
+// imported keys" and "vault has keys but none correspond to a live
+// masternode" are UX-distinct cases (import-keys CTA vs. address-
+// mismatch hint). Collapsing them into `ready + owned=[]` forces the
+// page to guess which one is true. We surface the state explicitly
+// so callers render the right copy and call-to-action.
 //
 // Semantics:
 //
@@ -43,6 +51,7 @@ const LOADING = 'loading';
 const READY = 'ready';
 const ERROR = 'error';
 const VAULT_LOCKED = 'vault_locked';
+const EMPTY_VAULT = 'empty_vault';
 
 export function useOwnedMasternodes({ governanceService = defaultService } = {}) {
   const vault = useVault();
@@ -150,13 +159,15 @@ export function useOwnedMasternodes({ governanceService = defaultService } = {})
       return;
     }
     if (vaultKeys.length === 0) {
-      // Unlocked vault but no imported keys — no need to call the
-      // backend. Render as READY with an empty result; the page
-      // surface distinguishes "zero keys" from "no owned MNs".
+      // Unlocked vault but no imported keys. We skip the backend
+      // call and surface EMPTY_VAULT as a dedicated state so the
+      // UI can render "import keys" copy rather than the "no
+      // matching masternode" copy used when the user has keys
+      // that simply don't map to a live MN.
       genRef.current += 1;
       setMatches([]);
       setError(null);
-      setStatus(READY);
+      setStatus(EMPTY_VAULT);
       return;
     }
     doFetch(vaultKeys);
@@ -180,5 +191,6 @@ export function useOwnedMasternodes({ governanceService = defaultService } = {})
     isReady: status === READY,
     isError: status === ERROR,
     isVaultLocked: status === VAULT_LOCKED,
+    isVaultEmpty: status === EMPTY_VAULT,
   };
 }

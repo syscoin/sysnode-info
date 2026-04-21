@@ -65,7 +65,7 @@ describe('useOwnedMasternodes', () => {
     expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
   });
 
-  test('empty vault (unlocked, no keys) resolves to ready with no owned', async () => {
+  test('empty vault (unlocked, no keys) resolves to empty_vault without hitting backend', async () => {
     useVault.mockReturnValue(
       makeVault({ isUnlocked: true, data: { keys: [] } })
     );
@@ -75,9 +75,12 @@ describe('useOwnedMasternodes', () => {
     render(<Probe service={service} onValue={(v) => values.push(v)} />);
 
     await waitFor(() => {
-      expect(values.at(-1).status).toBe('ready');
+      expect(values.at(-1).status).toBe('empty_vault');
     });
-    expect(values.at(-1).owned).toEqual([]);
+    const last = values.at(-1);
+    expect(last.isVaultEmpty).toBe(true);
+    expect(last.isReady).toBe(false);
+    expect(last.owned).toEqual([]);
     expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
   });
 
