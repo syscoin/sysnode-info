@@ -341,6 +341,15 @@ export default function ProposalVoteModal({
       const priorAccepted = Array.isArray(mergeBase)
         ? mergeBase.filter((e) => e.ok).length
         : 0;
+      // mergeBase may carry forward *failed* rows the caller opted
+      // to preserve (e.g. Retry failed can't re-sign a row whose
+      // masternode dropped off the owned list — it remains as an
+      // unresolved failure so the user still sees and counts it).
+      // Fold them into the rejected tally so the DONE summary
+      // reflects reality rather than hiding the unresolved work.
+      const priorRejected = Array.isArray(mergeBase)
+        ? mergeBase.filter((e) => !e.ok).length
+        : 0;
       const baseEntries = Array.isArray(mergeBase) ? mergeBase : [];
 
       // One timestamp for the whole batch. See file header for
@@ -403,7 +412,7 @@ export default function ProposalVoteModal({
         }));
         setResults({
           accepted: priorAccepted,
-          rejected: signingErrors.length,
+          rejected: signingErrors.length + priorRejected,
           byEntry: [...baseEntries, ...signingRows],
         });
         return;
@@ -468,7 +477,8 @@ export default function ProposalVoteModal({
         }
         setResults({
           accepted: (resp.accepted || 0) + priorAccepted,
-          rejected: (resp.rejected || 0) + signingErrors.length,
+          rejected:
+            (resp.rejected || 0) + signingErrors.length + priorRejected,
           byEntry: [...baseEntries, ...byEntry],
         });
         setPhase(PHASE.DONE);
@@ -493,23 +503,49 @@ export default function ProposalVoteModal({
   // intent) and belongs in the picker, not a retry button. A user
   // who wants to change their vote should close the modal and
   // re-open it, or clear the selection and start over.
+  //
+  // mergeBase composition:
+  //   * Every prior SUCCESS is carried forward verbatim (we don't
+  //     want the successful rows to vanish on retry).
+  //   * Prior FAILURES whose MN is still in `owned` are being
+  //     retried — they DROP from mergeBase so the new attempt's
+  //     row replaces the old one instead of duplicating it.
+  //   * Prior FAILURES whose MN is no longer in `owned` (or whose
+  //     row is missing collateral info we can't map back) are
+  //     *also* carried forward. These are "unretryable" — the
+  //     user still deserves to see and count the unresolved
+  //     failure in the DONE summary, otherwise the rejected count
+  //     silently under-reports after retry.
   const retryFailed = useCallback(() => {
     if (!results || !Array.isArray(results.byEntry)) return;
-    const failedKeys = new Set(
+    // Outpoints of failed rows whose MN is still retryable (present
+    // in the current `owned` list). These are the ones we'll
+    // re-sign; everything else is preserved verbatim.
+    const ownedIds = new Set(owned.map(mnId));
+    const retriedKeys = new Set(
       results.byEntry
-        .filter((e) => !e.ok && e.collateralHash && e.collateralIndex != null)
+        .filter(
+          (e) =>
+            !e.ok &&
+            e.collateralHash &&
+            e.collateralIndex != null &&
+            ownedIds.has(`${e.collateralHash}:${e.collateralIndex}`)
+        )
         .map((e) => `${e.collateralHash}:${e.collateralIndex}`)
     );
-    if (failedKeys.size === 0) return;
-    // Re-resolve from the *current* owned list in case it refreshed
-    // between attempts (e.g. masternode tracker updated while the
-    // DONE screen was open). An MN that disappeared from `owned`
-    // can't be retried — surface that by leaving it in the merged
-    // failure list.
-    const chosen = owned.filter((m) => failedKeys.has(mnId(m)));
-    if (chosen.length === 0) return;
-    const priorSuccesses = results.byEntry.filter((e) => e.ok);
-    return runVotePass(chosen, { mergeBase: priorSuccesses });
+    if (retriedKeys.size === 0) return;
+    const chosen = owned.filter((m) => retriedKeys.has(mnId(m)));
+    const mergeBase = results.byEntry.filter((e) => {
+      if (e.ok) return true;
+      // Failures carried forward: (a) rows missing outpoint info
+      // we can't map, (b) rows whose MN is no longer retryable.
+      // In both cases dropping them would silently under-report
+      // the rejected count after retry.
+      if (!(e.collateralHash && e.collateralIndex != null)) return true;
+      const id = `${e.collateralHash}:${e.collateralIndex}`;
+      return !retriedKeys.has(id);
+    });
+    return runVotePass(chosen, { mergeBase });
   }, [owned, results, runVotePass]);
 
   if (!open) return null;

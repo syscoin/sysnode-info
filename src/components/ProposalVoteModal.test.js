@@ -767,6 +767,105 @@ describe('ProposalVoteModal — error paths', () => {
     expect(screen.queryByTestId('vote-modal-retry-failed')).toBeNull();
   });
 
+  test('Retry failed preserves unretryable failures in the merged summary', async () => {
+    // Scenario: first pass produces three failure rows — two for
+    // MNs that ARE still in `owned` (retryable) and one for an
+    // outpoint that is NOT in `owned` (simulating an MN that
+    // disappeared, or a phantom row the backend emitted). Retry
+    // must re-sign the two retryable rows while keeping the third
+    // failure visible and counted in the final rejected tally,
+    // otherwise the DONE summary silently under-reports the
+    // unresolved work.
+    const PHANTOM = 'e'.repeat(64);
+    const service = makeService({
+      submit: jest
+        .fn()
+        // First attempt: both selected MNs fail, and the backend
+        // additionally reports a failure for PHANTOM:0 (an
+        // outpoint the frontend never sent — modelling a stale
+        // row we have no way to retry).
+        .mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 3,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: PHANTOM,
+              collateralIndex: 0,
+              ok: false,
+              error: 'mn_not_found',
+            },
+          ],
+        })
+        // Retry attempt: the two retryable rows succeed.
+        .mockResolvedValueOnce({
+          accepted: 2,
+          rejected: 0,
+          results: [
+            { collateralHash: 'c'.repeat(64), collateralIndex: 0, ok: true },
+            { collateralHash: 'd'.repeat(64), collateralIndex: 1, ok: true },
+          ],
+        }),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+    });
+    // First DONE: 3 rejections visible.
+    expect(screen.getAllByTestId('vote-result-row')).toHaveLength(3);
+
+    fireEvent.click(screen.getByTestId('vote-modal-retry-failed'));
+
+    await waitFor(() => {
+      // Retry payload contains ONLY the two retryable rows —
+      // PHANTOM is not re-sent because it isn't in `owned`.
+      expect(service.submitVote).toHaveBeenCalledTimes(2);
+    });
+    const retryPayload = service.submitVote.mock.calls[1][0];
+    expect(retryPayload.entries).toHaveLength(2);
+    expect(retryPayload.entries.map((e) => e.collateralHash).sort()).toEqual(
+      ['c'.repeat(64), 'd'.repeat(64)].sort()
+    );
+
+    await waitFor(() => {
+      const summary = screen.getByTestId('vote-modal-done').querySelector('p');
+      // 2 accepted (retry successes), 1 rejected (PHANTOM carried
+      // forward). The critical property: the phantom row is NOT
+      // silently dropped from the rejected count.
+      expect(summary.textContent).toMatch(/2 accepted/i);
+      expect(summary.textContent).toMatch(/1 rejected/i);
+    });
+    // And the PHANTOM row is still visible in the list so the user
+    // sees what's unresolved.
+    const rows = screen.getAllByTestId('vote-result-row');
+    expect(rows).toHaveLength(3);
+    const phantomRow = rows.find(
+      (r) => within(r).queryByText(/no longer active|vote failed/i) !== null
+    );
+    expect(phantomRow).toBeTruthy();
+    expect(phantomRow.getAttribute('data-ok')).toBe('false');
+  });
+
   test('per-signing-row failure surfaces in the DONE list alongside backend results', async () => {
     // Make signVoteFromWif throw for the second key; the first one
     // still signs. Backend relay should get only one entry, but the
