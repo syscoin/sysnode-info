@@ -55,6 +55,19 @@ function makeAuthService(user = { id: 42, email: 'alice@example.com' }) {
   };
 }
 
+function LocationDisplay() {
+  // Small helper that echoes the current location into the DOM so
+  // tests can assert on URL changes inside a MemoryRouter.
+  // eslint-disable-next-line global-require
+  const { useLocation } = require('react-router-dom');
+  const loc = useLocation();
+  return (
+    <div data-testid="location-display">
+      {`${loc.pathname}${loc.search || ''}`}
+    </div>
+  );
+}
+
 async function renderWizard({ initialEntry = '/governance/new', auth } = {}) {
   const svc = auth || makeAuthService();
   const routeSeen = { last: null };
@@ -62,6 +75,7 @@ async function renderWizard({ initialEntry = '/governance/new', auth } = {}) {
     render(
       <MemoryRouter initialEntries={[initialEntry]}>
         <AuthProvider authService={svc}>
+          <LocationDisplay />
           <Switch>
             <Route path="/governance/new" component={NewProposal} />
             <Route
@@ -285,7 +299,16 @@ describe('NewProposal wizard', () => {
     });
   });
 
-  test('saves a new draft and reflects id in URL', async () => {
+  test('saves a new draft, reflects id in URL, and does NOT trigger unsaved-changes modal (Codex round 2 P2)', async () => {
+    // Regression: previously `dispatch({ type: 'mark_saved' })` was
+    // called BEFORE history.replace, but React 18 batches state
+    // updates so the block guard still saw dirty=true at replace
+    // time, popped the modal on an otherwise-successful save, and
+    // could drop the ?draft=<id> from the URL. The fix pre-authorises
+    // the specific internal replace via allowedPathRef. Assert:
+    //   1. createDraft is called with the right payload.
+    //   2. URL now contains ?draft=7.
+    //   3. The unsaved-changes modal stays hidden.
     proposalService.createDraft.mockResolvedValue({
       id: 7,
       userId: 42,
@@ -314,5 +337,12 @@ describe('NewProposal wizard', () => {
       url: 'https://forum.syscoin.org/t/my-grant',
     });
     expect(screen.getByTestId('wizard-saved-indicator')).toBeInTheDocument();
+    // The modal must NOT have been popped by the internal URL bump.
+    expect(screen.queryByTestId('unsaved-modal')).toBeNull();
+    // And the URL must now carry ?draft=7 — the LocationDisplay
+    // test component reflects the current MemoryRouter location.
+    expect(screen.getByTestId('location-display').textContent).toBe(
+      '/governance/new?draft=7'
+    );
   });
 });

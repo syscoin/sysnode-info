@@ -218,7 +218,24 @@ export default function NewProposal() {
 
   // In-app navigation guard using react-router. Blocks all transitions
   // while dirty and routes through the modal.
+  //
+  // Two refs coordinate "allow exactly one specific transition" — both
+  // are needed because React 18 batches state updates, so a `dispatch`
+  // followed by a `history.replace` on the next line runs with the
+  // block callback still observing the old (dirty) value. (Codex PR8
+  // round 2 frontend P2.)
+  //
+  //   allowedPathRef   used by the draft-save path to pre-authorise a
+  //                    single internal replace so mark_saved + the
+  //                    URL bump coexist.
+  //   pendingPathRef   tracks the one path the user confirmed via the
+  //                    modal so only THAT transition is allowed
+  //                    through, not any subsequent back/forward
+  //                    navigation while the modal is visible.
+  //                    (Codex PR8 round 2 frontend P3.)
   const unblockRef = useRef(null);
+  const allowedPathRef = useRef(null);
+  const pendingPathRef = useRef(null);
   useEffect(() => {
     if (!dirty) {
       if (unblockRef.current) {
@@ -228,12 +245,24 @@ export default function NewProposal() {
       return undefined;
     }
     unblockRef.current = history.block((location) => {
-      // If the modal is already visible with a pending nav, accept it.
-      if (leaveModal.open && leaveModal.pending) return true;
-      setLeaveModal({
-        open: true,
-        pending: `${location.pathname}${location.search || ''}${location.hash || ''}`,
-      });
+      const locKey = `${location.pathname}${location.search || ''}${
+        location.hash || ''
+      }`;
+      // 1. Internal, trusted transitions — allow and clear.
+      if (allowedPathRef.current && allowedPathRef.current === locKey) {
+        allowedPathRef.current = null;
+        return true;
+      }
+      // 2. The user already resolved the modal (Save or Discard) and
+      //    we are now pushing the PENDING target. Only that exact
+      //    path is whitelisted — any other transition while the modal
+      //    is still cleaning up must still go through the prompt.
+      if (pendingPathRef.current && pendingPathRef.current === locKey) {
+        pendingPathRef.current = null;
+        return true;
+      }
+      // 3. Otherwise: record the target and pop the modal.
+      setLeaveModal({ open: true, pending: locKey });
       return false;
     });
     return () => {
@@ -242,7 +271,7 @@ export default function NewProposal() {
         unblockRef.current = null;
       }
     };
-  }, [dirty, history, leaveModal]);
+  }, [dirty, history]);
 
   // ---- Validation -------------------------------------------------------
 
@@ -280,19 +309,31 @@ export default function NewProposal() {
       } else {
         result = await proposalService.createDraft(body);
         setDraftId(result.id);
-        // Mark the reducer clean BEFORE history.replace. history.block
-        // is keyed on `dirty`, so replacing the URL while we are still
-        // dirty can either be prompted (triggering the unsaved-changes
-        // modal on a flow that actually succeeded) or — worse — swallowed
-        // by the block's getUserConfirmation, leaving the new `?draft=<id>`
-        // out of the URL. (Codex PR8 round 1 frontend P2.)
-        dispatch({ type: 'mark_saved' });
-        // Reflect the new id in the URL so a reload reopens the draft.
+        // Codex PR8 round 2 frontend P2: React 18 batches state
+        // updates, so dispatching `mark_saved` here does NOT
+        // synchronously drop `dirty` — the effect that installs /
+        // removes the history.block guard won't rerun until after
+        // this async function yields. The `history.replace` two
+        // lines down would then still be observed as a dirty-leave
+        // transition by the active block, pop the unsaved-changes
+        // modal on a flow that actually succeeded, and/or drop the
+        // `?draft=<id>` from the URL (breaking reload-to-resume).
+        //
+        // Pre-authorise this one specific URL bump via
+        // allowedPathRef; the block callback reads the ref and lets
+        // THAT exact transition through while still prompting for
+        // anything else. dispatch is still done so the NEXT render
+        // tears down the block cleanly.
         const params = new URLSearchParams(history.location.search);
         params.set('draft', String(result.id));
+        const nextSearch = `?${params.toString()}`;
+        allowedPathRef.current = `${history.location.pathname}${nextSearch}${
+          history.location.hash || ''
+        }`;
+        dispatch({ type: 'mark_saved' });
         history.replace({
           pathname: history.location.pathname,
-          search: `?${params.toString()}`,
+          search: nextSearch,
         });
         setDraftSavedAt(Date.now());
         return result;
@@ -329,7 +370,14 @@ export default function NewProposal() {
       await saveDraft();
       const pending = leaveModal.pending;
       setLeaveModal({ open: false, pending: null });
-      if (pending) history.push(pending);
+      if (pending) {
+        // Codex PR8 round 2 frontend P3: whitelist only the exact
+        // pending target through the block guard — a back/forward or
+        // any other navigation that fires before this push lands
+        // must still be prompted.
+        pendingPathRef.current = pending;
+        history.push(pending);
+      }
     } catch (_err) {
       // Error already in saveDraftError — keep modal open.
     }
@@ -339,7 +387,10 @@ export default function NewProposal() {
     await discardDraft();
     const pending = leaveModal.pending;
     setLeaveModal({ open: false, pending: null });
-    if (pending) history.push(pending);
+    if (pending) {
+      pendingPathRef.current = pending;
+      history.push(pending);
+    }
   }
 
   function onModalCancel() {
