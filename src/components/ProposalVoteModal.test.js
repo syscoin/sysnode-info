@@ -782,11 +782,18 @@ describe('ProposalVoteModal — error paths', () => {
       fireEvent.click(screen.getByTestId('vote-modal-submit'));
       await screen.findByTestId('vote-modal-rate-limit-countdown');
 
-      // The tick interval is armed while the countdown is shown.
-      const beforeCloseIntervalCalls = setIntervalSpy.mock.calls.filter(
-        (args) => args[1] === 250
-      ).length;
-      expect(beforeCloseIntervalCalls).toBeGreaterThan(0);
+      // The tick effect fires after React commits the countdown
+      // element, so we poll until the spy observes it rather
+      // than sampling at a single point — the countdown element
+      // can appear in the DOM one microtask before useEffect
+      // actually runs, which makes a direct assertion flaky
+      // under parallel workers.
+      const count250 = () =>
+        setIntervalSpy.mock.calls.filter((args) => args[1] === 250).length;
+      await waitFor(() => {
+        expect(count250()).toBeGreaterThan(0);
+      });
+      const beforeCloseIntervalCalls = count250();
       const beforeCloseClears = clearIntervalSpy.mock.calls.length;
 
       // Close the modal without draining the countdown. The tick
@@ -840,9 +847,16 @@ describe('ProposalVoteModal — error paths', () => {
     fireEvent.click(screen.getByTestId('vote-modal-submit'));
 
     const errorState = await screen.findByTestId('vote-modal-error');
-    expect(
-      within(errorState).getByTestId('vote-modal-auto-retry-countdown')
-    ).toBeInTheDocument();
+    // The scheduler useEffect that sets autoRetryAt runs AFTER
+    // React commits the error state, so the countdown element
+    // may not be in the DOM at the exact moment findByTestId
+    // for vote-modal-error resolves. Poll explicitly for it
+    // so the test isn't a race between the committed error
+    // state and the subsequent effect tick.
+    const countdown = await within(errorState).findByTestId(
+      'vote-modal-auto-retry-countdown'
+    );
+    expect(countdown).toBeInTheDocument();
     const cancel = within(errorState).getByTestId(
       'vote-modal-cancel-auto-retry'
     );

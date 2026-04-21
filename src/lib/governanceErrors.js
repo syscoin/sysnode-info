@@ -115,12 +115,21 @@ const DESCRIPTORS = Object.freeze({
   },
 
   // -------------------------------------------------- error ("we could not submit")
+  // CSRF family: the backend emits either `csrf_missing` (the SPA
+  // forgot to echo the X-CSRF-Token header from the csrf cookie) or
+  // `csrf_mismatch` (the header/cookie pair don't match — usually
+  // because the session was rotated/expired behind the user's back).
+  // Both resolve to the same "session expired, log in again" user
+  // story; see ALIASES below for the remap. `csrf` is kept as an
+  // alias target so additional legacy consumers that happen to
+  // surface the bare `csrf` code render consistent copy.
   csrf: {
     short: 'Session expired',
     long:
       'Your session expired while you were voting. Log in again and ' +
       'retry — your selections will be preserved in this modal.',
     severity: SEVERITY.ERROR,
+    cta: { label: 'Log in again', href: '/login', kind: 'link' },
   },
   invalid_vote_signal: {
     short: 'Vote shape rejected',
@@ -199,12 +208,24 @@ const FALLBACK = Object.freeze({
   severity: SEVERITY.ERROR,
 });
 
+// Backend-code → descriptor-key aliases. The source codes on the
+// left are emitted verbatim by the sysnode-backend middleware (see
+// middleware/csrf.js); the right-hand side is the canonical
+// descriptor key used by the UI. Keep this map small — we only add
+// an alias when the backend legitimately emits a distinct code that
+// maps to identical user-visible copy.
+const ALIASES = Object.freeze({
+  csrf_missing: 'csrf',
+  csrf_mismatch: 'csrf',
+});
+
 // Resolve a code to its descriptor. Unknown codes fall back to a
 // generic failure descriptor so UI code can always render *something*
 // without a null-check.
 export function describeError(code) {
   if (!code || typeof code !== 'string') return FALLBACK;
-  const hit = DESCRIPTORS[code];
+  const resolved = ALIASES[code] || code;
+  const hit = DESCRIPTORS[resolved];
   if (hit) return hit;
   return { ...FALLBACK, short: `Vote failed (${code})` };
 }

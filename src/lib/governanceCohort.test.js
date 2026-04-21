@@ -114,6 +114,34 @@ describe('cohortChip — partial cohort', () => {
   });
 });
 
+describe('cohortChip — pending precedence', () => {
+  test('pending beats partial when a subset of owned MNs has only relayed receipts', () => {
+    // Codex P2: ownedCount=5, total=2, relayed=2, confirmed=0
+    // used to render "Voted 2/5" (partial) — implying on-chain
+    // settlement that hadn't happened. Unconfirmed submissions
+    // must surface as pending first so the user isn't lied to
+    // about settlement state.
+    const chip = cohortChip(row({ relayed: 2 }), 5);
+    expect(chip.kind).toBe('pending');
+    expect(chip.label).toBe('Pending');
+    // Detail still reflects the relay count accurately.
+    expect(chip.detail).toMatch(/2 votes submitted/);
+  });
+
+  test('pending beats partial in mixed confirmed + relayed + missing-owned case', () => {
+    // confirmed=1, relayed=1, ownedCount=5 → without the
+    // reorder this returned "Voted 2/5". With the reorder it
+    // stays honest: "1 of 2 confirmed; 1 awaiting confirmation".
+    const chip = cohortChip(
+      row({ confirmed: 1, relayed: 1, confirmedYes: 1 }),
+      5
+    );
+    expect(chip.kind).toBe('pending');
+    expect(chip.detail).toMatch(/1 of 2 confirmed/);
+    expect(chip.detail).toMatch(/1 awaiting/);
+  });
+});
+
 describe('cohortChip — pending', () => {
   test('only relayed rows → pending chip', () => {
     const chip = cohortChip(row({ relayed: 2 }), 2);

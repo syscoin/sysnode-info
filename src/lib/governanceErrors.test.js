@@ -96,6 +96,27 @@ describe('governanceErrors.describeError', () => {
     const d = describeError('csrf');
     expect(d.severity).toBe(SEVERITY.ERROR);
     expect(d.short.toLowerCase()).toMatch(/session/);
+    // Actionable CTA — log in again.
+    expect(d.cta).toEqual(
+      expect.objectContaining({ kind: 'link', href: '/login' })
+    );
+  });
+
+  test('csrf_missing and csrf_mismatch alias to the csrf descriptor', () => {
+    // Backend middleware emits these verbatim (see
+    // sysnode-backend/middleware/csrf.js). Before aliases they
+    // fell through to the generic "Vote failed (csrf_missing)"
+    // fallback — unhelpful, because the real fix is "log in
+    // again". Aliasing to the same descriptor keeps the copy
+    // consistent without duplicating the descriptor entries.
+    const base = describeError('csrf');
+    for (const alias of ['csrf_missing', 'csrf_mismatch']) {
+      const d = describeError(alias);
+      expect(d.severity).toBe(base.severity);
+      expect(d.short).toBe(base.short);
+      expect(d.long).toBe(base.long);
+      expect(d.cta).toEqual(base.cta);
+    }
   });
 });
 

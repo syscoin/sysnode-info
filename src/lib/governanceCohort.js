@@ -172,9 +172,32 @@ export function cohortChip(summaryRow, ownedCount) {
     return { kind: 'needs-retry', label: 'Needs retry', detail };
   }
 
+  // Relayed but not yet on chain — Core's tally hasn't surfaced the
+  // vote via gobject_getcurrentvotes. Usually resolves within a
+  // minute on mainnet; surface so users aren't confused by a
+  // success-but-no-green-checkmark gap.
+  //
+  // This MUST come before the partial ("Voted X/Y") branch —
+  // otherwise a user with ownedCount=5, total=2, confirmed=0,
+  // relayed=2 would see "Voted 2/5" even though nothing has
+  // actually settled on chain yet. Pending dominates partial
+  // because "still waiting" is a more honest read of state than
+  // "partially done" when no row is actually confirmed.
+  if (relayed > 0) {
+    const detail =
+      confirmed > 0
+        ? `${confirmed} of ${total} confirmed on chain; ${relayed} ` +
+          `awaiting confirmation${breakdown}.`
+        : `${relayed} ${pluralVote(relayed)} submitted, ` +
+          `awaiting confirmation on chain.`;
+    return { kind: 'pending', label: 'Pending', detail };
+  }
+
   // Partial: the user has receipts, but not for every MN they own.
   // We need a reliable ownedCount to make this claim — without one
-  // we fall through to "Voted" with whatever we have.
+  // we fall through to "Voted" with whatever we have. We only reach
+  // this branch when every receipt is confirmed (relayed===0), so
+  // the chip honestly reflects settled state.
   if (ownedKnown && ownedCount > total) {
     const missing = ownedCount - total;
     return {
@@ -186,20 +209,6 @@ export function cohortChip(summaryRow, ownedCount) {
         )} voted${breakdown}. ${missing} ${pluralMn(missing)} ` +
         `haven't voted yet.`,
     };
-  }
-
-  // Relayed but not yet on chain — Core's tally hasn't surfaced the
-  // vote via gobject_getcurrentvotes. Usually resolves within a
-  // minute on mainnet; surface so users aren't confused by a
-  // success-but-no-green-checkmark gap.
-  if (relayed > 0) {
-    const detail =
-      confirmed > 0
-        ? `${confirmed} of ${total} confirmed on chain; ${relayed} ` +
-          `awaiting confirmation${breakdown}.`
-        : `${relayed} ${pluralVote(relayed)} submitted, ` +
-          `awaiting confirmation on chain.`;
-    return { kind: 'pending', label: 'Pending', detail };
   }
 
   // All confirmed — the happy path. Outcome in the label makes the
