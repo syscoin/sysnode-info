@@ -62,12 +62,14 @@ function renderModal({
   service,
   proposal = { Key: 'h'.repeat(64), name: 'SomeSponsor', title: 'Test Prop' },
   onClose = jest.fn(),
+  onReloadProposals,
   open = true,
 } = {}) {
   useAuth.mockReturnValue(auth);
   useVault.mockReturnValue(vault);
   return {
     onClose,
+    onReloadProposals,
     ...render(
       <MemoryRouter>
         <ProposalVoteModal
@@ -75,6 +77,7 @@ function renderModal({
           onClose={onClose}
           proposal={proposal}
           governanceService={service}
+          onReloadProposals={onReloadProposals}
         />
       </MemoryRouter>
     ),
@@ -1903,6 +1906,80 @@ describe('ProposalVoteModal — error paths', () => {
     expect(within(bad).getByText(/vote failed/i)).toBeInTheDocument();
 
     expect(service.submitVote.mock.calls[0][0].entries).toHaveLength(1);
+  });
+
+  test('proposal_not_found CTA invokes onReloadProposals (governance feed), not MN lookup', async () => {
+    // Codex P2: the "Reload proposals" CTA for the
+    // `proposal_not_found` descriptor used to fall through to the
+    // MN-lookup refresh (from useOwnedMasternodes), which does
+    // NOTHING for the proposal feed. Users clicked it, nothing
+    // happened, and the stale list stayed put. Now the Governance
+    // page wires in useGovernanceData.refresh via the
+    // `onReloadProposals` prop. Verify:
+    //   1. When the prop is supplied, the CTA calls it (once).
+    //   2. It does not trigger a second MN lookup (the prop takes
+    //      precedence over the internal refresh fallback).
+    //   3. When the prop is absent, the CTA falls back to the
+    //      MN-lookup refresh so any future refresh-kind descriptor
+    //      stays functional.
+    const err = new Error('gone');
+    err.code = 'proposal_not_found';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    const onReloadProposals = jest.fn();
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+      onReloadProposals,
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    // Lookup fires once on mount; reset call count so we can
+    // assert the CTA does NOT fire a second lookup.
+    const lookupCallsBefore = service.lookupOwnedMasternodes.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    const errorState = await screen.findByTestId('vote-modal-error');
+    expect(errorState.getAttribute('data-error-code')).toBe(
+      'proposal_not_found'
+    );
+    const cta = within(errorState).getByTestId('vote-modal-error-cta-refresh');
+    fireEvent.click(cta);
+
+    expect(onReloadProposals).toHaveBeenCalledTimes(1);
+    expect(service.lookupOwnedMasternodes.mock.calls.length).toBe(
+      lookupCallsBefore
+    );
+  });
+
+  test('proposal_not_found CTA falls back to MN-lookup refresh when onReloadProposals is not provided', async () => {
+    const err = new Error('gone');
+    err.code = 'proposal_not_found';
+    const service = makeService({
+      submit: jest.fn().mockRejectedValue(err),
+    });
+    renderModal({
+      vault: UNLOCKED_VAULT_WITH_TWO_KEYS,
+      service,
+      // intentionally no onReloadProposals
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+    });
+    const lookupCallsBefore = service.lookupOwnedMasternodes.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    const errorState = await screen.findByTestId('vote-modal-error');
+    const cta = within(errorState).getByTestId('vote-modal-error-cta-refresh');
+    fireEvent.click(cta);
+
+    await waitFor(() => {
+      expect(service.lookupOwnedMasternodes.mock.calls.length).toBe(
+        lookupCallsBefore + 1
+      );
+    });
   });
 });
 

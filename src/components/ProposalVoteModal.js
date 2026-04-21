@@ -254,6 +254,14 @@ export default function ProposalVoteModal({
   onClose,
   proposal,
   governanceService = defaultService,
+  // Optional callback to refetch the governance feed — wired by
+  // the Governance page so the `proposal_not_found` descriptor's
+  // "Reload proposals" CTA repulls the feed instead of refreshing
+  // only the per-user MN lookup (which does nothing for a stale
+  // proposal list and would leave the user stuck in the error
+  // state). When omitted the CTA falls back to the owned-MN
+  // refresh so the button is never dead.
+  onReloadProposals,
 }) {
   const { isAuthenticated } = useAuth();
   const vault = useVault();
@@ -1458,11 +1466,22 @@ export default function ProposalVoteModal({
           </Link>
         );
       } else if (descriptor.cta.kind === 'refresh') {
+        // Prefer the governance-feed refresher (reloads the
+        // proposal list) when the parent supplied one — this is
+        // the only refresher that actually resolves
+        // `proposal_not_found`. Fall back to the MN-lookup
+        // refresh (the original behaviour) so the CTA stays
+        // functional for any future descriptor that reuses the
+        // `refresh` kind for an MN-scoped recovery.
+        const onClickRefresh =
+          typeof onReloadProposals === 'function'
+            ? onReloadProposals
+            : refresh;
         ctaEl = (
           <button
             type="button"
             className="button button--ghost button--small"
-            onClick={refresh}
+            onClick={onClickRefresh}
             data-testid="vote-modal-error-cta-refresh"
           >
             {descriptor.cta.label}

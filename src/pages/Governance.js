@@ -202,7 +202,13 @@ export default function Governance() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [voteProposal, setVoteProposal] = useState(null);
-  const { error, loading, proposals, stats } = useGovernanceData();
+  const {
+    error,
+    loading,
+    proposals,
+    stats,
+    refresh: refreshGovernanceFeed,
+  } = useGovernanceData();
   const { isAuthenticated } = useAuth();
   // Cohort-aware data — only meaningful for authenticated users.
   // When anonymous, the hook returns dormant empties and does not
@@ -468,6 +474,11 @@ export default function Governance() {
           open
           proposal={voteProposal}
           onClose={closeVoteModal}
+          // Wired so the `proposal_not_found` descriptor's
+          // "Reload proposals" CTA can refetch the feed instead
+          // of only refreshing the per-user MN lookup (which
+          // does nothing for a stale proposal list).
+          onReloadProposals={refreshGovernanceFeed}
         />
       ) : null}
     </main>
