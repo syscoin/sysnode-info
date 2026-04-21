@@ -193,20 +193,25 @@ export function useOwnedMasternodes({
         let receiptList = [];
         let reconciledFlag = false;
         let reconcileErr = null;
-        const reconcileFn =
-          (typeof governanceService.reconcileReceipts === 'function' &&
-            governanceService.reconcileReceipts) ||
-          // Back-compat for any caller passing in a service mock that
-          // predates the POST /reconcile split — fall through to the
-          // old fetchReceipts name so tests written against the old
-          // shape still work. New code should provide
-          // `reconcileReceipts`.
-          (typeof governanceService.fetchReceipts === 'function' &&
-            governanceService.fetchReceipts) ||
-          null;
-        if (propHash && reconcileFn) {
+        // Choose the method NAME, not a detached function reference,
+        // so we can invoke it as `governanceService[methodName](...)`
+        // and preserve the service as the call receiver. Class-style
+        // service implementations whose methods rely on `this` (e.g.
+        // `this.client.post(...)`) would otherwise blow up under ESM
+        // strict-mode `this === undefined`.
+        //
+        // Back-compat: fall back to `fetchReceipts` when a caller
+        // passes a service mock that predates the POST /reconcile
+        // split. New code should provide `reconcileReceipts`.
+        const receiptsMethod =
+          typeof governanceService.reconcileReceipts === 'function'
+            ? 'reconcileReceipts'
+            : typeof governanceService.fetchReceipts === 'function'
+              ? 'fetchReceipts'
+              : null;
+        if (propHash && receiptsMethod) {
           try {
-            const r = await reconcileFn(propHash, {
+            const r = await governanceService[receiptsMethod](propHash, {
               refresh: refreshReceipts,
             });
             if (!mountedRef.current || genRef.current !== myGen) return;

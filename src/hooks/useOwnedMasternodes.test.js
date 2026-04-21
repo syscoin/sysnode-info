@@ -790,4 +790,79 @@ describe('useOwnedMasternodes — receipts join', () => {
       refresh: false,
     });
   });
+
+  test('preserves the service receiver when reconcileReceipts needs `this`', async () => {
+    // Regression: a class-style service whose methods read from
+    // `this` (e.g. a private client reference) must see the service
+    // as the call receiver. Invoking through a detached function
+    // reference under ESM strict mode gives `this === undefined`
+    // and blows up on the first property access.
+    useVault.mockReturnValue(
+      makeVault({
+        isUnlocked: true,
+        data: {
+          keys: [{ id: 'k1', label: '', wif: 'Lwif1', address: 'sys1qa' }],
+        },
+      })
+    );
+    class ClassyGovService {
+      constructor() {
+        this.clientTag = 'ok';
+        this.reconcileCalls = [];
+      }
+      lookupOwnedMasternodes() {
+        return Promise.resolve([
+          {
+            votingaddress: 'sys1qa',
+            proTxHash: 'pro1',
+            collateralHash: COL1,
+            collateralIndex: 0,
+            status: 'ENABLED',
+          },
+        ]);
+      }
+      reconcileReceipts(hash, opts) {
+        // Reads from `this` — throws if the receiver is lost.
+        if (this === undefined || this.clientTag !== 'ok') {
+          throw new Error('lost_receiver');
+        }
+        this.reconcileCalls.push([hash, opts]);
+        return Promise.resolve({
+          receipts: [
+            {
+              collateralHash: COL1,
+              collateralIndex: 0,
+              proposalHash: hash,
+              voteOutcome: 'yes',
+              voteSignal: 'funding',
+              voteTime: 1_700_000_000,
+              status: 'confirmed',
+              lastError: null,
+              submittedAt: 1_700_000_123_000,
+              verifiedAt: 1_700_000_456_000,
+            },
+          ],
+          reconciled: true,
+          reconcileError: null,
+          updated: 1,
+        });
+      }
+    }
+    const service = new ClassyGovService();
+    const values = [];
+
+    render(
+      <Probe
+        service={service}
+        proposalHash={PROPOSAL}
+        onValue={(v) => values.push(v)}
+      />
+    );
+    await waitFor(() => expect(values.at(-1).status).toBe('ready'));
+    const last = values.at(-1);
+    expect(last.reconcileError).toBeNull();
+    expect(last.reconciled).toBe(true);
+    expect(last.owned[0].receipt).toMatchObject({ status: 'confirmed' });
+    expect(service.reconcileCalls).toEqual([[PROPOSAL, { refresh: false }]]);
+  });
 });
