@@ -88,6 +88,30 @@ describe('kdf.deriveMaster / deriveAuthHash — cross-check vs Node crypto', () 
   test('empty email is rejected', async () => {
     await expect(deriveMaster(password, '')).rejects.toThrow(/email/i);
   });
+
+  // When the browser doesn't expose window.crypto.subtle — the most common
+  // cause is the SPA being served over plain HTTP on a non-localhost origin,
+  // where WebCrypto is gated behind the Secure Contexts policy — we must
+  // surface a stable, machine-readable code so the Login / Register pages
+  // can render a dedicated message rather than the generic "something went
+  // wrong" fallback. (See Login.js + Register.js ERROR_COPY.)
+  test('throws a code="webcrypto_unavailable" error when subtle is missing', async () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: {},
+    });
+    try {
+      await expect(deriveMaster('pw', 'user@example.com')).rejects.toMatchObject({
+        code: 'webcrypto_unavailable',
+      });
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: originalCrypto,
+      });
+    }
+  });
 });
 
 describe('kdf.deriveVaultKey', () => {

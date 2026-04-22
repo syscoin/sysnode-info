@@ -65,7 +65,7 @@ test('rejects an obviously invalid email before calling the service', async () =
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent(
-    /valid email address/i
+    /email address doesn'?t look right/i
   );
   expect(service.login).not.toHaveBeenCalled();
 });
@@ -91,6 +91,61 @@ test('renders a friendly message when the server returns invalid_credentials', a
   expect(await screen.findByRole('alert')).toHaveTextContent(
     /couldn't sign you in/i
   );
+});
+
+test('flags both email and password aria-invalid on invalid_credentials (anti-enumeration)', async () => {
+  // The backend returns the same invalid_credentials code for "wrong email"
+  // and "wrong password" (intentional, anti-enumeration). We therefore
+  // outline BOTH inputs rather than misdirect the user to a specific one.
+  const service = mockService({
+    login: jest
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('invalid_credentials'), {
+          code: 'invalid_credentials',
+          status: 401,
+        })
+      ),
+  });
+  renderLogin(service);
+  await waitFor(() => expect(service.me).toHaveBeenCalled());
+
+  const email = screen.getByLabelText(/email/i);
+  const pw = screen.getByLabelText(/password/i);
+  await userEvent.type(email, 'a@b.com');
+  await userEvent.type(pw, 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  await screen.findByRole('alert');
+
+  expect(email).toHaveAttribute('aria-invalid', 'true');
+  expect(pw).toHaveAttribute('aria-invalid', 'true');
+  expect(email.className).toMatch(/auth-input--error/);
+  expect(pw.className).toMatch(/auth-input--error/);
+});
+
+test('renders the WebCrypto-unavailable copy with an actionable fix', async () => {
+  // Same contract as Register: if deriveLoginKeys throws because
+  // window.crypto.subtle isn't exposed (plain-HTTP non-localhost origin),
+  // the user deserves a message that tells them how to recover — not
+  // "Something went wrong".
+  const service = mockService({
+    login: jest.fn().mockRejectedValue(
+      Object.assign(new Error('WebCrypto is unavailable...'), {
+        code: 'webcrypto_unavailable',
+      })
+    ),
+  });
+  renderLogin(service);
+  await waitFor(() => expect(service.me).toHaveBeenCalled());
+
+  await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/https/i);
+  expect(alert).toHaveTextContent(/localhost/i);
+  expect(alert).not.toHaveTextContent(/something went wrong/i);
 });
 
 test('sends the user to /account on successful login', async () => {
