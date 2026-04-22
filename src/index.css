@@ -7,9 +7,15 @@
   --panel: rgba(255, 255, 255, 0.94);
   --panel-strong: rgba(248, 251, 255, 0.98);
   --panel-muted: #f4f8fc;
-  --panel-outline: rgba(44, 74, 117, 0.12);
+  /* QA v1-SG10 / v2-SG04: input-field text contrast audit.
+     Prior `--muted` (#63748d) lands at ~4.3:1 on the page
+     background and ~4.5:1 on panel-strong — right at or below
+     the WCAG AA normal-text threshold. Darkening to #525f76
+     pushes every muted-text + panel combination comfortably
+     past 5:1 without affecting the overall palette. */
+  --panel-outline: rgba(44, 74, 117, 0.22);
   --text: #17253f;
-  --muted: #63748d;
+  --muted: #525f76;
   --line: rgba(44, 74, 117, 0.11);
   --accent: #1e78ff;
   --accent-strong: #125ac4;

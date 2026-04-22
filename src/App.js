@@ -5,6 +5,7 @@ import { Redirect, Route, Switch, useLocation } from 'react-router-dom';
 import Header from './parts/Header';
 import Footer from './parts/Footer';
 import PrivateRoute from './parts/PrivateRoute';
+import SessionExpiredBanner from './components/SessionExpiredBanner';
 
 import Home from './pages/Home';
 import Learn from './pages/Learn';
@@ -42,6 +43,7 @@ export default function App() {
         <div className="site-shell">
           <ScrollToTop />
           <Header />
+          <SessionExpiredBanner />
           <Switch>
             <Route path="/" component={Home} exact />
             <Route path="/network" component={Network} />

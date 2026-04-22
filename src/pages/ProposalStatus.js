@@ -72,17 +72,230 @@ function statusChip(status) {
   }
 }
 
+// Map a backend `fail_reason` (the STABLE machine code written by
+// the dispatcher / repo at `lib/proposalDispatcher.js`) to a human
+// explanation.
+//
+// These codes MUST stay in sync with the set of values the
+// dispatcher actually writes:
+//
+//   `collateral_not_found`      – `rpc.getRawTransaction` returned
+//                                  "No such mempool or blockchain
+//                                  transaction" continuously past
+//                                  `timeoutMs` (dispatcher default
+//                                  ~72h). The TXID the user gave us
+//                                  (or Pali gave us) is not on any
+//                                  Syscoin full node we can see.
+//   `submit_rejected`           – `gobject_submit` returned a
+//                                  TERMINAL error from Core (see
+//                                  `TERMINAL_CORE_ERRORS` in the
+//                                  dispatcher). Specific subtype —
+//                                  rate-limit vs structural — is
+//                                  derived from `failDetail` via
+//                                  `classifyCoreRejection()`.
+//   `duplicate_governance_hash` – another submission row already
+//                                  claimed this governance hash in
+//                                  our DB. The on-chain object
+//                                  exists but belongs to that other
+//                                  row; ours is a redundant
+//                                  duplicate with no recovery path.
+//
+// Earlier iterations of this switch used stale codes (`timeout`,
+// `core_rejected`, `txid_not_found`) that the dispatcher never
+// actually emits, so every live failure fell through to `null` and
+// the user saw the bare machine code only. Keep the codes here
+// word-for-word matching `proposalDispatcher.js`.
 function failDescription(reason) {
   switch (reason) {
-    case 'timeout':
-      return 'The collateral transaction did not reach 6 confirmations within the watch window. If this was a network hiccup, you can re-attempt with a fresh prepare.';
-    case 'core_rejected':
-      return 'Syscoin Core rejected the submission. Check the detail below and try a new proposal if the error is structural.';
-    case 'txid_not_found':
-      return 'We could not find the collateral transaction on the Syscoin network. Double-check the TXID and the transaction was actually broadcast.';
+    case 'collateral_not_found':
+      return (
+        'The collateral transaction ID you pasted was not found on ' +
+        'the Syscoin network after repeated polling. The transaction ' +
+        'may never have been broadcast, may have been double-spent, ' +
+        'or may have hit a deep reorg. Start a fresh proposal with a ' +
+        'new collateral payment — the funds from the missing TX, if ' +
+        'any, are still controlled by your wallet.'
+      );
+    case 'submit_rejected':
+      return (
+        'Syscoin Core rejected the governance object at submit time. ' +
+        'Check the detail below — if it is a structural problem ' +
+        '(invalid hash, invalid signature, invalid object type), the ' +
+        'only path forward is a fresh proposal. The 150 SYS collateral ' +
+        'cannot be reused and is already burned.'
+      );
+    case 'duplicate_governance_hash':
+      return (
+        'Another submission on your account already claimed this exact ' +
+        'governance hash, so this row is a duplicate. Open the other ' +
+        'submission to see its status — the on-chain object only exists ' +
+        'once and belongs to whichever row got to Core first.'
+      );
     default:
       return null;
   }
+}
+
+// Classify a Core-rejected `fail_detail` string into UX buckets so
+// we can render distinct panels. The detail string is whatever
+// Core's `gobject_submit` RPC returned verbatim and is matched
+// against the SAME terminal-error phrases the dispatcher uses (see
+// `TERMINAL_CORE_ERRORS` in `lib/proposalDispatcher.js`). Any
+// drift between these two tables will look like a fall-through to
+// the generic failed panel with no special guidance — not a
+// correctness bug, but a UX regression, so keep them aligned.
+//
+// Buckets:
+//   'rate_limited' — Core's per-cycle governance object creation
+//                    rate limiter rejected the submit. The object
+//                    hash is burned for this cycle; nothing the
+//                    user can do except wait for the next cycle.
+//                    This is the single most-common terminal
+//                    failure, so it deserves its own panel with
+//                    explicit "this is a protocol limit, not you"
+//                    framing to avoid blame-the-user confusion.
+//   'structural'   — One of the validation rejects
+//                    (invalid hash / sig / type / data hex,
+//                    "Governance object is not valid",
+//                    "Object submission rejected"). The 150 SYS
+//                    is still burned; the only recovery is a
+//                    fresh proposal (or an operator investigation
+//                    if the user is certain the inputs were
+//                    right).
+//   null           — Unknown / empty / not Core (e.g. transport
+//                    error that leaked into `fail_detail`). Fall
+//                    through to the generic failed panel.
+function classifyCoreRejection(failDetail) {
+  if (typeof failDetail !== 'string' || !failDetail) return null;
+  if (/Object creation rate limit exceeded/i.test(failDetail)) {
+    return 'rate_limited';
+  }
+  if (
+    /Object submission rejected/i.test(failDetail) ||
+    /Governance object is not valid/i.test(failDetail) ||
+    /Invalid parent hash/i.test(failDetail) ||
+    /Invalid (?:object )?signature/i.test(failDetail) ||
+    /Invalid object type/i.test(failDetail) ||
+    /Invalid proposal/i.test(failDetail) ||
+    /Invalid data hex/i.test(failDetail) ||
+    /hash mismatch/i.test(failDetail)
+  ) {
+    return 'structural';
+  }
+  return null;
+}
+
+// Render the `status === 'failed'` panel. Split out of the main
+// component body because the state space here has grown past a
+// simple "reason + detail + delete" block:
+//
+//   * Rate-limited Core rejections get a dedicated panel with
+//     "try again next governance cycle" framing — the most-common
+//     terminal failure and the one most likely to cause support
+//     pings if we just dump the bare error.
+//   * Non-rate-limit `submit_rejected` still uses the generic
+//     failed card but picks up the richer copy from
+//     `failDescription()`.
+//   * Other reasons (`collateral_not_found`,
+//     `duplicate_governance_hash`) similarly get tailored copy.
+//
+// Keeping this as a plain helper (not a React sub-component) is
+// deliberate: it's purely a render branch over read-only data,
+// has no hooks, no state, and no effects — inlining it would just
+// make the already-large component body harder to read.
+function renderFailedSection({ submission, deleting, onDelete }) {
+  const isCoreRejection = submission.failReason === 'submit_rejected';
+  const coreKind = isCoreRejection
+    ? classifyCoreRejection(submission.failDetail)
+    : null;
+
+  if (coreKind === 'rate_limited') {
+    return (
+      <div
+        className="proposal-status__section proposal-status__section--failed"
+        data-testid="proposal-status-failed"
+        data-core-kind="rate_limited"
+      >
+        <p>
+          <strong>
+            Governance rate-limit reached for this cycle.
+          </strong>
+        </p>
+        <p>
+          Syscoin Core enforces a per-cycle cap on how many new
+          governance objects can be created network-wide. Your
+          submission is valid, but the cycle's quota is full, so Core
+          rejected it. This is a protocol-level safeguard, not a
+          problem with your proposal.
+        </p>
+        <p>
+          <strong>What to do:</strong> wait for the next governance
+          cycle (a fresh window opens at the next superblock,
+          roughly every 30 days) and submit a new proposal then.
+          Unfortunately, the 150 SYS collateral from this attempt is
+          already burned by consensus rules and cannot be recovered
+          or reused — submitting in the next cycle will require a
+          fresh 150 SYS payment.
+        </p>
+        {submission.failDetail ? (
+          <details className="proposal-status__detail">
+            <summary>Raw Core response</summary>
+            <pre className="proposal-wizard__cli">
+              <code>{submission.failDetail}</code>
+            </pre>
+          </details>
+        ) : null}
+        <div className="proposal-status__actions">
+          <Link to="/governance" className="button button--ghost">
+            Back to governance
+          </Link>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={onDelete}
+            disabled={deleting}
+            data-testid="proposal-status-delete"
+          >
+            {deleting ? 'Deleting…' : 'Delete this record'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="proposal-status__section proposal-status__section--failed"
+      data-testid="proposal-status-failed"
+      data-core-kind={coreKind || ''}
+    >
+      <p>
+        <strong>Submission failed.</strong>
+      </p>
+      {submission.failReason ? (
+        <p>
+          Reason: <code>{submission.failReason}</code>
+        </p>
+      ) : null}
+      {failDescription(submission.failReason) ? (
+        <p>{failDescription(submission.failReason)}</p>
+      ) : null}
+      {submission.failDetail ? (
+        <pre className="proposal-wizard__cli">
+          <code>{submission.failDetail}</code>
+        </pre>
+      ) : null}
+      <button
+        type="button"
+        className="button button--ghost"
+        onClick={onDelete}
+        disabled={deleting}
+        data-testid="proposal-status-delete"
+      >
+        {deleting ? 'Deleting…' : 'Delete'}
+      </button>
+    </div>
+  );
 }
 
 export default function ProposalStatus() {
@@ -646,39 +859,13 @@ export default function ProposalStatus() {
                 </div>
               ) : null}
 
-              {submission.status === 'failed' ? (
-                <div
-                  className="proposal-status__section proposal-status__section--failed"
-                  data-testid="proposal-status-failed"
-                >
-                  <p>
-                    <strong>Submission failed.</strong>
-                  </p>
-                  {submission.failReason ? (
-                    <p>
-                      Reason:{' '}
-                      <code>{submission.failReason}</code>
-                    </p>
-                  ) : null}
-                  {failDescription(submission.failReason) ? (
-                    <p>{failDescription(submission.failReason)}</p>
-                  ) : null}
-                  {submission.failDetail ? (
-                    <pre className="proposal-wizard__cli">
-                      <code>{submission.failDetail}</code>
-                    </pre>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={onDelete}
-                    disabled={deleting}
-                    data-testid="proposal-status-delete"
-                  >
-                    {deleting ? 'Deleting…' : 'Delete'}
-                  </button>
-                </div>
-              ) : null}
+              {submission.status === 'failed'
+                ? renderFailedSection({
+                    submission,
+                    deleting,
+                    onDelete,
+                  })
+                : null}
 
               {submission.status === 'prepared' ? (
                 <button

@@ -1039,7 +1039,83 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
   );
 }
 
+// Approximate cadence of Syscoin governance superblocks — 30 days,
+// roughly. The on-chain cadence is ~16,560 blocks with a 60s block
+// target, so the REAL gap between any two superblocks can drift a
+// few hours depending on network hash-rate. We surface this number
+// as a planning-grade estimate ONLY; pairing every rendered date
+// with a "~" prefix and a caveat in the copy keeps us honest.
+//
+// Kept as a module constant (not a backend-fed value) because the
+// wizard is a pre-submission planning surface — the user is
+// estimating what their proposal would look like, not querying the
+// live chain. Once the proposal is actually on-chain, the
+// ProposalStatus page shows the live `start_epoch`/`end_epoch`
+// from Core instead.
+const SUPERBLOCK_INTERVAL_DAYS = 30;
+const DAY_SECONDS = 86400;
+
+// Format a UNIX-seconds timestamp as a short UTC calendar date. We
+// intentionally drop the time portion in the schedule breakdown
+// because the approximation error (~several hours) is larger than
+// the clock portion would imply precision for.
+function formatUtcDate(epochSec) {
+  if (!Number.isFinite(epochSec) || epochSec <= 0) return '';
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(epochSec * 1000));
+  } catch (_e) {
+    return new Date(epochSec * 1000).toUTCString();
+  }
+}
+
+// Build an APPROXIMATE schedule of payment dates for a proposal's
+// Review step. Returns one entry per payment, anchored at
+// `startEpoch` and stepped by `SUPERBLOCK_INTERVAL_DAYS`. Capped by
+// the voting window: we never project a payment date past
+// `endEpoch` because the proposal's window says Core shouldn't
+// pay it beyond that point. Negative / invalid inputs return an
+// empty array so callers can just gate on `.length`.
+function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
+  const start = Number(startEpoch);
+  const end = Number(endEpoch);
+  const count = Math.floor(Number(paymentCount));
+  if (!Number.isFinite(start) || start <= 0) return [];
+  if (!Number.isFinite(end) || end <= start) return [];
+  if (!Number.isFinite(count) || count <= 0) return [];
+  const step = SUPERBLOCK_INTERVAL_DAYS * DAY_SECONDS;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const at = start + i * step;
+    if (at > end) break;
+    out.push({ index: i + 1, epochSec: at });
+  }
+  return out;
+}
+
 function ReviewStep({ form, payloadBytes }) {
+  const paymentCountNum = Number(form.paymentCount);
+  const paymentAmountNum = Number(form.paymentAmount);
+  const totalBudget =
+    Number.isFinite(paymentCountNum) &&
+    Number.isFinite(paymentAmountNum) &&
+    paymentCountNum > 0 &&
+    paymentAmountNum > 0
+      ? paymentCountNum * paymentAmountNum
+      : null;
+  const schedule =
+    paymentCountNum >= 2
+      ? buildApproximateSchedule({
+          startEpoch: form.startEpoch,
+          endEpoch: form.endEpoch,
+          paymentCount: paymentCountNum,
+        })
+      : [];
+
   return (
     <div className="proposal-wizard__panel" data-testid="wizard-panel-review">
       <h2>Review your proposal</h2>
@@ -1058,10 +1134,21 @@ function ReviewStep({ form, payloadBytes }) {
         </dd>
         <dt>Payment address</dt>
         <dd data-testid="review-address">{form.paymentAddress}</dd>
-        <dt>Amount per month</dt>
+        <dt>Amount per payment</dt>
         <dd data-testid="review-amount">{form.paymentAmount} SYS</dd>
         <dt>Number of payments</dt>
         <dd data-testid="review-count">{form.paymentCount}</dd>
+        {totalBudget != null ? (
+          <>
+            <dt>Total budget</dt>
+            <dd data-testid="review-total">
+              {totalBudget.toLocaleString(undefined, {
+                maximumFractionDigits: 8,
+              })}{' '}
+              SYS
+            </dd>
+          </>
+        ) : null}
         <dt>Voting window</dt>
         <dd>
           {new Date(Number(form.startEpoch) * 1000).toUTCString()}
@@ -1069,6 +1156,57 @@ function ReviewStep({ form, payloadBytes }) {
           {new Date(Number(form.endEpoch) * 1000).toUTCString()}
         </dd>
       </dl>
+
+      {schedule.length > 0 ? (
+        <div
+          className="proposal-wizard__schedule"
+          data-testid="review-schedule"
+        >
+          <h3 className="proposal-wizard__schedule-heading">
+            Approximate payment schedule
+          </h3>
+          <p className="proposal-wizard__help">
+            Governance payouts are paid on the nearest Syscoin
+            superblock — roughly every {SUPERBLOCK_INTERVAL_DAYS}{' '}
+            days. The dates below are planning-grade estimates; the
+            actual payment dates will be determined by the
+            superblocks that fall within your voting window.
+          </p>
+          <ol
+            className="proposal-wizard__schedule-list"
+            data-testid="review-schedule-list"
+          >
+            {schedule.map((p) => (
+              <li
+                key={p.index}
+                data-testid="review-schedule-row"
+                data-payment-index={p.index}
+              >
+                <span className="proposal-wizard__schedule-idx">
+                  #{p.index}
+                </span>
+                <span className="proposal-wizard__schedule-date">
+                  ~ {formatUtcDate(p.epochSec)}
+                </span>
+                <span className="proposal-wizard__schedule-amount">
+                  {form.paymentAmount} SYS
+                </span>
+              </li>
+            ))}
+          </ol>
+          {schedule.length < paymentCountNum ? (
+            <p
+              className="proposal-wizard__help proposal-wizard__help--warn"
+              data-testid="review-schedule-trunc"
+            >
+              Your voting window only fits {schedule.length} of the{' '}
+              {paymentCountNum} requested payments. Extend the voting
+              end date, or reduce the payment count, so every payment
+              has a superblock to land in.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="proposal-wizard__burn-warning" role="note">
         <strong>Heads up — 150 SYS will be burned.</strong>

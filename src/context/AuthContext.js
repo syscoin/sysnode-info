@@ -40,6 +40,42 @@ const AUTHENTICATED = 'authenticated';
 export function AuthProvider({ children, authService = defaultAuthService }) {
   const [status, setStatus] = useState(BOOTING);
   const [user, setUser] = useState(null);
+  // `sessionExpired` is true when a live signed-in session was
+  // silently invalidated by the server (cookie expired, backend
+  // revoked it, etc) and we detected that via the apiClient's 401
+  // interceptor. Kept as a separate flag from `status` so callers
+  // can distinguish three distinct transitions to ANONYMOUS:
+  //
+  //   * BOOTING → ANONYMOUS       : fresh visitor, no session to
+  //                                 announce the loss of. NEVER
+  //                                 sets sessionExpired.
+  //   * AUTHENTICATED → ANONYMOUS : either user clicked "Sign out"
+  //                                 (leave sessionExpired=false —
+  //                                 they KNOW they signed out),
+  //                                 OR an apiClient 401 forced the
+  //                                 transition (set
+  //                                 sessionExpired=true so the app
+  //                                 can surface a "your session
+  //                                 expired" banner/toast instead
+  //                                 of silently logging them out).
+  //   * ANONYMOUS → ANONYMOUS     : no-op, keep whatever the flag
+  //                                 was (handleAuthLost firing on
+  //                                 an already-anonymous probe is
+  //                                 not a new signal).
+  //
+  // The banner / toast UI renders on the boolean; dismissing it
+  // only clears the boolean (does NOT re-authenticate).
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  // Mirror `status` into a ref so `handleAuthLost` can read the
+  // current value without having to list `status` as a dependency
+  // (which would re-memoize the callback on every auth transition
+  // and churn the apiClient's registered handler). The ref is
+  // updated inside a layout-free useEffect that tracks `status`.
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   // Guards against setting state after unmount, for pages that call
   // auth methods from effects during navigation.
@@ -128,6 +164,10 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         safeSet(() => {
           setUser(me.user);
           setStatus(AUTHENTICATED);
+          // Successful sign-in clears any stale session-expired
+          // banner — it was true BECAUSE the user lost the previous
+          // session; re-authenticating makes the banner stale.
+          setSessionExpired(false);
         }, myGen);
         return { ...me, master };
       } catch (err) {
@@ -157,6 +197,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         safeSet(() => {
           setUser(res.user);
           setStatus(AUTHENTICATED);
+          setSessionExpired(false);
         }, myGen);
         return { user: res.user, master };
       }
@@ -216,13 +257,29 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
   // Called from the apiClient's 401 interceptor when a non-auth request
   // comes back unauthorized — the cookie has almost certainly expired.
   // Pages react by showing "session expired, please log in".
+  //
+  // Sets `sessionExpired=true` ONLY when the pre-transition status
+  // was AUTHENTICATED. That's the only case where a user actually
+  // LOST a session they were counting on. Firing the banner on
+  // BOOTING→ANONYMOUS (a fresh visitor whose /auth/me probe
+  // returns 401) would be a false positive — that path is the
+  // normal "you are not logged in" state and showing an expiry
+  // banner would be confusing UX.
   const handleAuthLost = useCallback(() => {
+    const wasAuthenticated = statusRef.current === AUTHENTICATED;
     const myGen = nextGen();
     safeSet(() => {
       setUser(null);
       setStatus(ANONYMOUS);
+      if (wasAuthenticated) {
+        setSessionExpired(true);
+      }
     }, myGen);
   }, [safeSet, nextGen]);
+
+  const dismissSessionExpired = useCallback(() => {
+    setSessionExpired(false);
+  }, []);
 
   // Register ourselves as the default apiClient's auth-loss handler so
   // that 401s on protected endpoints (e.g. /vault) reach us even when
@@ -240,6 +297,8 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       user,
       isBooting: status === BOOTING,
       isAuthenticated: status === AUTHENTICATED,
+      sessionExpired,
+      dismissSessionExpired,
       login,
       register,
       verifyEmail,
@@ -247,7 +306,18 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       refresh,
       handleAuthLost,
     }),
-    [status, user, login, register, verifyEmail, logout, refresh, handleAuthLost]
+    [
+      status,
+      user,
+      sessionExpired,
+      dismissSessionExpired,
+      login,
+      register,
+      verifyEmail,
+      logout,
+      refresh,
+      handleAuthLost,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
