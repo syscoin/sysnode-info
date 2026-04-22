@@ -266,7 +266,13 @@ describe('ProposalStatus', () => {
       'ff' + 'aa'.repeat(31)
     );
     expect(screen.getByTestId('proposal-status-txid-input')).toBeInTheDocument();
-    expect(screen.getByTestId('proposal-status-attach')).toBeDisabled();
+    // Attach is always enabled — clicking it on an empty input
+    // surfaces a specific inline error (`txid_empty`) via the
+    // attach-error banner. Previously the button was `disabled`
+    // and the user got no feedback. We assert the control exists
+    // and is not disabled; the empty-click error path has its
+    // own dedicated test below.
+    expect(screen.getByTestId('proposal-status-attach')).not.toBeDisabled();
   });
 
   test(
@@ -333,6 +339,38 @@ describe('ProposalStatus', () => {
       ).toBeNull();
     }
   );
+
+  test('prepared state: empty TXID surfaces inline error on Attach click, no RPC call', async () => {
+    // Previously the Attach button was `disabled` while the input
+    // was empty, so clicking it produced no feedback — the user
+    // assumed the form was broken. Now the button is always
+    // enabled and an empty submission surfaces a dedicated
+    // `txid_empty` banner so the failure is visible.
+    proposalService.getSubmission.mockResolvedValueOnce({
+      id: 161,
+      status: 'prepared',
+      name: 't',
+      proposalHash: 'aa'.repeat(32),
+      paymentAddress: 'sys1q',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: 1,
+      endEpoch: 2,
+    });
+    await renderAt(161);
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-prepared')).toBeInTheDocument();
+    });
+    // Button is enabled even with an empty input.
+    expect(screen.getByTestId('proposal-status-attach')).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('proposal-status-attach'));
+    });
+    expect(
+      screen.getByTestId('proposal-status-attach-error')
+    ).toHaveTextContent(/paste the collateral txid/i);
+    expect(proposalService.attachCollateral).not.toHaveBeenCalled();
+  });
 
   test('prepared state: malformed TXID surfaces inline error, no RPC call', async () => {
     proposalService.getSubmission.mockResolvedValueOnce({

@@ -155,26 +155,48 @@ describe('NewProposal wizard', () => {
       await screen.findByTestId('wizard-panel-basics')
     ).toBeInTheDocument();
     expect(screen.getByTestId('wizard-step-basics')).toHaveClass('is-active');
-    expect(screen.getByTestId('wizard-next')).toBeDisabled();
+    // Next is always enabled — clicking it on an invalid step surfaces
+    // inline errors rather than being a silent dead-end. Assert the
+    // button exists, not that it's disabled. See "touch-all-on-Next"
+    // handler in NewProposal.js.
+    expect(screen.getByTestId('wizard-next')).toBeInTheDocument();
   });
 
-  test('Next is disabled until Basics validates', async () => {
+  test('Next stays on Basics and surfaces errors until Basics validates', async () => {
     await renderWizard();
     await screen.findByTestId('wizard-panel-basics');
     const next = screen.getByTestId('wizard-next');
-    expect(next).toBeDisabled();
+    expect(next).not.toBeDisabled();
 
-    // Invalid URL (no http)
+    // Clicking Next on an empty step should NOT advance. It should
+    // flip aria-invalid on the required fields so red borders +
+    // inline error hints render (this is the behavior the wizard
+    // used to bury behind a greyed-out button).
+    fireEvent.click(next);
+    expect(screen.getByTestId('wizard-panel-basics')).toBeInTheDocument();
+    expect(screen.getByTestId('wizard-field-name')).toHaveAttribute(
+      'aria-invalid',
+      'true'
+    );
+    expect(screen.getByTestId('wizard-field-url')).toHaveAttribute(
+      'aria-invalid',
+      'true'
+    );
+
+    // Invalid URL (no http) — Next still doesn't advance.
     fireEvent.change(screen.getByTestId('wizard-field-name'), {
       target: { value: 'test-grant' },
     });
     fireEvent.change(screen.getByTestId('wizard-field-url'), {
       target: { value: 'not-a-url' },
     });
-    expect(next).toBeDisabled();
+    fireEvent.click(next);
+    expect(screen.getByTestId('wizard-panel-basics')).toBeInTheDocument();
 
     validBasics();
-    expect(screen.getByTestId('wizard-next')).not.toBeDisabled();
+    // Valid inputs — Next now advances to the Payment step.
+    fireEvent.click(next);
+    expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
   });
 
   test(

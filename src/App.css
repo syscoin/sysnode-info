@@ -302,6 +302,33 @@
   text-transform: uppercase;
 }
 
+/* Back-nav breadcrumb above a page-hero heading (governance/new,
+   governance/proposal/:id). Deliberately small and muted — this
+   is a "where am I / how do I get out" affordance, not a primary
+   action. The wrapping <p> resets page defaults and keeps the
+   rendered baseline consistent across pages; the inner link
+   carries the visible styling. */
+.page-hero__back-row {
+  margin: 0 0 8px;
+}
+
+.page-hero__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-decoration: none;
+  padding: 4px 0;
+}
+
+.page-hero__back:hover,
+.page-hero__back:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .hero__highlights,
 .page-hero__summary {
   display: grid;
@@ -1353,7 +1380,17 @@
   align-content: center;
 }
 
-.proposal-row__action--proposal {
+/* In the anonymous row (Proposal + Yes + No), the proposal link
+   spans the full width above the yes/no pair. For the authenticated
+   row (Proposal + Vote), both buttons should sit on the same row at
+   equal widths — so the full-width span is scoped out when a Vote
+   sibling is present.
+
+   Uses :has() so no JS is needed; browsers that don't support it
+   (pre-2023 Safari <15.4 etc.) gracefully fall back to today's
+   uneven sizing rather than misrender. */
+.proposal-row__actions:not(:has(.proposal-row__action--vote))
+  .proposal-row__action--proposal {
   grid-column: 1 / -1;
 }
 
@@ -1609,6 +1646,109 @@
 
 .auth-card--info {
   gap: 20px;
+}
+
+/* -------------------------------------------------------------------------
+   Account-card primary CTA — visual consistency across panels
+
+   The various Account cards each have a single primary action (Sign
+   out, Import voting keys, Change password, Save preferences…). The
+   base `.button` is inline-flex with content-width padding, so short
+   labels like "Sign out" shrink to a tiny pill while long labels
+   ("Open my governance activity") dominate the card. This floors the
+   width so they all read as peers on desktop, and stretches to full
+   width on narrow screens where the settings-row pattern is clearer.
+
+   Scoped to the IMMEDIATE child button/anchor of .auth-card (so the
+   delete-account confirmation row with its two buttons in
+   .auth-form-actions is unaffected) and to the dedicated
+   .vault-empty__actions wrapper used by VaultStatusCard. */
+.auth-card > .button,
+.auth-card > .auth-card__body > .button,
+.auth-card .vault-empty__actions .button {
+  min-width: 220px;
+}
+
+@media (max-width: 600px) {
+  .auth-card > .button,
+  .auth-card > .auth-card__body > .button,
+  .auth-card .vault-empty__actions .button {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Collapsible auth cards (Account settings disclosure)
+
+   Each Account card historically rendered its full form inline,
+   producing a long stack on both mobile and desktop. The collapsible
+   variant keeps the title + short hint visible and hides the form
+   body behind a chevron toggle — same pattern macOS/iOS Settings
+   uses for "Change password", "Notifications", etc. The chevron is
+   a native <button type="button"> wired via aria-expanded/aria-
+   controls so keyboard + screen-reader users get the standard
+   disclosure affordance.
+
+   Scoped to the auth-card family — no intent to propagate this
+   pattern across the app. Feed/table pages use other patterns. */
+.auth-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.auth-card__header-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.auth-card__disclosure-toggle {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 6px 10px;
+  margin: -6px -6px -6px 0;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 999px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.auth-card__disclosure-toggle:hover,
+.auth-card__disclosure-toggle:focus-visible {
+  color: var(--text);
+  background: rgba(44, 74, 117, 0.08);
+  outline: none;
+}
+
+.auth-card__disclosure-toggle:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.auth-card__chevron {
+  display: inline-block;
+  font-size: 0.95rem;
+  font-weight: 700;
+  transition: transform 160ms ease;
+}
+
+.auth-card__disclosure-toggle[aria-expanded='true'] .auth-card__chevron {
+  transform: rotate(90deg);
 }
 
 .auth-field {
@@ -2358,14 +2498,24 @@
 }
 
 /* -------------------------------------------------------------------------
-   Vault EMPTY state footer — centre the "Import voting keys" CTA without
-   stretching it across the card.
+   Vault EMPTY state footer — the "Import voting keys" CTA.
+
+   Column flex + align-items:stretch so the single CTA reads as a peer
+   to the other Account-card buttons (Sign out, Change password, Save
+   preferences), which are direct flex-column children of .auth-card
+   and therefore stretch to the full card width. Without this wrapper-
+   level column flex the button would only hit the 220px min-width floor
+   and sit narrower than its siblings.
+
+   Multiple buttons, should we add any, stack vertically for the same
+   settings-row consistency on both desktop and mobile.
    ------------------------------------------------------------------------- */
 
 .vault-empty__actions {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 /* -------------------------------------------------------------------------
@@ -3541,6 +3691,18 @@
   }
 }
 
+/* Grid-item wrapper for (label + inline error) pair. Stacks the
+   FieldError directly under its input instead of letting the error
+   float into the adjacent grid cell. The outer grid in
+   .proposal-wizard__row still handles column widths; this flex
+   column just governs vertical spacing inside a cell. */
+.proposal-wizard__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0; /* let children shrink inside the grid track */
+}
+
 .proposal-wizard .form-field {
   display: flex;
   flex-direction: column;
@@ -3677,7 +3839,14 @@
   color: #8b2d1b;
 }
 
-.proposal-wizard__burn-warning strong {
+/* Heading <strong> is the direct child of the warning div; only it
+   should force a line break. Any <strong> further inside — e.g. the
+   inline "150 SYS" / "not refundable" emphasis in the body copy —
+   must stay inline, otherwise each one prints on its own line and
+   fragments the sentence into a stair-step (see review-step warning
+   text). Previously the unscoped `strong` selector hit both cases
+   and produced the fragmented layout. */
+.proposal-wizard__burn-warning > strong {
   display: block;
   margin-bottom: 4px;
 }
@@ -3685,6 +3854,10 @@
 .proposal-wizard__burn-warning p {
   margin: 0;
   font-size: 0.9rem;
+}
+
+.proposal-wizard__burn-warning p strong {
+  font-weight: 700;
 }
 
 .proposal-wizard__help--warn {
@@ -3979,6 +4152,101 @@
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 6px;
+}
+
+/* Awaiting-payment "attach collateral TXID" form.
+   ---------------------------------------------
+   Two-column layout on desktop (input fills, button hugs), stacks
+   on mobile. Before this rule the label + input + button used
+   classes that didn't exist in CSS, so the form rendered with
+   default inline styles and looked clumped (no gap between label
+   text and input, button squashed against the input on the same
+   line). Using an explicit named block keeps this decoupled from
+   the wizard's own form-field styles so changes to one don't
+   visually disturb the other. */
+.proposal-status__attach {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 6px;
+}
+
+.proposal-status__attach-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.proposal-status__attach-label-text {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.proposal-status__attach-input {
+  width: 100%;
+  border: 1px solid var(--panel-outline);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.proposal-status__attach-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft, rgba(37, 99, 235, 0.18));
+}
+
+.proposal-status__attach-input[aria-invalid='true'] {
+  border-color: #c83a2b;
+  box-shadow: 0 0 0 3px rgba(229, 107, 85, 0.18);
+}
+
+.proposal-status__attach-btn {
+  white-space: nowrap;
+  align-self: end;
+  height: 46px;
+}
+
+@media (max-width: 600px) {
+  .proposal-status__attach {
+    grid-template-columns: 1fr;
+  }
+  .proposal-status__attach-btn {
+    width: 100%;
+  }
+}
+
+/* CLI snippet block with an adjacent copy button.
+   -----------------------------------------------
+   Lets the user grab the `gobject prepare ...` line without
+   triple-click-selecting the <pre>. On mobile the copy button
+   stacks under the snippet for comfortable tap targets. */
+.proposal-status__cli-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.proposal-status__cli-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Compact ghost button variant. Used by the copy-CLI affordance;
+   keeps the hit target usable without dominating the layout. */
+.button--small {
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  line-height: 1.1;
 }
 
 .proposal-status__detail {

@@ -375,11 +375,61 @@ export default function NewProposal() {
   );
   const payloadBytes = useMemo(() => estimatePayloadBytes(form), [form]);
 
-  const stepValid = useMemo(() => {
-    if (stepIdx === 0) return Object.keys(basicsErrors).length === 0;
-    if (stepIdx === 1) return Object.keys(paymentErrors).length === 0;
-    return true;
-  }, [stepIdx, basicsErrors, paymentErrors]);
+  // Which form fields belong to each step. Used by the "Next"
+  // handler to mark every field on the current step as touched
+  // when validation fails, so inline red borders + hint text
+  // appear on the fields that are actually blocking progress —
+  // not just the ones the user already interacted with via blur.
+  // Kept in lock-step with `validateBasics` / `validatePayment` in
+  // lib/proposalForm.js — any new error key added there must be
+  // listed here too or the Next click will disable the button
+  // silently again.
+  const STEP_FIELDS = useMemo(
+    () => ({
+      basics: ['name', 'url'],
+      payment: [
+        'paymentAddress',
+        'paymentAmount',
+        'paymentCount',
+        'startEpoch',
+        'endEpoch',
+      ],
+    }),
+    []
+  );
+
+  // "Next" button handler. Historically the button was `disabled`
+  // while a step had errors, which made the control a dead-end
+  // for anyone who clicked it without first blurring every
+  // field — the user saw a greyed-out Next with no indication of
+  // why. Instead we always enable the button; on click, if the
+  // step has errors, we touch every field on the step so red
+  // borders + inline hints render and THEN bail without
+  // advancing. On a clean step we advance normally.
+  const onClickNext = useCallback(() => {
+    const step = STEPS[stepIdx];
+    const fields = STEP_FIELDS[step] || [];
+    const errs =
+      step === 'basics'
+        ? basicsErrors
+        : step === 'payment'
+        ? paymentErrors
+        : {};
+    if (Object.keys(errs).length > 0) {
+      // Touch every field on this step so the blur-gated error
+      // UI (both the red border via aria-invalid and the inline
+      // FieldError stacked under the field) shows up for ANY
+      // invalid field, not only ones the user has already
+      // touched by blurring.
+      setTouched((t) => {
+        const next = { ...t };
+        for (const f of fields) next[f] = true;
+        return next;
+      });
+      return;
+    }
+    setStepIdx((i) => i + 1);
+  }, [stepIdx, basicsErrors, paymentErrors, STEP_FIELDS]);
 
   // ---- Handlers ---------------------------------------------------------
 
@@ -655,6 +705,19 @@ export default function NewProposal() {
       />
       <section className="page-hero">
         <div className="site-wrap">
+          {/*
+           * Back nav. Dirty-leave prompting is wired via
+           * `history.block` above, so clicking this Link when
+           * unsaved edits exist will pop the UnsavedChangesModal
+           * — no extra handler needed. Kept as a Link rather
+           * than a button so right-click / middle-click "open
+           * in new tab" behaves as users expect.
+           */}
+          <p className="page-hero__back-row">
+            <Link to="/governance" className="page-hero__back">
+              ← Back to governance
+            </Link>
+          </p>
           <p className="eyebrow">Governance</p>
           <h1>Create a proposal</h1>
           <p className="page-hero__copy">
@@ -814,8 +877,7 @@ export default function NewProposal() {
                 <button
                   type="button"
                   className="button button--primary"
-                  onClick={() => setStepIdx((i) => i + 1)}
-                  disabled={!stepValid}
+                  onClick={onClickNext}
                   data-testid="wizard-next"
                 >
                   Next
@@ -953,96 +1015,115 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
       ) : null}
 
       <div className="proposal-wizard__row">
-        <label className="form-field">
-          <span>Amount per payment (SYS)</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            value={form.paymentAmount}
-            onChange={(e) => onField('paymentAmount', e.target.value)}
-            onBlur={() => onBlur('paymentAmount')}
-            placeholder="1000"
-            aria-invalid={touched.paymentAmount && !!errors.paymentAmount}
-            aria-describedby={
-              errors.paymentAmount ? 'err-paymentAmount' : undefined
-            }
-            data-testid="wizard-field-amount"
-          />
-          <small>Positive number, up to 8 decimals.</small>
-        </label>
-        {touched.paymentAmount ? (
-          <FieldError id="err-paymentAmount" message={errors.paymentAmount} />
-        ) : null}
+        {/*
+         * Each grid-cell wraps ONE input group (label + inline error)
+         * so the row's 2-column grid always sees exactly 2 children.
+         *
+         * Before this wrapper, the `<FieldError>` siblings each
+         * consumed their own grid cell. When one field validated and
+         * the other didn't, the next label wrapped onto a new row and
+         * the error appeared in the adjacent column instead of below
+         * the input. The wrapping div keeps the error stacked under
+         * its input and keeps the row layout stable.
+         */}
+        <div className="proposal-wizard__cell">
+          <label className="form-field">
+            <span>Amount per payment (SYS)</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={form.paymentAmount}
+              onChange={(e) => onField('paymentAmount', e.target.value)}
+              onBlur={() => onBlur('paymentAmount')}
+              placeholder="1000"
+              aria-invalid={touched.paymentAmount && !!errors.paymentAmount}
+              aria-describedby={
+                errors.paymentAmount ? 'err-paymentAmount' : undefined
+              }
+              data-testid="wizard-field-amount"
+            />
+            <small>Positive number, up to 8 decimals.</small>
+          </label>
+          {touched.paymentAmount ? (
+            <FieldError id="err-paymentAmount" message={errors.paymentAmount} />
+          ) : null}
+        </div>
 
-        <label className="form-field">
-          <span>Number of payments (months)</span>
-          <input
-            type="number"
-            min={1}
-            max={MAX_PAYMENT_COUNT}
-            value={form.paymentCount}
-            onChange={(e) => onField('paymentCount', e.target.value)}
-            onBlur={() => onBlur('paymentCount')}
-            aria-invalid={touched.paymentCount && !!errors.paymentCount}
-            aria-describedby={
-              errors.paymentCount ? 'err-paymentCount' : undefined
-            }
-            data-testid="wizard-field-count"
-          />
-          <small>
-            Informational only. Voters see this in the UI; not stored
-            on-chain. Max {MAX_PAYMENT_COUNT}.
-          </small>
-        </label>
-        {touched.paymentCount ? (
-          <FieldError id="err-paymentCount" message={errors.paymentCount} />
-        ) : null}
+        <div className="proposal-wizard__cell">
+          <label className="form-field">
+            <span>Number of payments (months)</span>
+            <input
+              type="number"
+              min={1}
+              max={MAX_PAYMENT_COUNT}
+              value={form.paymentCount}
+              onChange={(e) => onField('paymentCount', e.target.value)}
+              onBlur={() => onBlur('paymentCount')}
+              aria-invalid={touched.paymentCount && !!errors.paymentCount}
+              aria-describedby={
+                errors.paymentCount ? 'err-paymentCount' : undefined
+              }
+              data-testid="wizard-field-count"
+            />
+            <small>
+              Informational only. Voters see this in the UI; not stored
+              on-chain. Max {MAX_PAYMENT_COUNT}.
+            </small>
+          </label>
+          {touched.paymentCount ? (
+            <FieldError id="err-paymentCount" message={errors.paymentCount} />
+          ) : null}
+        </div>
       </div>
 
       <div className="proposal-wizard__row">
-        <label className="form-field">
-          <span>Start (UTC epoch seconds)</span>
-          <input
-            type="number"
-            value={form.startEpoch}
-            onChange={(e) => onField('startEpoch', e.target.value)}
-            onBlur={() => onBlur('startEpoch')}
-            aria-invalid={touched.startEpoch && !!errors.startEpoch}
-            aria-describedby={
-              errors.startEpoch ? 'err-startEpoch' : undefined
-            }
-            data-testid="wizard-field-start"
-          />
-          <small>
-            {form.startEpoch && Number(form.startEpoch) > 0
-              ? new Date(Number(form.startEpoch) * 1000).toUTCString()
-              : 'Use a future UTC time.'}
-          </small>
-        </label>
-        {touched.startEpoch ? (
-          <FieldError id="err-startEpoch" message={errors.startEpoch} />
-        ) : null}
+        <div className="proposal-wizard__cell">
+          <label className="form-field">
+            <span>Start (UTC epoch seconds)</span>
+            <input
+              type="number"
+              value={form.startEpoch}
+              onChange={(e) => onField('startEpoch', e.target.value)}
+              onBlur={() => onBlur('startEpoch')}
+              aria-invalid={touched.startEpoch && !!errors.startEpoch}
+              aria-describedby={
+                errors.startEpoch ? 'err-startEpoch' : undefined
+              }
+              data-testid="wizard-field-start"
+            />
+            <small>
+              {form.startEpoch && Number(form.startEpoch) > 0
+                ? new Date(Number(form.startEpoch) * 1000).toUTCString()
+                : 'Use a future UTC time.'}
+            </small>
+          </label>
+          {touched.startEpoch ? (
+            <FieldError id="err-startEpoch" message={errors.startEpoch} />
+          ) : null}
+        </div>
 
-        <label className="form-field">
-          <span>End (UTC epoch seconds)</span>
-          <input
-            type="number"
-            value={form.endEpoch}
-            onChange={(e) => onField('endEpoch', e.target.value)}
-            onBlur={() => onBlur('endEpoch')}
-            aria-invalid={touched.endEpoch && !!errors.endEpoch}
-            aria-describedby={errors.endEpoch ? 'err-endEpoch' : undefined}
-            data-testid="wizard-field-end"
-          />
-          <small>
-            {form.endEpoch && Number(form.endEpoch) > 0
-              ? new Date(Number(form.endEpoch) * 1000).toUTCString()
-              : 'Must be after start.'}
-          </small>
-        </label>
-        {touched.endEpoch ? (
-          <FieldError id="err-endEpoch" message={errors.endEpoch} />
-        ) : null}
+        <div className="proposal-wizard__cell">
+          <label className="form-field">
+            <span>End (UTC epoch seconds)</span>
+            <input
+              type="number"
+              value={form.endEpoch}
+              onChange={(e) => onField('endEpoch', e.target.value)}
+              onBlur={() => onBlur('endEpoch')}
+              aria-invalid={touched.endEpoch && !!errors.endEpoch}
+              aria-describedby={errors.endEpoch ? 'err-endEpoch' : undefined}
+              data-testid="wizard-field-end"
+            />
+            <small>
+              {form.endEpoch && Number(form.endEpoch) > 0
+                ? new Date(Number(form.endEpoch) * 1000).toUTCString()
+                : 'Must be after start.'}
+            </small>
+          </label>
+          {touched.endEpoch ? (
+            <FieldError id="err-endEpoch" message={errors.endEpoch} />
+          ) : null}
+        </div>
       </div>
 
       <PayloadSizeMeter bytes={payloadBytes} />

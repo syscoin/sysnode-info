@@ -52,10 +52,18 @@ function remindersEnabledFromPrefs(prefs) {
   return v !== false;
 }
 
+// `defaultOpen` — whether the card's form body is revealed on mount.
+// Kept as `true` by default so component-level tests (which render
+// the card in isolation and interact with its checkbox directly)
+// keep working without having to expand the disclosure first.
+// Account.js overrides to `false` so users land on a compact
+// settings stack and opt in to the form explicitly.
 export default function NotificationPreferencesCard({
   authService = defaultAuthService,
+  defaultOpen = true,
 }) {
   const { user, isAuthenticated, handleAuthLost } = useAuth();
+  const [open, setOpen] = useState(defaultOpen);
   // `user.notificationPrefs` is whatever /auth/me returned. It may
   // be `{}` (no explicit preferences saved yet), a populated object,
   // or missing entirely (older backends / partial hydration). We
@@ -217,73 +225,102 @@ export default function NotificationPreferencesCard({
 
   return (
     <form
-      className="auth-card auth-card--info"
+      className="auth-card auth-card--info auth-card--collapsible"
       onSubmit={onSubmit}
       data-testid="notification-prefs-card"
+      data-open={open ? 'true' : 'false'}
       noValidate
     >
-      <h2 className="auth-card__title">Notifications</h2>
-      <p className="auth-card__hint">
-        Governance moves on-chain whether you're watching or not.
-        Enable reminders and we'll email you a few days before each
-        superblock — and once more in the final 24 hours if you
-        haven't voted yet.
-      </p>
+      <div className="auth-card__header">
+        <div className="auth-card__header-text">
+          <h2 className="auth-card__title">Notifications</h2>
+          <p className="auth-card__hint">
+            Governance moves on-chain whether you're watching or not.
+            Enable reminders and we'll email you a few days before
+            each superblock — and once more in the final 24 hours if
+            you haven't voted yet.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="auth-card__disclosure-toggle"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="notification-prefs-body"
+          aria-label={
+            open
+              ? 'Collapse notification preferences'
+              : 'Expand notification preferences'
+          }
+          data-testid="notification-prefs-toggle"
+        >
+          <span className="auth-card__chevron" aria-hidden="true">
+            ▸
+          </span>
+        </button>
+      </div>
 
-      {!hydrated || loading ? (
-        <p className="auth-card__hint" data-testid="notification-prefs-loading">
-          Loading your preferences…
-        </p>
-      ) : (
-        <>
-          <label className="auth-toggle">
-            <input
-              type="checkbox"
-              checked={remindersEnabled}
-              onChange={onToggle}
-              data-testid="notification-prefs-vote-reminders"
-            />
-            <span className="auth-toggle__body">
-              <span className="auth-toggle__label">
-                Governance vote reminders
-              </span>
-              <span className="auth-toggle__hint">
-                At most two emails per governance cycle. Skipped
-                entirely once you've voted that cycle.
-              </span>
-            </span>
-          </label>
-
-          {errCode ? (
-            <div
-              className="auth-alert auth-alert--error"
-              role="alert"
-              data-testid="notification-prefs-error"
+      {open ? (
+        <div id="notification-prefs-body" className="auth-card__body">
+          {!hydrated || loading ? (
+            <p
+              className="auth-card__hint"
+              data-testid="notification-prefs-loading"
             >
-              {errorCopy(errCode)}
-            </div>
-          ) : null}
+              Loading your preferences…
+            </p>
+          ) : (
+            <>
+              <label className="auth-toggle">
+                <input
+                  type="checkbox"
+                  checked={remindersEnabled}
+                  onChange={onToggle}
+                  data-testid="notification-prefs-vote-reminders"
+                />
+                <span className="auth-toggle__body">
+                  <span className="auth-toggle__label">
+                    Governance vote reminders
+                  </span>
+                  <span className="auth-toggle__hint">
+                    At most two emails per governance cycle. Skipped
+                    entirely once you've voted that cycle.
+                  </span>
+                </span>
+              </label>
 
-          {success ? (
-            <div
-              className="auth-alert auth-alert--success"
-              role="status"
-              data-testid="notification-prefs-success"
-            >
-              Preferences saved.
-            </div>
-          ) : null}
+              {errCode ? (
+                <div
+                  className="auth-alert auth-alert--error"
+                  role="alert"
+                  data-testid="notification-prefs-error"
+                >
+                  {errorCopy(errCode)}
+                </div>
+              ) : null}
 
-          <button
-            type="submit"
-            className="button button--primary"
-            disabled={saving || !dirty}
-            data-testid="notification-prefs-submit"
-          >
-            {saving ? 'Saving…' : 'Save preferences'}
-          </button>
-        </>
-      )}
+              {success ? (
+                <div
+                  className="auth-alert auth-alert--success"
+                  role="status"
+                  data-testid="notification-prefs-success"
+                >
+                  Preferences saved.
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={saving || !dirty}
+                data-testid="notification-prefs-submit"
+              >
+                {saving ? 'Saving…' : 'Save preferences'}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
     </form>
   );
 }

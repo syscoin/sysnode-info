@@ -296,6 +296,32 @@ export function createProposalService({ client = defaultClient } = {}) {
     }
   }
 
+  // "Start over with these details" — atomically clone a failed
+  // submission's structured fields into a new draft and delete the
+  // failed row. Only valid on submissions in `failed` status; the
+  // route replies 409 `status_not_failed` otherwise, which we
+  // preserve on the thrown error so the UI can distinguish that
+  // case from a generic failure. Returns the new draft row, ready
+  // to be opened at /governance/new?draft=<id>.
+  async function cloneSubmissionToDraft(id) {
+    if (!Number.isInteger(id) || id <= 0) {
+      throw proposalError('invalid_id', 0);
+    }
+    try {
+      const res = await client.post(
+        `${BASE}/submissions/${id}/clone-to-draft`,
+        {}
+      );
+      return assertShape('cloneSubmissionToDraft', res.data).draft;
+    } catch (err) {
+      throw proposalError(
+        err.code || 'clone_submission_failed',
+        err.status,
+        err
+      );
+    }
+  }
+
   return {
     createDraft,
     listDrafts,
@@ -307,6 +333,7 @@ export function createProposalService({ client = defaultClient } = {}) {
     getSubmission,
     attachCollateral,
     deleteSubmission,
+    cloneSubmissionToDraft,
     buildCollateralPsbt,
     getGovernanceNetwork,
   };

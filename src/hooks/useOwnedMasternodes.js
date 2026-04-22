@@ -298,6 +298,24 @@ export function useOwnedMasternodes({
       setStatus(IDLE);
       return;
     }
+    if (vault.isEmpty) {
+      // VaultContext status EMPTY — the user has never imported any
+      // voting keys (no vault row on the server). Semantically
+      // identical to "unlocked vault with zero keys": there's
+      // nothing to look up and the UI should prompt them to import.
+      // Surface EMPTY_VAULT explicitly so consumers (Governance ops
+      // hero, vote modal) render the dedicated "import keys" CTA
+      // rather than sitting on a perpetual loading skeleton or a
+      // misleading "vault locked" message.
+      genRef.current += 1;
+      setMatches([]);
+      setReceipts([]);
+      setReconciled(false);
+      setReconcileError(null);
+      setError(null);
+      setStatus(EMPTY_VAULT);
+      return;
+    }
     if (!vault.isUnlocked) {
       // Any in-flight lookup is cancelled by bumping the gen counter.
       genRef.current += 1;
@@ -330,7 +348,7 @@ export function useOwnedMasternodes({
     // also re-fire when the proposalHash changes so moving between
     // proposals re-fetches the receipts join.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint, proposalHash]);
+  }, [enabled, vault.isEmpty, vault.isUnlocked, vault.isIdle, vault.isLoading, addressFingerprint, proposalHash]);
 
   const refresh = useCallback(
     async ({ refreshReceipts = false } = {}) => {
