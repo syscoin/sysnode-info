@@ -196,7 +196,29 @@ export default function NewProposal() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!draftIdFromUrl) return () => {};
+    if (!draftIdFromUrl) {
+      // The URL no longer targets a specific draft. Two entry
+      // paths land here:
+      //   a) Fresh mount on /governance/new with no query — nothing
+      //      to reset, local state is already empty.
+      //   b) User navigated from /governance/new?draft=<id> to
+      //      /governance/new (param removed). Without clearing we
+      //      would keep `draftId` in memory tied to the previous
+      //      draft, so Save Draft would PATCH /drafts/<old id>
+      //      while the URL claims we're authoring a new proposal
+      //      — a cross-draft overwrite the user can't see. Reset
+      //      draftId and wipe the form so route state and the
+      //      persisted target stay aligned: a subsequent Save
+      //      Draft can only create a new draft, never update a
+      //      stale one.
+      if (draftId != null) {
+        const blank = emptyForm();
+        dispatch({ type: 'replace', form: blank, baseline: blank });
+        setDraftId(null);
+        setLoadError(null);
+      }
+      return () => {};
+    }
     // Codex PR8 round 3 P1: skip refetch when the draft is already
     // loaded in local state. After a successful createDraft() we
     // call `setDraftId(result.id)` AND `history.replace({ ?draft=id

@@ -933,4 +933,82 @@ describe('NewProposal wizard', () => {
       );
     }
   );
+
+  test(
+    'clears loaded draft when ?draft= is removed from the URL so Save does not PATCH the old id (Codex round 12 P2)',
+    async () => {
+      // Regression: the draft-load effect previously early-returned
+      // on `!draftIdFromUrl` without doing anything, so navigating
+      // /governance/new?draft=<id> → /governance/new (param removed)
+      // kept `draftId` + `form` in memory. Save Draft then called
+      // updateDraft(oldId) while the URL claimed a new proposal —
+      // a silent cross-draft overwrite. Fix: the `!draftIdFromUrl`
+      // branch now resets draftId and replaces the form with
+      // emptyForm(), so the route state and the persisted target
+      // stay aligned.
+      proposalService.getDraft.mockResolvedValue({
+        id: 50,
+        userId: 42,
+        name: 'loaded-from-fifty',
+        url: 'https://forum.syscoin.org/t/fifty',
+        paymentAmountSats: '0',
+        paymentCount: 1,
+      });
+
+      let capturedHistory = null;
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new?draft=50']}>
+            <AuthProvider authService={makeAuthService()}>
+              <Switch>
+                <Route
+                  path="/governance/new"
+                  render={(props) => {
+                    capturedHistory = props.history;
+                    // eslint-disable-next-line global-require
+                    const NewProposalLocal =
+                      require('./NewProposal').default;
+                    return <NewProposalLocal />;
+                  }}
+                />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('wizard-field-name').value).toBe(
+          'loaded-from-fifty'
+        );
+      });
+
+      // Navigate away from ?draft=50 to bare /governance/new. The
+      // effect must reset draftId + form even though there's no
+      // new draft to load.
+      await act(async () => {
+        capturedHistory.replace('/governance/new');
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('wizard-field-name').value
+        ).not.toBe('loaded-from-fifty');
+      });
+
+      // Now type a new name and save. It must create a fresh
+      // draft (or at minimum MUST NOT updateDraft(50, ...)).
+      proposalService.createDraft.mockResolvedValue({ id: 51 });
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'new-proposal-entry' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+      expect(proposalService.updateDraft).not.toHaveBeenCalledWith(
+        50,
+        expect.anything()
+      );
+    }
+  );
 });
