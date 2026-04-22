@@ -63,6 +63,71 @@ export default function UnsavedChangesModal({
     [open, saving, onCancel]
   );
 
+  // Codex PR8 round 14 P2: trap Tab / Shift+Tab within the modal
+  // while it is open. Without this, keyboard users can advance
+  // focus into the background wizard (still-rendered input fields,
+  // the "Next" button, the global nav) and trigger actions
+  // *outside* the save/discard decision — so the confirmation
+  // dialog stops being modal in anything but visual terms. We
+  // intercept Tab at the `keydown` phase and cycle focus among the
+  // dialog's own focusable elements: forward-wrap from the last
+  // back to the first (Tab from the Cancel button jumps back to
+  // Save), reverse-wrap the other way (Shift+Tab from Save to
+  // Cancel), and if focus has somehow escaped the panel we pull it
+  // back to the primary action. Combined with the existing Escape
+  // handler and the aria-modal attribute, this gives us the full
+  // dialog semantics screen-reader users and keyboard navigators
+  // expect. We deliberately do NOT make the background `inert`
+  // (the React-friendly alternative) because that attribute still
+  // has spotty browser support in the range of versions CRA
+  // targets; a manual focus trap works everywhere.
+  useEffect(
+    function trapTabFocus() {
+      if (!open) return undefined;
+      function onKey(e) {
+        if (e.key !== 'Tab') return;
+        const panel = panelRef.current;
+        if (!panel) return;
+        // Collect only currently-focusable, non-disabled items in
+        // DOM order. The `disabled` attribute is set on all three
+        // buttons while `saving` is true, so during a save we
+        // simply fall through — there's nothing to cycle between,
+        // and pressing Tab just does nothing (which is fine; the
+        // modal is about to dismiss or error out).
+        const focusables = Array.from(
+          panel.querySelectorAll(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => !el.hasAttribute('disabled'));
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (!panel.contains(active)) {
+          // Focus escaped outside the panel (e.g. via programmatic
+          // focus() from something in the background) — reel it
+          // back in before the browser processes the Tab.
+          e.preventDefault();
+          first.focus();
+          return;
+        }
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    },
+    [open, saving]
+  );
+
   if (!open) return null;
 
   function onOverlayClick(e) {

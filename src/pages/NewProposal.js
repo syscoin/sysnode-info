@@ -768,7 +768,18 @@ export default function NewProposal() {
                   {savingDraft ? 'Saving…' : 'Save draft'}
                 </button>
               ) : null}
-              {draftSavedAt && !savingDraft && !saveDraftError ? (
+              {/* Codex PR8 round 14 P2: the "Saved" badge is a
+                  claim about the *current* form state, not about
+                  history. Gate it on `!dirty` so that as soon as
+                  the user types anything after a successful save,
+                  the badge disappears — otherwise it would linger
+                  until the next save attempt and trick the user
+                  into believing unsaved edits are persisted. The
+                  badge reappears automatically on the next
+                  successful save (`draftSavedAt` is bumped and
+                  `dirty` flips back to false via mark_saved's new
+                  baseline). */}
+              {draftSavedAt && !savingDraft && !saveDraftError && !dirty ? (
                 <span
                   className="proposal-wizard__saved-indicator"
                   role="status"

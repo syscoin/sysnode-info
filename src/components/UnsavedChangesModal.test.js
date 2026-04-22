@@ -113,4 +113,92 @@ describe('UnsavedChangesModal', () => {
       'alert'
     );
   });
+
+  // Codex PR8 round 14 P2: Tab / Shift+Tab must be trapped within
+  // the modal so keyboard users cannot escape to background
+  // controls while an unsaved-changes decision is still pending.
+  // We simulate the browser's Tab behavior manually (JSDOM doesn't
+  // actually advance focus on a keydown event) by asserting that
+  // preventDefault() is called on the wrapping boundaries.
+  describe('keyboard focus trap', () => {
+    test('Shift+Tab on the first focusable wraps backward to the last', () => {
+      renderModal();
+      const save = screen.getByTestId('unsaved-modal-save');
+      const cancel = screen.getByTestId('unsaved-modal-cancel');
+      // Save has focus on mount (verified by earlier test).
+      expect(save).toHaveFocus();
+      // Press Shift+Tab. The trap must preventDefault AND move
+      // focus to Cancel (the last focusable).
+      const e = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !window.dispatchEvent(e);
+      expect(prevented).toBe(true);
+      expect(cancel).toHaveFocus();
+    });
+
+    test('Tab on the last focusable wraps forward to the first', () => {
+      renderModal();
+      const save = screen.getByTestId('unsaved-modal-save');
+      const cancel = screen.getByTestId('unsaved-modal-cancel');
+      cancel.focus();
+      expect(cancel).toHaveFocus();
+      const e = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: false,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !window.dispatchEvent(e);
+      expect(prevented).toBe(true);
+      expect(save).toHaveFocus();
+    });
+
+    test(
+      'Tab from outside the panel is pulled back to the primary action',
+      () => {
+        // Render a background focusable BEFORE the modal so it is
+        // DOM-prior and could otherwise steal focus.
+        const bg = document.createElement('button');
+        bg.id = 'bg-focusable';
+        bg.textContent = 'outside';
+        document.body.prepend(bg);
+        try {
+          renderModal();
+          // Move focus outside the modal deliberately.
+          bg.focus();
+          expect(document.activeElement).toBe(bg);
+          // Tab — trap must preventDefault AND pull focus back to
+          // the first focusable inside the panel (Save).
+          const e = new KeyboardEvent('keydown', {
+            key: 'Tab',
+            bubbles: true,
+            cancelable: true,
+          });
+          const prevented = !window.dispatchEvent(e);
+          expect(prevented).toBe(true);
+          expect(screen.getByTestId('unsaved-modal-save')).toHaveFocus();
+        } finally {
+          bg.remove();
+        }
+      }
+    );
+
+    test('non-Tab keys are not intercepted by the trap', () => {
+      renderModal();
+      const save = screen.getByTestId('unsaved-modal-save');
+      expect(save).toHaveFocus();
+      const e = new KeyboardEvent('keydown', {
+        key: 'a',
+        bubbles: true,
+        cancelable: true,
+      });
+      window.dispatchEvent(e);
+      // Focus did not change (trap only cares about Tab).
+      expect(save).toHaveFocus();
+    });
+  });
 });

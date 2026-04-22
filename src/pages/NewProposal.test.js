@@ -1071,6 +1071,55 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    '"Saved" badge disappears after new edits dirty the form again (Codex round 14 P2)',
+    async () => {
+      // Regression: the saved-indicator was rendered purely from
+      // draftSavedAt/savingDraft/saveDraftError, so after one
+      // successful save it kept showing "Saved" even as the user
+      // typed further edits that had not been persisted. Users
+      // inferred their latest changes were safe when in fact they
+      // were only in local state. Fix: gate on `!dirty`, which
+      // flips back to true on any field mutation past the last
+      // baseline.
+      proposalService.createDraft.mockResolvedValue({
+        id: 42,
+        userId: 42,
+        name: 'initial',
+        url: 'https://forum.syscoin.org/t/initial',
+        paymentAmountSats: '0',
+        paymentCount: 1,
+      });
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+
+      // Fill + save so draftSavedAt is set and the badge renders.
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'initial' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-url'), {
+        target: { value: 'https://forum.syscoin.org/t/initial' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+      expect(proposalService.createDraft).toHaveBeenCalledTimes(1);
+      expect(
+        screen.getByTestId('wizard-saved-indicator')
+      ).toBeInTheDocument();
+
+      // Now the user types more — form is dirty relative to the
+      // saved baseline. The badge must disappear immediately to
+      // avoid the false-safety signal.
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'initial-edited' },
+      });
+      expect(
+        screen.queryByTestId('wizard-saved-indicator')
+      ).toBeNull();
+    }
+  );
+
+  test(
     'updateDraft sends explicit empty strings for cleared text fields so the backend clears them (Codex round 13 P2)',
     async () => {
       // Regression: prior behavior dropped empty text fields from
