@@ -30,6 +30,6 @@ export function isValidEmailSyntax(value) {
   })) {
     return false;
   }
-  if (!/^[A-Za-z0-9._%+\-]+$/.test(local)) return false;
+  if (!/^[A-Za-z0-9._%+-]+$/.test(local)) return false;
   return true;
 }

@@ -383,8 +383,8 @@ export default function ProposalVoteModal({
   // cannot cause a late submitVote() relay, and late state updates
   // from the previous run cannot race with a newly-opened modal.
   const runGenRef = useRef(0);
+  const proposalKey = proposal && proposal.Key;
   useEffect(() => {
-    const proposalKey = proposal && proposal.Key;
     return () => {
       // Cleanup fires when `open` or `proposalKey` change AND on
       // unmount. Any in-flight run sees a generation mismatch and
@@ -394,7 +394,7 @@ export default function ProposalVoteModal({
       // proposalKey here pins the dep to the useEffect deps list.
       void proposalKey;
     };
-  }, [open, proposal && proposal.Key]);
+  }, [open, proposalKey]);
 
   // Default selection is receipt-aware: when the user hasn't
   // interacted yet, an owned MN with a confirmed on-chain receipt at

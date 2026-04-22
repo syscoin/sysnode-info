@@ -1,4 +1,3 @@
-/* global BigInt */
 // WIF decode + P2WPKH (bech32) address derivation for Syscoin.
 //
 // This module is used by the key-import UI to validate pasted
