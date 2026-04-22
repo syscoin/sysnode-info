@@ -361,9 +361,20 @@ export default function NewProposal() {
         const params = new URLSearchParams(history.location.search);
         params.set('draft', String(result.id));
         const nextSearch = `?${params.toString()}`;
-        allowedPathRef.current = `${history.location.pathname}${nextSearch}${
-          history.location.hash || ''
-        }`;
+        // Codex PR8 round 10 P3: the whitelist key MUST match the
+        // shape of the URL we actually hand to history.replace. The
+        // replace call below sets pathname + search ONLY, so if we
+        // include the current hash in the whitelist key, a route
+        // like `/governance/new#some-anchor` (any hash, even one
+        // a user pasted or that was added by an anchor link) would
+        // be recorded as `path?search#hash` while the location
+        // react-router observes post-replace is `path?search`. The
+        // block callback then compares these two different strings,
+        // classifies our internal URL sync as an untrusted
+        // navigation, and pops the unsaved-changes modal on a
+        // successful first-save. Drop the hash here so the
+        // whitelist key is exactly what history.replace produces.
+        allowedPathRef.current = `${history.location.pathname}${nextSearch}`;
         dispatch({ type: 'mark_saved', baseline: savedSnapshot });
         history.replace({
           pathname: history.location.pathname,

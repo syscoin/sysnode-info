@@ -300,6 +300,62 @@ describe('NewProposal wizard', () => {
     );
   });
 
+  test(
+    'first-save URL bump with a pre-existing hash does NOT pop the leave modal (Codex round 10 P3)',
+    async () => {
+      // Regression: allowedPathRef USED to include the current
+      // location.hash in its whitelist key, but history.replace
+      // here only writes pathname + search (no hash). For any URL
+      // loaded with a fragment — e.g. a user deep-linked to
+      // `/governance/new#draft-payment` or the page picked up a
+      // stray `#` from copy/paste — the whitelist key became
+      // `path?search#hash` while the post-replace location react-
+      // router observes was `path?search`. The block callback
+      // compared two different strings, treated our own internal
+      // save as an untrusted navigation, and popped the unsaved-
+      // changes modal on a successful first save. Worse, resolving
+      // the modal could drop the `?draft=<id>` and break reload-
+      // to-resume.
+      //
+      // Fix: drop the hash from the whitelist key so it matches
+      // exactly what history.replace produces.
+      proposalService.createDraft.mockResolvedValue({
+        id: 42,
+        userId: 42,
+        name: 'my-grant',
+        url: 'https://forum.syscoin.org/t/my-grant',
+        paymentAmountSats: '0',
+        paymentCount: 1,
+      });
+      // Mount with a fragment in the URL — this is the exact
+      // scenario that exposed the bug.
+      await renderWizard({ initialEntry: '/governance/new#section-payment' });
+      await screen.findByTestId('wizard-panel-basics');
+
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'my-grant' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-url'), {
+        target: { value: 'https://forum.syscoin.org/t/my-grant' },
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+
+      // createDraft was called, indicator shown …
+      expect(proposalService.createDraft).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('wizard-saved-indicator')).toBeInTheDocument();
+      // … the unsaved-changes modal must NOT have popped …
+      expect(screen.queryByTestId('unsaved-modal')).toBeNull();
+      // … and the URL correctly carries ?draft=42 (not lost to the
+      // block-callback falling through to the modal flow).
+      expect(screen.getByTestId('location-display').textContent).toBe(
+        '/governance/new?draft=42'
+      );
+    }
+  );
+
   test('first-save URL bump does NOT refetch the draft (Codex round 3 P1)', async () => {
     // Regression: after a successful createDraft(), the wizard calls
     // setDraftId() AND history.replace({ ?draft=<id> }). The URL

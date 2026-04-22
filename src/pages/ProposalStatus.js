@@ -177,6 +177,20 @@ export default function ProposalStatus() {
     // No submission yet AND no pending error means the initial load
     // hasn't returned — the `load` effect will bring us back here.
     if (!submission && !error) return undefined;
+    // Codex PR8 round 10 P3: short-circuit on non-retryable
+    // validation errors. `invalid_id` is produced by load() when
+    // the route param is not a positive integer — no amount of
+    // retrying will make the URL suddenly valid, so scheduling
+    // another setTimeout here just burns CPU on state churn for
+    // as long as the page stays mounted. `forbidden` is similar
+    // on the hard-failure side: the user can't fix a permissions
+    // refusal by retrying, and we already cleared `submission` so
+    // the full-page banner is up. Any OTHER error code is assumed
+    // retryable (5xx, network blip, transient SQLITE_BUSY, etc.).
+    const errCode = error && error.code;
+    if (errCode === 'invalid_id' || errCode === 'forbidden') {
+      return undefined;
+    }
     const delay =
       status === 'awaiting_collateral' ? POLL_FAST_MS : POLL_SLOW_MS;
     timerRef.current = window.setTimeout(() => {
