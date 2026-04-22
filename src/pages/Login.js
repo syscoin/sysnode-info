@@ -7,6 +7,8 @@ import { useVault } from '../context/VaultContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 
 const ERROR_COPY = {
+  invalid_email: 'That email address doesn\'t look right — please check and try again.',
+  password_too_short: 'Passwords are at least 8 characters.',
   invalid_credentials:
     "We couldn't sign you in with that email and password. Double-check for typos and try again.",
   email_not_verified:
@@ -19,10 +21,46 @@ const ERROR_COPY = {
     'Please enter a valid email and password.',
   session_not_established:
     "Your sign-in went through, but your browser didn't keep the session cookie. If you're using strict / third-party-cookie blocking for this site, allow it for sysnode and try again.",
+  // Thrown client-side from kdf.js:subtleCrypto when window.crypto.subtle
+  // is missing — which in practice means the SPA is being served over
+  // plain HTTP from a non-localhost origin. Give the user the actionable
+  // fix rather than a generic "something went wrong".
+  webcrypto_unavailable:
+    "Your browser can't derive encryption keys on this address. Sysnode needs HTTPS, or a localhost URL (http://localhost or http://127.0.0.1), for your password to stay on your device.",
 };
 
-function errorToCopy(code) {
-  return ERROR_COPY[code] || 'Something went wrong. Please try again.';
+// Which input(s) to outline red for a given error code. Inputs not listed
+// stay neutral so we don't falsely accuse a field the user got right.
+// For invalid_credentials we deliberately outline BOTH inputs: the backend
+// returns the same code for "wrong email" and "wrong password" (anti-
+// enumeration), and guessing one over the other would be misleading.
+const FIELDS_BY_CODE = {
+  invalid_email: ['email'],
+  password_too_short: ['password'],
+  invalid_credentials: ['email', 'password'],
+  email_not_verified: ['email'],
+  invalid_body: ['email', 'password'],
+};
+
+function errorToCopy(code, fallbackMessage) {
+  if (code && ERROR_COPY[code]) return ERROR_COPY[code];
+  // For unknown codes we'd otherwise render the generic copy below.
+  // If the underlying Error carried its own message, prefer that — it
+  // is nearly always more useful than "something went wrong" (e.g. a
+  // WebCrypto error in a non-secure context, which phrases the fix
+  // in user-facing terms directly in Error.message).
+  if (typeof fallbackMessage === 'string' && fallbackMessage.length > 0) {
+    return fallbackMessage;
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+function fieldsForCode(code) {
+  return FIELDS_BY_CODE[code] || [];
+}
+
+function inputClass(fields, name) {
+  return fields.includes(name) ? 'auth-input auth-input--error' : 'auth-input';
 }
 
 export default function Login() {
@@ -42,13 +80,13 @@ export default function Login() {
 
     const normalized = normalizeEmail(email);
     if (!isValidEmailSyntax(normalized)) {
-      setError({ code: 'invalid_email', message: 'Please enter a valid email address.' });
+      setError({ code: 'invalid_email', message: errorToCopy('invalid_email') });
       return;
     }
     if (password.length < 8) {
       setError({
         code: 'password_too_short',
-        message: 'Passwords are at least 8 characters.',
+        message: errorToCopy('password_too_short'),
       });
       return;
     }
@@ -78,12 +116,18 @@ export default function Login() {
         history.replace(next);
       })
       .catch(function onLoginError(err) {
-        setError({ code: err.code || 'unknown', message: errorToCopy(err.code) });
+        const code = (err && err.code) || 'unknown';
+        setError({
+          code,
+          message: errorToCopy(code, err && err.message),
+        });
       })
       .finally(function always() {
         setSubmitting(false);
       });
   }
+
+  const errorFields = error ? fieldsForCode(error.code) : [];
 
   return (
     <>
@@ -108,7 +152,7 @@ export default function Login() {
               </label>
               <input
                 id="login-email"
-                className="auth-input"
+                className={inputClass(errorFields, 'email')}
                 type="email"
                 autoComplete="username"
                 autoFocus
@@ -116,6 +160,10 @@ export default function Login() {
                 onChange={function onEmailChange(e) {
                   setEmail(e.target.value);
                 }}
+                aria-invalid={errorFields.includes('email') || undefined}
+                aria-describedby={
+                  errorFields.includes('email') ? 'login-alert' : undefined
+                }
                 required
               />
             </div>
@@ -126,19 +174,23 @@ export default function Login() {
               </label>
               <input
                 id="login-password"
-                className="auth-input"
+                className={inputClass(errorFields, 'password')}
                 type="password"
                 autoComplete="current-password"
                 value={password}
                 onChange={function onPasswordChange(e) {
                   setPassword(e.target.value);
                 }}
+                aria-invalid={errorFields.includes('password') || undefined}
+                aria-describedby={
+                  errorFields.includes('password') ? 'login-alert' : undefined
+                }
                 required
               />
             </div>
 
             {error ? (
-              <div className="auth-alert" role="alert">
+              <div className="auth-alert" role="alert" id="login-alert">
                 {error.message}
               </div>
             ) : null}

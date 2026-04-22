@@ -33,9 +33,19 @@ function subtleCrypto() {
     (typeof globalThis !== 'undefined' && globalThis.crypto) ||
     (typeof window !== 'undefined' && window.crypto);
   if (!c || !c.subtle) {
-    throw new Error(
-      'WebCrypto is unavailable. A modern browser (Chrome/Edge/Firefox/Safari) is required.'
+    // Tag with a stable, machine-readable code so the UI can render a
+    // dedicated, actionable message (rather than fall through to the
+    // generic "Something went wrong" copy). The most common cause in
+    // the wild is serving the SPA over plain HTTP on a non-localhost
+    // origin: `window.crypto.subtle` is only exposed in secure contexts
+    // (HTTPS, or loopback addresses like http://localhost / http://127.0.0.1).
+    // See https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API
+    // and the "Secure Contexts" MDN reference.
+    const err = new Error(
+      'WebCrypto is unavailable. Serve Sysnode over HTTPS or access it via localhost/127.0.0.1 so your browser can derive your key.'
     );
+    err.code = 'webcrypto_unavailable';
+    throw err;
   }
   return c.subtle;
 }

@@ -55,6 +55,80 @@ test('validates password length and mismatch client-side', async () => {
   expect(service.register).not.toHaveBeenCalled();
 });
 
+test('flags the offending fields aria-invalid on client-side validation errors', async () => {
+  // The alert is paired with an aria-describedby on the offending inputs
+  // so screen readers (and sighted users via the matching red border)
+  // can tell which field the alert above refers to.
+  const service = mockService();
+  renderRegister(service);
+
+  const email = screen.getByLabelText(/^email/i);
+  const pw = screen.getByLabelText(/^password/i);
+  const cf = screen.getByLabelText(/confirm password/i);
+
+  // Password mismatch should flag BOTH password and confirm — we don't
+  // know which one the user mistyped.
+  await userEvent.type(email, 'a@b.com');
+  await userEvent.type(pw, 'hunter22a');
+  await userEvent.type(cf, 'hunter22b');
+  await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+  await screen.findByRole('alert');
+
+  expect(email).not.toHaveAttribute('aria-invalid');
+  expect(pw).toHaveAttribute('aria-invalid', 'true');
+  expect(cf).toHaveAttribute('aria-invalid', 'true');
+  expect(pw.className).toMatch(/auth-input--error/);
+  expect(cf.className).toMatch(/auth-input--error/);
+});
+
+test('renders the WebCrypto-unavailable copy with an actionable fix', async () => {
+  // Simulates deriveLoginKeys throwing when window.crypto.subtle is
+  // missing (plain-HTTP non-localhost origin). The UI must NOT fall
+  // back to "Something went wrong" — that strands the operator with
+  // no clue what's wrong or how to proceed.
+  const service = mockService({
+    register: jest.fn().mockRejectedValue(
+      Object.assign(new Error('WebCrypto is unavailable...'), {
+        code: 'webcrypto_unavailable',
+      })
+    ),
+  });
+  renderRegister(service);
+
+  await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/^password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText(/confirm password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/https/i);
+  expect(alert).toHaveTextContent(/localhost/i);
+  expect(alert).not.toHaveTextContent(/something went wrong/i);
+});
+
+test('surfaces an unknown error\'s own message rather than the generic fallback', async () => {
+  // Safety net: if a rejection bubbles up with no `.code` that ERROR_COPY
+  // recognises but a meaningful message, prefer the message. Anything is
+  // better than "Something went wrong. Please try again."
+  const service = mockService({
+    register: jest.fn().mockRejectedValue(
+      Object.assign(new Error('Mailer refused the connection (EHOSTUNREACH).'), {
+        code: 'mailer_down',
+      })
+    ),
+  });
+  renderRegister(service);
+
+  await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/^password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText(/confirm password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/EHOSTUNREACH/);
+  expect(alert).not.toHaveTextContent(/something went wrong/i);
+});
+
 test('shows the "check your inbox" screen on success', async () => {
   const service = mockService();
   renderRegister(service);
