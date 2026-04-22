@@ -22,6 +22,8 @@ import {
   formsEqual,
   fromDraft,
   prepareBodyFromForm,
+  satsStringToSys,
+  sysToSatsString,
   validateBasics,
   validatePayment,
 } from '../lib/proposalForm';
@@ -1097,16 +1099,39 @@ function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
   return out;
 }
 
+// Compute the total budget (SYS) for the review panel using exact
+// BigInt sats arithmetic. We deliberately do NOT use
+// `Number(amount) * Number(count)` here — governance proposals can
+// carry very large amounts, and once amount_sats * count crosses
+// 2^53 the IEEE-754 double collapses to a rounded neighbor. Since
+// this block is the user's final confirmation before burning
+// 150 SYS on collateral, showing a rounded total would be a
+// silent correctness regression flagged by Codex review P2.
+//
+// The backend already canonicalizes amounts as sats strings
+// (`sysToSatsString`) and renders them back with
+// `satsStringToSys`; reusing those helpers keeps the UI display
+// pipeline identical to the on-wire representation.
+function computeTotalBudgetSys(amount, count) {
+  const sats = sysToSatsString(typeof amount === 'string' ? amount : '');
+  if (sats === null) return null;
+  const n = Number(count);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  try {
+    const total = BigInt(sats) * BigInt(n);
+    if (total <= 0n) return null;
+    return satsStringToSys(total.toString());
+  } catch (_err) {
+    return null;
+  }
+}
+
 function ReviewStep({ form, payloadBytes }) {
   const paymentCountNum = Number(form.paymentCount);
-  const paymentAmountNum = Number(form.paymentAmount);
-  const totalBudget =
-    Number.isFinite(paymentCountNum) &&
-    Number.isFinite(paymentAmountNum) &&
-    paymentCountNum > 0 &&
-    paymentAmountNum > 0
-      ? paymentCountNum * paymentAmountNum
-      : null;
+  const totalBudgetSys = computeTotalBudgetSys(
+    form.paymentAmount,
+    form.paymentCount
+  );
   const schedule =
     paymentCountNum >= 2
       ? buildApproximateSchedule({
@@ -1138,15 +1163,10 @@ function ReviewStep({ form, payloadBytes }) {
         <dd data-testid="review-amount">{form.paymentAmount} SYS</dd>
         <dt>Number of payments</dt>
         <dd data-testid="review-count">{form.paymentCount}</dd>
-        {totalBudget != null ? (
+        {totalBudgetSys ? (
           <>
             <dt>Total budget</dt>
-            <dd data-testid="review-total">
-              {totalBudget.toLocaleString(undefined, {
-                maximumFractionDigits: 8,
-              })}{' '}
-              SYS
-            </dd>
+            <dd data-testid="review-total">{totalBudgetSys} SYS</dd>
           </>
         ) : null}
         <dt>Voting window</dt>

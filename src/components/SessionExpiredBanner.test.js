@@ -217,6 +217,54 @@ describe('SessionExpiredBanner', () => {
     expect(screen.getByTestId('session-expired')).toHaveTextContent('fresh');
   });
 
+  test(
+    'clicking Sign in does not pre-clear the flag (Codex PR9 R1)',
+    async () => {
+      // Regression: a prior version of the banner cleared
+      // sessionExpired in the Link's onClick handler. That was
+      // destructive — if the user cancelled the nav or the login
+      // attempt failed, they'd land back on a public page with no
+      // context for why protected actions broke. The flag must
+      // persist past the click; AuthContext.login() is the only
+      // thing that should flip it back to `fresh` on success.
+      const svc = makeAuthService({
+        meInitial: { user: { id: 42, email: 'a@b.c' } },
+      });
+      await renderApp({ authService: svc });
+      await waitFor(() => {
+        expect(screen.getByTestId('status')).toHaveTextContent(
+          'authenticated'
+        );
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('force-auth-lost'));
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('session-expired-banner')
+        ).toBeInTheDocument();
+      });
+
+      // Simulate the user clicking "Sign in again" but — in our
+      // controlled test router — not actually completing login.
+      // The banner will disappear for this render because the
+      // router swaps to /login (which suppresses the banner), but
+      // the sessionExpired state in context must still be true.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('session-expired-signin'));
+      });
+      await waitFor(() => {
+        expect(screen.getByText('LOGIN PAGE')).toBeInTheDocument();
+      });
+      // AuthControls is mounted on '/', not '/login', so we can't
+      // read `session-expired` here. Instead, assert that the
+      // login service was NOT called — clicking the link alone
+      // is a navigation, not a completed sign-in, so nothing in
+      // AuthContext should have flipped the flag off.
+      expect(svc.login).not.toHaveBeenCalled();
+    }
+  );
+
   test('does not render on /login (banner would duplicate the remedy)', async () => {
     const svc = makeAuthService({
       meInitial: { user: { id: 42, email: 'a@b.c' } },

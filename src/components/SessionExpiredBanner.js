@@ -34,6 +34,14 @@ import { useAuth } from '../context/AuthContext';
 //     they were after re-authenticating.
 //   * Dismiss clears the flag in context — the next 401 on a
 //     protected call re-arms it naturally.
+//   * The "Sign in" CTA deliberately does NOT clear the flag on
+//     click. Codex review flagged that pre-clearing meant a
+//     cancelled nav or failed login would leave the user on a
+//     public page with no context for why protected actions had
+//     just broken. AuthContext.login() already flips the flag
+//     off on a successful sign-in, and the banner is suppressed
+//     on `/login` anyway, so the extra onClick was redundant at
+//     best and destructive at worst.
 export default function SessionExpiredBanner() {
   const { sessionExpired, dismissSessionExpired } = useAuth();
   const location = useLocation();
@@ -70,7 +78,6 @@ export default function SessionExpiredBanner() {
           <Link
             to={loginTo}
             className="button button--primary button--small"
-            onClick={dismissSessionExpired}
             data-testid="session-expired-signin"
           >
             Sign in again
