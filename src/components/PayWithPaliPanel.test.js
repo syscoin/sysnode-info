@@ -68,6 +68,11 @@ describe('PayWithPaliPanel', () => {
   afterEach(() => {
     uninstallPali();
     jest.restoreAllMocks();
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch (_e) {
+      /* ignore */
+    }
   });
 
   test('renders nothing when Pali is not installed', async () => {
@@ -556,6 +561,114 @@ describe('PayWithPaliPanel', () => {
       // Button label must not flip to "Copied!" — the txid is
       // shown verbatim in the alert body for manual selection.
       expect(copyBtn).not.toHaveTextContent(/copied/i);
+    });
+  });
+
+  // Codex PR14 round 3 P1: the 150 SYS burn is on-chain the instant
+  // `sys_signAndSend` returns. If the panel unmounts before
+  // `attachCollateral` fires (hard nav, tab close, full reload), the
+  // txid must not be lost — the server MUST learn about it or the
+  // submission is stuck in `prepared` with the user's funds already
+  // burned.
+  describe('post-broadcast interruption recovery', () => {
+    test('attachCollateral still runs after the panel unmounts mid-flight', async () => {
+      const TXID = '0'.repeat(64);
+      installPali(happyPaliRequest(TXID));
+      const api = buildHappyApi();
+      // Resolve attach only after we've unmounted, to simulate the
+      // user navigating away the moment Pali returns the txid.
+      let resolveAttach;
+      api.attachCollateral.mockImplementation(
+        () =>
+          new Promise((res) => {
+            resolveAttach = res;
+          })
+      );
+
+      const { unmount } = render(
+        <PayWithPaliPanel
+          submission={{ id: 77 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-pay-button'));
+      });
+      // attachCollateral has been invoked but is still pending.
+      await waitFor(() =>
+        expect(api.attachCollateral).toHaveBeenCalledWith(77, TXID)
+      );
+      // Stash landed in localStorage — server hasn't confirmed yet.
+      expect(
+        localStorage.getItem('pay-with-pali:pending-txid:77')
+      ).toBe(TXID);
+
+      unmount();
+      // Let the in-flight attach resolve after unmount.
+      await act(async () => {
+        resolveAttach({ id: 77, status: 'awaiting_collateral' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Clean attach post-unmount clears the stash.
+      expect(
+        localStorage.getItem('pay-with-pali:pending-txid:77')
+      ).toBeNull();
+    });
+
+    test('rehydrates into attach_failed from a localStorage stash on fresh mount', async () => {
+      // Simulate a previous mount that broadcast but never finished
+      // attach (tab close / reload). The next mount on the same
+      // submission must pick up the stashed txid and route the user
+      // straight into the recovery UI.
+      installPali(happyPaliRequest('9'.repeat(64)));
+      localStorage.setItem(
+        'pay-with-pali:pending-txid:123',
+        'e'.repeat(64)
+      );
+      const api = buildHappyApi();
+      api.attachCollateral.mockResolvedValue({
+        id: 123,
+        status: 'awaiting_collateral',
+      });
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 123 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+
+      await screen.findByTestId('pali-attach-failed');
+      expect(screen.getByTestId('pali-attach-txid')).toHaveTextContent(
+        'e'.repeat(64)
+      );
+      // Primary "Pay with Pali" is locked so the user cannot
+      // accidentally trigger another broadcast for this submission.
+      expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
+      // We did NOT re-broadcast on rehydrate.
+      expect(api.buildCollateralPsbt).not.toHaveBeenCalled();
+
+      // A successful Retry attach clears the stash.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-attach-retry'));
+      });
+      await waitFor(() =>
+        expect(api.attachCollateral).toHaveBeenCalledWith(
+          123,
+          'e'.repeat(64)
+        )
+      );
+      await waitFor(() =>
+        expect(
+          localStorage.getItem('pay-with-pali:pending-txid:123')
+        ).toBeNull()
+      );
     });
   });
 });

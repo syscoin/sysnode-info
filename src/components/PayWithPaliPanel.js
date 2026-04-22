@@ -5,6 +5,63 @@ import {
   payProposalCollateralWithPali,
 } from '../lib/paliProvider';
 
+// Pending-txid stash — post-broadcast, pre-attach recovery.
+// ---------------------------------------------------------
+// The moment Pali's `sys_signAndSend` resolves we have a txid that
+// corresponds to a 150 SYS burn on-chain. If the user navigates,
+// reloads, or closes the tab before our `attachCollateral` POST
+// completes, that txid is lost and the submission stays stuck in
+// `prepared` with no way for the server to reconcile — the user
+// has paid but the proposal never lands. To close that window we:
+//
+//   1. Persist the txid to localStorage the instant we receive it
+//      from Pali, keyed by submission.id.
+//   2. Still fire `attachCollateral` regardless of mount state, so
+//      an in-flight detach completes without the user noticing.
+//   3. On clean success, clear the stash.
+//   4. On next mount (same or different page) if a stash exists for
+//      this submission, rehydrate straight into `attach_failed` with
+//      the stashed txid so the recovery UI (Retry attach / Copy
+//      TXID) is there waiting.
+//
+// All helpers guard against environments where localStorage is
+// absent or throws (Safari private mode, SSR, quota errors). If the
+// stash itself fails we still run the attach — we prefer the "burn
+// but no stash" failure mode (user gets txid from Pali history) to
+// a "stash but no attach" mode.
+const TXID_STASH_PREFIX = 'pay-with-pali:pending-txid:';
+function stashKey(submissionId) {
+  return `${TXID_STASH_PREFIX}${submissionId}`;
+}
+function stashPendingTxidLS(submissionId, txid) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(stashKey(submissionId), txid);
+    }
+  } catch (_e) {
+    /* quota / private mode: ignore */
+  }
+}
+function loadPendingTxidLS(submissionId) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem(stashKey(submissionId)) || null;
+    }
+  } catch (_e) {
+    /* private mode: ignore */
+  }
+  return null;
+}
+function clearPendingTxidLS(submissionId) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(stashKey(submissionId));
+    }
+  } catch (_e) {
+    /* ignore */
+  }
+}
+
 // usePaliAvailable — shared between this panel and its callers.
 // ------------------------------------------------------------
 // Pali (like MetaMask) injects `window.pali` from its content script
@@ -156,6 +213,31 @@ export default function PayWithPaliPanel({
     };
   }, []);
 
+  // Rehydrate from localStorage if a previous mount broadcast to
+  // the chain but never completed `attachCollateral` (tab close,
+  // hard nav, full reload). Keyed by submission.id so the recovery
+  // applies only to THIS proposal. Only engages when we're in the
+  // neutral `idle` state — we must never clobber in-flight phase
+  // transitions that the same render cycle started. Codex PR14 P3.
+  const submissionId = submission && submission.id;
+  useEffect(() => {
+    if (!submissionId) return;
+    if (phase !== 'idle') return;
+    const stashed = loadPendingTxidLS(submissionId);
+    if (!stashed) return;
+    setPendingTxid(stashed);
+    setPhase('attach_failed');
+    setError(
+      Object.assign(new Error('pali_attach_interrupted'), {
+        code: 'pali_attach_interrupted',
+      })
+    );
+    // Intentionally NOT clearing the stash here — we only clear on
+    // a successful attach (via onRetryAttach). If the user reloads
+    // again before retrying, the recovery UI must still be there.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submissionId]);
+
   useEffect(() => {
     if (!paliInstalled || !proposalServiceImpl) {
       setNetworkProbe({
@@ -275,20 +357,27 @@ export default function PayWithPaliPanel({
       setError(err);
       return;
     }
-    if (!mountedRef.current) return;
-    setPhase('attaching');
+    // BURN IS ON-CHAIN. Everything below must survive component
+    // unmount (navigation, tab switch, reload). We stash to
+    // localStorage first so a reload still lets us recover, then
+    // run the attach unconditionally — only the UI state updates
+    // are gated on mountedRef. Codex PR14 P3.
+    stashPendingTxidLS(submission.id, txid);
+    if (mountedRef.current) setPhase('attaching');
     try {
       await proposalServiceImpl.attachCollateral(submission.id, txid);
     } catch (err) {
+      // Attach failed (transient 5xx, network drop, auth expiry).
+      // The stash above means a later remount can pick this up and
+      // route the user into the recovery UI. If we're still
+      // mounted, render that UI now.
       if (!mountedRef.current) return;
-      // Broadcast already landed (txid is a real on-chain tx).
-      // Stash it and enter the recovery-only state; "Pay with Pali"
-      // is no longer a valid action for this submission.
       setPendingTxid(txid);
       setPhase('attach_failed');
       setError(err);
       return;
     }
+    clearPendingTxidLS(submission.id);
     if (!mountedRef.current) return;
     setPhase('attached');
     if (typeof onAttached === 'function') onAttached(txid);
@@ -315,6 +404,7 @@ export default function PayWithPaliPanel({
       setError(err);
       return;
     }
+    clearPendingTxidLS(submission.id);
     if (!mountedRef.current) return;
     setPhase('attached');
     const finalTxid = pendingTxid;
