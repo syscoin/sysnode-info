@@ -191,6 +191,86 @@ describe('PayWithPaliPanel', () => {
     expect(screen.queryByTestId('pali-pay-error')).toBeNull();
   });
 
+  // Codex PR14 round 2 P2: transient probe failures must be
+  // retryable. A crashed first-load used to leave the button grey
+  // for the lifetime of the mount, forcing a full page reload.
+  describe('network probe transient failures', () => {
+    test('probe crash surfaces a retry affordance; successful retry enables the button', async () => {
+      installPali(jest.fn());
+      const api = buildHappyApi();
+      api.getGovernanceNetwork
+        .mockRejectedValueOnce(
+          Object.assign(new Error('boom'), { code: 'http_error', status: 503 })
+        )
+        .mockResolvedValueOnce({
+          paliPathEnabled: true,
+          networkKey: 'mainnet',
+          chain: 'main',
+          slip44: 57,
+        });
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+
+      const retry = await screen.findByTestId('pali-probe-retry');
+      expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
+      expect(api.getGovernanceNetwork).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.click(retry);
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      expect(screen.queryByTestId('pali-probe-error')).toBeNull();
+      expect(api.getGovernanceNetwork).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // Codex PR14 round 2 FE-P2 follow-up: server-side paliPathReason
+  // must translate into a specific hint so the user knows whether
+  // to wait, hit retry, or escalate to the operator.
+  describe('server-reported paliPathReason copy', () => {
+    test.each([
+      [
+        'pali_path_rpc_down',
+        /Syscoin RPC node/i,
+      ],
+      [
+        'pali_path_chain_mismatch',
+        /misconfigured/i,
+      ],
+    ])('reason=%s renders matching hint', async (reason, re) => {
+      installPali(jest.fn());
+      const api = buildHappyApi();
+      api.getGovernanceNetwork.mockResolvedValue({
+        paliPathEnabled: false,
+        paliPathReason: reason,
+        networkKey: 'mainnet',
+      });
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+          fallbackHint="GENERIC FALLBACK"
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-hint')).toHaveTextContent(re)
+      );
+      expect(screen.getByTestId('pali-pay-hint')).not.toHaveTextContent(
+        'GENERIC FALLBACK'
+      );
+      expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
+    });
+  });
+
   test('insufficient_funds from the server lands in the error panel', async () => {
     const TXID = 'c'.repeat(64);
     installPali(happyPaliRequest(TXID));

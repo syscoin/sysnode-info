@@ -229,6 +229,14 @@ export function createProposalService({ client = defaultClient } = {}) {
     try {
       const res = await client.get(`${BASE}/network`);
       const data = assertShape('getGovernanceNetwork', res.data);
+      // `paliPathReason` only appears when the path is disabled;
+      // passed through untouched so the UI can pick specific copy
+      // for pali_path_rpc_down vs pali_path_chain_mismatch vs the
+      // default "not configured" fallback.
+      const paliPathReason =
+        !data.paliPathEnabled && typeof data.paliPathReason === 'string'
+          ? data.paliPathReason
+          : null;
       return {
         chain: typeof data.chain === 'string' ? data.chain : 'unknown',
         slip44: Number.isInteger(data.slip44) ? data.slip44 : null,
@@ -237,6 +245,7 @@ export function createProposalService({ client = defaultClient } = {}) {
             ? data.networkKey
             : null,
         paliPathEnabled: !!data.paliPathEnabled,
+        paliPathReason,
       };
     } catch (err) {
       throw proposalError(

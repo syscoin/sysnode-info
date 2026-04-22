@@ -71,12 +71,26 @@ export default function PayWithPaliPanel({
   // the user has an escape hatch to manually attach if our attach
   // endpoint is persistently down.
   const [pendingTxid, setPendingTxid] = useState(null);
+  // Network-probe state. Distinguishes three terminal outcomes so we
+  // can tell the user why the button is grey:
+  //   * loading: true                 — probe in flight
+  //   * enabled: true                 — backend ready to serve PSBTs
+  //   * enabled: false, reason: <code>— server reported disabled
+  //   * enabled: false, probeError    — transient failure; retryable
+  // The `probeError` branch is load-bearing (Codex PR14 round 2 P2):
+  // a transient /network 5xx or network blip used to collapse to
+  // "permanently disabled for this mount", forcing users to reload
+  // the page to recover. We now surface a retry button instead.
   const [networkProbe, setNetworkProbe] = useState({
     loading: true,
     enabled: false,
     chain: null,
     networkKey: null,
+    reason: null,
+    probeError: null,
   });
+  // Bump to force a re-probe. The useEffect below keys on this.
+  const [probeNonce, setProbeNonce] = useState(0);
   const mountedRef = useRef(true);
   const paliInstalled = useMemo(() => {
     try {
@@ -100,10 +114,17 @@ export default function PayWithPaliPanel({
         enabled: false,
         chain: null,
         networkKey: null,
+        reason: null,
+        probeError: null,
       });
       return undefined;
     }
     let cancelled = false;
+    setNetworkProbe((prev) => ({
+      ...prev,
+      loading: true,
+      probeError: null,
+    }));
     (async () => {
       try {
         const net = await proposalServiceImpl.getGovernanceNetwork();
@@ -113,21 +134,27 @@ export default function PayWithPaliPanel({
           enabled: !!net.paliPathEnabled,
           chain: net.chain || null,
           networkKey: net.networkKey || null,
+          reason: net.paliPathReason || null,
+          probeError: null,
         });
-      } catch (_e) {
+      } catch (err) {
         if (cancelled) return;
         setNetworkProbe({
           loading: false,
           enabled: false,
           chain: null,
           networkKey: null,
+          reason: null,
+          probeError: err || new Error('probe_failed'),
         });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [paliInstalled, proposalServiceImpl]);
+  }, [paliInstalled, proposalServiceImpl, probeNonce]);
+
+  const onProbeRetry = () => setProbeNonce((n) => n + 1);
 
   if (!paliInstalled) return null;
 
@@ -253,11 +280,28 @@ export default function PayWithPaliPanel({
     );
   }
 
+  // Hint copy picks from the probe outcome + server-supplied reason.
+  // The probeError branch (transient failure) renders its own block
+  // with a retry button instead of the flat hint.
   let hint = null;
   if (networkProbe.loading) {
     hint = 'Checking Pali availability…';
+  } else if (networkProbe.probeError) {
+    hint = null;
   } else if (!networkProbe.enabled) {
-    hint = fallbackHint;
+    switch (networkProbe.reason) {
+      case 'pali_path_rpc_down':
+        hint =
+          "This backend can't reach its Syscoin RPC node yet. Try again in a moment, or use the manual form below.";
+        break;
+      case 'pali_path_chain_mismatch':
+        hint =
+          'This backend is misconfigured (SYSCOIN_NETWORK and the connected node disagree). Please contact the operator. Use the manual form below in the meantime.';
+        break;
+      case 'pali_not_configured':
+      default:
+        hint = fallbackHint;
+    }
   } else if (networkProbe.networkKey === 'testnet') {
     hint = 'This backend is pinned to Syscoin testnet.';
   }
@@ -292,6 +336,27 @@ export default function PayWithPaliPanel({
         >
           {hint}
         </p>
+      ) : null}
+      {networkProbe.probeError ? (
+        <div
+          className="auth-alert auth-alert--warning"
+          role="alert"
+          data-testid="pali-probe-error"
+        >
+          <p>
+            We couldn't check whether Pay with Pali is available on
+            this server right now. This is usually a transient
+            hiccup.
+          </p>
+          <button
+            type="button"
+            className="button button--ghost button--small"
+            onClick={onProbeRetry}
+            data-testid="pali-probe-retry"
+          >
+            Try again
+          </button>
+        </div>
       ) : null}
       {statusLine}
       {phase === 'attach_failed' && pendingTxid ? (

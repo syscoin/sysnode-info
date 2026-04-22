@@ -693,11 +693,21 @@ export default function ProposalStatus() {
                       // confirmation progress bar without waiting for
                       // the next 60s poll tick.
                       if (!mountedRef.current) return;
+                      // Codex PR14 round 2 P1: pin the request to
+                      // the submission id we started with. If the
+                      // user navigates to a different proposal
+                      // while this refresh is in flight, drop the
+                      // stale response so we don't overwrite the
+                      // new page state with the old row — same
+                      // cross-id race `load()` already guards via
+                      // latestReqIdRef.
+                      const reqId = submission.id;
                       try {
                         const fresh = await proposalService.getSubmission(
-                          submission.id
+                          reqId
                         );
                         if (!mountedRef.current) return;
+                        if (reqId !== latestReqIdRef.current) return;
                         setSubmission(fresh);
                       } catch (_e) {
                         // Poll loop will catch up; swallow.
