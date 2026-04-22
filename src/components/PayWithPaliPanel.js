@@ -5,6 +5,61 @@ import {
   payProposalCollateralWithPali,
 } from '../lib/paliProvider';
 
+// usePaliAvailable — shared between this panel and its callers.
+// ------------------------------------------------------------
+// Pali (like MetaMask) injects `window.pali` from its content script
+// after DOMContentLoaded, which can race with React mounting any
+// component that wants to feature-detect. A single synchronous check
+// at mount is brittle: users whose extension woke up a beat later
+// would be stuck on the "not installed" layout (no Option A, manual
+// lanes mis-numbered) until they hard-reloaded.
+//
+// This hook seeds from the synchronous check, then polls every 300ms
+// for up to 10s for the provider to appear. Once detected we trust
+// it for the rest of the mount (the provider doesn't disappear
+// without a page reload). Both the panel itself and the wizard/
+// status page use this so the Panel's visibility and the sibling
+// "Option B/C" labels stay in lockstep (Codex PR14 P3 — don't show
+// users Option B with no visible Option A).
+export function usePaliAvailable() {
+  const [available, setAvailable] = useState(() => {
+    try {
+      return isPaliAvailable();
+    } catch (_e) {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (available) return undefined;
+    let cancelled = false;
+    const started = Date.now();
+    const WINDOW_MS = 10_000;
+    const INTERVAL_MS = 300;
+    const handle = setInterval(() => {
+      if (cancelled) return;
+      let present = false;
+      try {
+        present = isPaliAvailable();
+      } catch (_e) {
+        present = false;
+      }
+      if (present) {
+        clearInterval(handle);
+        if (!cancelled) setAvailable(true);
+        return;
+      }
+      if (Date.now() - started >= WINDOW_MS) {
+        clearInterval(handle);
+      }
+    }, INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [available]);
+  return available;
+}
+
 // PayWithPaliPanel — the "Pay with Pali" lane.
 // --------------------------------------------
 // Used in two places: the NewProposal wizard's submit step (Option A)
@@ -92,23 +147,7 @@ export default function PayWithPaliPanel({
   // Bump to force a re-probe. The useEffect below keys on this.
   const [probeNonce, setProbeNonce] = useState(0);
   const mountedRef = useRef(true);
-  // Pali (like MetaMask) injects `window.pali` from its content script
-  // after DOMContentLoaded — which can race with React mounting this
-  // component on a direct navigation. If we memoised the first check
-  // forever, users whose extension woke up a beat later would be
-  // permanently told "Pali not detected" until a hard reload (Codex
-  // PR10 P2). Instead: seed from the synchronous check, then poll
-  // briefly so the panel flips to armed the moment the provider
-  // appears. We intentionally only watch for the transition from
-  // absent→present; once we've seen Pali we trust it for the rest of
-  // the mount (the provider doesn't disappear without a page reload).
-  const [paliInstalled, setPaliInstalled] = useState(() => {
-    try {
-      return isPaliAvailable();
-    } catch (_e) {
-      return false;
-    }
-  });
+  const paliInstalled = usePaliAvailable();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -116,35 +155,6 @@ export default function PayWithPaliPanel({
       mountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (paliInstalled) return undefined;
-    let cancelled = false;
-    const started = Date.now();
-    const WINDOW_MS = 10_000;
-    const INTERVAL_MS = 300;
-    const handle = setInterval(() => {
-      if (cancelled) return;
-      let present = false;
-      try {
-        present = isPaliAvailable();
-      } catch (_e) {
-        present = false;
-      }
-      if (present) {
-        clearInterval(handle);
-        if (!cancelled && mountedRef.current) setPaliInstalled(true);
-        return;
-      }
-      if (Date.now() - started >= WINDOW_MS) {
-        clearInterval(handle);
-      }
-    }, INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(handle);
-    };
-  }, [paliInstalled]);
 
   useEffect(() => {
     if (!paliInstalled || !proposalServiceImpl) {
@@ -168,12 +178,27 @@ export default function PayWithPaliPanel({
       try {
         const net = await proposalServiceImpl.getGovernanceNetwork();
         if (cancelled) return;
+        // `payProposalCollateralWithPali` hard-rejects with
+        // `pali_path_disabled` if networkKey is absent (backend drift
+        // / partial rollout), so a button armed purely on
+        // paliPathEnabled would be a guaranteed dead-end click. Gate
+        // on BOTH fields — any missing networkKey demotes the lane
+        // to the disabled+hint state so users land on the manual
+        // fallback instead. Codex PR14 P2.
+        const backendEnabled = !!net.paliPathEnabled;
+        const networkKey = net.networkKey || null;
+        const effectiveEnabled = backendEnabled && !!networkKey;
+        const reason =
+          net.paliPathReason ||
+          (backendEnabled && !networkKey
+            ? 'pali_path_networkkey_missing'
+            : null);
         setNetworkProbe({
           loading: false,
-          enabled: !!net.paliPathEnabled,
+          enabled: effectiveEnabled,
           chain: net.chain || null,
-          networkKey: net.networkKey || null,
-          reason: net.paliPathReason || null,
+          networkKey,
+          reason,
           probeError: null,
         });
       } catch (err) {
@@ -336,6 +361,10 @@ export default function PayWithPaliPanel({
       case 'pali_path_chain_mismatch':
         hint =
           'This backend is misconfigured (SYSCOIN_NETWORK and the connected node disagree). Please contact the operator. Use the manual form below in the meantime.';
+        break;
+      case 'pali_path_networkkey_missing':
+        hint =
+          "This backend says Pay with Pali is enabled but didn't report which network it's on. That usually means a partial rollout — please use the manual form below.";
         break;
       case 'pali_not_configured':
       default:

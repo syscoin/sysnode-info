@@ -150,6 +150,36 @@ describe('PayWithPaliPanel', () => {
     expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
   });
 
+  test('disables the button when paliPathEnabled is true but networkKey is missing', async () => {
+    // Codex PR14 P2: backend drift where /gov/proposals/network
+    // reports enabled=true without a networkKey must not arm the
+    // button — payProposalCollateralWithPali would reject with
+    // pali_path_disabled and waste a click.
+    installPali(jest.fn());
+    const api = buildHappyApi();
+    api.getGovernanceNetwork.mockResolvedValue({
+      paliPathEnabled: true,
+      networkKey: null,
+      chain: null,
+    });
+    render(
+      <PayWithPaliPanel
+        submission={{ id: 7 }}
+        proposalServiceImpl={api}
+        onAttached={jest.fn()}
+      />
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('pali-pay-hint')).toHaveTextContent(
+        /partial rollout|manual form/i
+      )
+    );
+    // Probe resolved -> button must stay disabled because networkKey
+    // was missing, regardless of the backend's enabled=true claim.
+    expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
+    expect(api.getGovernanceNetwork).toHaveBeenCalled();
+  });
+
   test('happy click path: phase transitions, attach, onAttached', async () => {
     const TXID = 'b'.repeat(64);
     const request = happyPaliRequest(TXID);
