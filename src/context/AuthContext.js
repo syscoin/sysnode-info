@@ -70,12 +70,36 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
   // Mirror `status` into a ref so `handleAuthLost` can read the
   // current value without having to list `status` as a dependency
   // (which would re-memoize the callback on every auth transition
-  // and churn the apiClient's registered handler). The ref is
-  // updated inside a layout-free useEffect that tracks `status`.
+  // and churn the apiClient's registered handler).
+  //
+  // CRITICAL: the ref must be updated SYNCHRONOUSLY with setStatus,
+  // not in a passive useEffect. A passive sync opens a narrow but
+  // real race: between `logout() → setStatus(ANONYMOUS)` committing
+  // and the effect running, an in-flight 401 from some other
+  // protected request can fire `handleAuthLost`. If the handler
+  // reads a still-lagged `statusRef.current === AUTHENTICATED`, it
+  // raises the "session expired" banner for what was actually a
+  // user-initiated sign-out — a Codex-flagged UX regression.
+  //
+  // All writers below go through `commitStatus(next)` which
+  // updates the ref and schedules the React state write in the
+  // same tick. Callers should never use `setStatus` directly.
   const statusRef = useRef(status);
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
+  const commitStatus = useCallback((next) => {
+    statusRef.current = next;
+    setStatus(next);
+  }, []);
+
+  // User-initiated logout can run for hundreds of ms (network round
+  // trip to /auth/logout). During that window a parallel protected
+  // request can 401 — not because the session was silently lost,
+  // but because the server is tearing it down in response to the
+  // logout we just requested. `handleAuthLost` must no-op in that
+  // case, otherwise the user sees a "session expired" banner for
+  // their own intentional sign-out. The ref is set synchronously
+  // when logout starts and cleared in `finally` so both the
+  // success and the error paths reset it.
+  const logoutPendingRef = useRef(false);
 
   // Guards against setting state after unmount, for pages that call
   // auth methods from effects during navigation.
@@ -117,19 +141,19 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       const { user: u } = await authService.me();
       safeSet(() => {
         setUser(u);
-        setStatus(AUTHENTICATED);
+        commitStatus(AUTHENTICATED);
       }, myGen);
       return u;
     } catch (err) {
       safeSet(() => {
         setUser(null);
-        setStatus(ANONYMOUS);
+        commitStatus(ANONYMOUS);
       }, myGen);
       // 401 is expected (no session) — don't re-throw that.
       if (err.status === 401) return null;
       throw err;
     }
-  }, [authService, safeSet, nextGen]);
+  }, [authService, safeSet, nextGen, commitStatus]);
 
   useEffect(() => {
     refresh().catch(() => {
@@ -163,7 +187,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         const me = await authService.me();
         safeSet(() => {
           setUser(me.user);
-          setStatus(AUTHENTICATED);
+          commitStatus(AUTHENTICATED);
           // Successful sign-in clears any stale session-expired
           // banner — it was true BECAUSE the user lost the previous
           // session; re-authenticating makes the banner stale.
@@ -181,7 +205,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         if (err && err.status === 401) {
           safeSet(() => {
             setUser(null);
-            setStatus(ANONYMOUS);
+            commitStatus(ANONYMOUS);
           }, myGen);
           const wrapped = new Error('session_not_established');
           wrapped.code = 'session_not_established';
@@ -196,13 +220,13 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         // hydration call.
         safeSet(() => {
           setUser(res.user);
-          setStatus(AUTHENTICATED);
+          commitStatus(AUTHENTICATED);
           setSessionExpired(false);
         }, myGen);
         return { user: res.user, master };
       }
     },
-    [authService, safeSet, nextGen]
+    [authService, safeSet, nextGen, commitStatus]
   );
 
   const register = useCallback(
@@ -232,27 +256,32 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
     //   anything else       -> surface `logout_failed` so the caller
     //                          can prompt retry and the UI stays in
     //                          AUTHENTICATED until the server confirms.
+    logoutPendingRef.current = true;
     try {
-      await authService.logout();
-    } catch (err) {
-      const alreadyGone =
-        err && (err.status === 401 || err.status === 404);
-      if (!alreadyGone) {
-        const wrapped = new Error('logout_failed');
-        wrapped.code = 'logout_failed';
-        wrapped.status = (err && err.status) || 0;
-        wrapped.cause = err;
-        throw wrapped;
+      try {
+        await authService.logout();
+      } catch (err) {
+        const alreadyGone =
+          err && (err.status === 401 || err.status === 404);
+        if (!alreadyGone) {
+          const wrapped = new Error('logout_failed');
+          wrapped.code = 'logout_failed';
+          wrapped.status = (err && err.status) || 0;
+          wrapped.cause = err;
+          throw wrapped;
+        }
+        // fall through to clear locally — server confirmed there was
+        // nothing to sign out of.
       }
-      // fall through to clear locally — server confirmed there was
-      // nothing to sign out of.
+      const myGen = nextGen();
+      safeSet(() => {
+        setUser(null);
+        commitStatus(ANONYMOUS);
+      }, myGen);
+    } finally {
+      logoutPendingRef.current = false;
     }
-    const myGen = nextGen();
-    safeSet(() => {
-      setUser(null);
-      setStatus(ANONYMOUS);
-    }, myGen);
-  }, [authService, safeSet, nextGen]);
+  }, [authService, safeSet, nextGen, commitStatus]);
 
   // Called from the apiClient's 401 interceptor when a non-auth request
   // comes back unauthorized — the cookie has almost certainly expired.
@@ -266,16 +295,24 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
   // normal "you are not logged in" state and showing an expiry
   // banner would be confusing UX.
   const handleAuthLost = useCallback(() => {
+    // A 401 that fires while the user is actively signing out is
+    // noise from the server tearing down the session — not a
+    // surprise session loss. Short-circuit so we don't raise the
+    // "session expired" banner on top of a voluntary sign-out.
+    // (Codex PR9 R2.)
+    if (logoutPendingRef.current) {
+      return;
+    }
     const wasAuthenticated = statusRef.current === AUTHENTICATED;
     const myGen = nextGen();
     safeSet(() => {
       setUser(null);
-      setStatus(ANONYMOUS);
+      commitStatus(ANONYMOUS);
       if (wasAuthenticated) {
         setSessionExpired(true);
       }
     }, myGen);
-  }, [safeSet, nextGen]);
+  }, [safeSet, nextGen, commitStatus]);
 
   const dismissSessionExpired = useCallback(() => {
     setSessionExpired(false);

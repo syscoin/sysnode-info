@@ -551,6 +551,97 @@ test('login tolerates 5xx on /auth/me and still forwards master', async () => {
   expect(captured.user).toEqual({ id: 1, email: 'user@example.com' });
 });
 
+test(
+  'handleAuthLost during pending logout does NOT raise sessionExpired (Codex PR9 R2)',
+  async () => {
+    // Race: user clicks Sign out. While /auth/logout is in flight,
+    // a parallel protected request 401s (the server is tearing the
+    // session down in response to our logout). `handleAuthLost`
+    // must recognize this as voluntary sign-out and NOT raise
+    // "session expired" — otherwise the banner shouts at the user
+    // for something they just explicitly requested.
+    //
+    // Drive the race deterministically: `logout()` is gated on a
+    // manually-resolved promise so we can call `handleAuthLost`
+    // between logout's start and its completion.
+    let resolveLogout = null;
+    const logoutPromise = new Promise((r) => {
+      resolveLogout = r;
+    });
+
+    const service = makeService({
+      me: jest.fn().mockResolvedValue({
+        user: { id: 1, email: 'user@example.com', emailVerified: true },
+      }),
+      logout: jest.fn().mockImplementation(() => logoutPromise),
+    });
+
+    let captured = null;
+    function Probe() {
+      const auth = useAuth();
+      captured = auth;
+      return (
+        <div>
+          <span data-testid="status">{auth.status}</span>
+          <span data-testid="session-expired">
+            {auth.sessionExpired ? 'expired' : 'fresh'}
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              auth.logout().catch(() => {
+                // Tests that care about the reject branch capture
+                // it directly; here we only want the state after
+                // the pending-logout window closes.
+              })
+            }
+          >
+            logout
+          </button>
+        </div>
+      );
+    }
+
+    render(
+      <AuthProvider authService={service}>
+        <Probe />
+      </AuthProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+    );
+
+    // Kick off logout; it will be blocked on resolveLogout.
+    await act(async () => {
+      screen.getByText('logout').click();
+      await Promise.resolve();
+    });
+
+    // While logout is still pending, the apiClient's 401
+    // interceptor fires handleAuthLost. This is the exact race
+    // Codex flagged.
+    await act(async () => {
+      captured.handleAuthLost();
+      await Promise.resolve();
+    });
+
+    // `sessionExpired` must NOT have flipped to true — this was a
+    // user-initiated logout, not a surprise session loss.
+    expect(screen.getByTestId('session-expired')).toHaveTextContent('fresh');
+
+    // Now let the logout resolve and verify the state settles at
+    // anonymous/fresh — the banner never rises.
+    await act(async () => {
+      resolveLogout({ status: 'ok' });
+      await flush();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+    );
+    expect(screen.getByTestId('session-expired')).toHaveTextContent('fresh');
+  }
+);
+
 test('useAuth throws outside provider', () => {
   function Bare() {
     useAuth();
