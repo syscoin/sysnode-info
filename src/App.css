@@ -1654,6 +1654,21 @@
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* Error variant — paired with aria-invalid on the input and the
+   #<form>-alert container described by aria-describedby. We keep the
+   red border visible even on :focus so the user isn't left to wonder
+   which field the alert above refers to. Colour matches .auth-card--
+   danger / .auth-alert so the form reads as one consistent error state. */
+.auth-input--error {
+  border-color: #c63024;
+  background: rgba(229, 107, 85, 0.04);
+}
+
+.auth-input--error:focus {
+  border-color: #c63024;
+  box-shadow: 0 0 0 3px rgba(229, 107, 85, 0.22);
+}
+
 .auth-hint {
   font-size: 0.82rem;
   color: var(--muted);

@@ -7,15 +7,49 @@ import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 
 const ERROR_COPY = {
   invalid_email: 'That email address doesn\'t look right — please check and try again.',
+  password_too_short: 'Password must be at least 8 characters.',
+  password_mismatch: 'The passwords you entered don\'t match.',
   network_error:
     'We couldn\'t reach the sysnode server. Check your connection and try again.',
   server_misconfigured:
     'The sysnode server is temporarily unavailable. Please try again in a moment.',
   invalid_body: 'Please enter a valid email and a password of at least 8 characters.',
+  // Thrown client-side from kdf.js:subtleCrypto when window.crypto.subtle
+  // is missing — which in practice means the SPA is being served over
+  // plain HTTP from a non-localhost origin. Give the user the actionable
+  // fix rather than a generic "something went wrong".
+  webcrypto_unavailable:
+    "Your browser can't derive encryption keys on this address. Sysnode needs HTTPS, or a localhost URL (http://localhost or http://127.0.0.1), for your password to stay on your device.",
 };
 
-function errorToCopy(code) {
-  return ERROR_COPY[code] || 'Something went wrong. Please try again.';
+// Which input(s) to outline red for a given error code. Inputs not listed
+// stay neutral so we don't falsely accuse a field the user got right.
+const FIELDS_BY_CODE = {
+  invalid_email: ['email'],
+  password_too_short: ['password'],
+  password_mismatch: ['password', 'confirm'],
+  invalid_body: ['email', 'password'],
+};
+
+function errorToCopy(code, fallbackMessage) {
+  if (code && ERROR_COPY[code]) return ERROR_COPY[code];
+  // For unknown codes we'd otherwise render the generic copy below.
+  // If the underlying Error carried its own message, prefer that — it
+  // is nearly always more useful than "something went wrong" (e.g. a
+  // WebCrypto error in a non-secure context, which phrases the fix
+  // in user-facing terms directly in Error.message).
+  if (typeof fallbackMessage === 'string' && fallbackMessage.length > 0) {
+    return fallbackMessage;
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+function fieldsForCode(code) {
+  return FIELDS_BY_CODE[code] || [];
+}
+
+function inputClass(fields, name) {
+  return fields.includes(name) ? 'auth-input auth-input--error' : 'auth-input';
 }
 
 // We intentionally enforce only a length floor on the client. The server
@@ -43,21 +77,21 @@ export default function Register() {
     if (!isValidEmailSyntax(normalized)) {
       setError({
         code: 'invalid_email',
-        message: 'Please enter a valid email address.',
+        message: errorToCopy('invalid_email'),
       });
       return;
     }
     if (password.length < MIN_PASSWORD_LEN) {
       setError({
         code: 'password_too_short',
-        message: `Password must be at least ${MIN_PASSWORD_LEN} characters.`,
+        message: errorToCopy('password_too_short'),
       });
       return;
     }
     if (password !== confirm) {
       setError({
         code: 'password_mismatch',
-        message: 'The passwords you entered don\'t match.',
+        message: errorToCopy('password_mismatch'),
       });
       return;
     }
@@ -70,12 +104,18 @@ export default function Register() {
         setSubmittedTo(normalized);
       })
       .catch(function onRegistrationError(err) {
-        setError({ code: err.code || 'unknown', message: errorToCopy(err.code) });
+        const code = (err && err.code) || 'unknown';
+        setError({
+          code,
+          message: errorToCopy(code, err && err.message),
+        });
       })
       .finally(function always() {
         setSubmitting(false);
       });
   }
+
+  const errorFields = error ? fieldsForCode(error.code) : [];
 
   if (submittedTo) {
     return (
@@ -149,7 +189,7 @@ export default function Register() {
               </label>
               <input
                 id="register-email"
-                className="auth-input"
+                className={inputClass(errorFields, 'email')}
                 type="email"
                 autoComplete="email"
                 autoFocus
@@ -157,6 +197,10 @@ export default function Register() {
                 onChange={function onEmailChange(e) {
                   setEmail(e.target.value);
                 }}
+                aria-invalid={errorFields.includes('email') || undefined}
+                aria-describedby={
+                  errorFields.includes('email') ? 'register-alert' : undefined
+                }
                 required
               />
             </div>
@@ -167,13 +211,17 @@ export default function Register() {
               </label>
               <input
                 id="register-password"
-                className="auth-input"
+                className={inputClass(errorFields, 'password')}
                 type="password"
                 autoComplete="new-password"
                 value={password}
                 onChange={function onPasswordChange(e) {
                   setPassword(e.target.value);
                 }}
+                aria-invalid={errorFields.includes('password') || undefined}
+                aria-describedby={
+                  errorFields.includes('password') ? 'register-alert' : undefined
+                }
                 required
               />
               <span className="auth-hint">At least 8 characters.</span>
@@ -185,19 +233,23 @@ export default function Register() {
               </label>
               <input
                 id="register-confirm"
-                className="auth-input"
+                className={inputClass(errorFields, 'confirm')}
                 type="password"
                 autoComplete="new-password"
                 value={confirm}
                 onChange={function onConfirmChange(e) {
                   setConfirm(e.target.value);
                 }}
+                aria-invalid={errorFields.includes('confirm') || undefined}
+                aria-describedby={
+                  errorFields.includes('confirm') ? 'register-alert' : undefined
+                }
                 required
               />
             </div>
 
             {error ? (
-              <div className="auth-alert" role="alert">
+              <div className="auth-alert" role="alert" id="register-alert">
                 {error.message}
               </div>
             ) : null}
