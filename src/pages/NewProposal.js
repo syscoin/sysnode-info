@@ -1076,12 +1076,38 @@ function formatUtcDate(epochSec) {
 }
 
 // Build an APPROXIMATE schedule of payment dates for a proposal's
-// Review step. Returns one entry per payment, anchored at
-// `startEpoch` and stepped by `SUPERBLOCK_INTERVAL_DAYS`. Capped by
-// the voting window: we never project a payment date past
-// `endEpoch` because the proposal's window says Core shouldn't
-// pay it beyond that point. Negative / invalid inputs return an
-// empty array so callers can just gate on `.length`.
+// Review step. Returns one entry per payment, each projected to
+// the NEXT superblock after `startEpoch`. Capped by the voting
+// window: we never project a payment date past `endEpoch` because
+// the proposal's window says Core won't pay it beyond that point.
+// Negative / invalid inputs return an empty array so callers can
+// just gate on `.length`.
+//
+// Why we step by (i + 1), not i:
+//
+//   Syscoin governance payouts are executed on superblocks — not
+//   at `startEpoch` itself. The first payable point is the next
+//   superblock that lands at or after `startEpoch`, not the raw
+//   start timestamp. The frontend has no network anchor for
+//   superblock timing, so we use the conservative worst-case
+//   model: assume the next superblock is exactly
+//   `SUPERBLOCK_INTERVAL_DAYS` after startEpoch. That matches
+//   real consensus behavior when startEpoch happens to be right
+//   after a superblock (the most common case when a user has
+//   just dragged a date picker forward), and it AVOIDS the
+//   bug Codex flagged on round 3: treating payment #1 as if it
+//   lands on `startEpoch` overestimates how many payments fit
+//   inside the voting window, which in turn hides the
+//   truncation warning for proposals that can't actually pay
+//   out every requested installment before `endEpoch`.
+//
+//   The tradeoff: for the rare case where `startEpoch` is
+//   moments before a superblock, we show payment #1 one
+//   interval later than reality — erring safely toward a user
+//   seeing more truncation warnings, not fewer. A false
+//   "won't fit, extend the window" warning costs one picker
+//   drag; a silent omission costs a proposal that can't
+//   actually pay all installments.
 function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
   const start = Number(startEpoch);
   const end = Number(endEpoch);
@@ -1092,7 +1118,7 @@ function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
   const step = SUPERBLOCK_INTERVAL_DAYS * DAY_SECONDS;
   const out = [];
   for (let i = 0; i < count; i += 1) {
-    const at = start + i * step;
+    const at = start + (i + 1) * step;
     if (at > end) break;
     out.push({ index: i + 1, epochSec: at });
   }
@@ -1177,7 +1203,7 @@ function ReviewStep({ form, payloadBytes }) {
         </dd>
       </dl>
 
-      {schedule.length > 0 ? (
+      {paymentCountNum >= 2 ? (
         <div
           className="proposal-wizard__schedule"
           data-testid="review-schedule"
@@ -1186,43 +1212,48 @@ function ReviewStep({ form, payloadBytes }) {
             Approximate payment schedule
           </h3>
           <p className="proposal-wizard__help">
-            Governance payouts are paid on the nearest Syscoin
-            superblock — roughly every {SUPERBLOCK_INTERVAL_DAYS}{' '}
-            days. The dates below are planning-grade estimates; the
-            actual payment dates will be determined by the
-            superblocks that fall within your voting window.
+            Governance payouts are paid on Syscoin superblocks —
+            roughly every {SUPERBLOCK_INTERVAL_DAYS} days — and
+            the first payable superblock is the one that lands{' '}
+            <em>after</em> your start date. The dates below are
+            worst-case (one full cycle past start) so your voting
+            window has room even when start lands right after a
+            superblock. Actual payout dates may run a bit earlier
+            depending on when your proposal opens relative to the
+            next superblock.
           </p>
-          <ol
-            className="proposal-wizard__schedule-list"
-            data-testid="review-schedule-list"
-          >
-            {schedule.map((p) => (
-              <li
-                key={p.index}
-                data-testid="review-schedule-row"
-                data-payment-index={p.index}
-              >
-                <span className="proposal-wizard__schedule-idx">
-                  #{p.index}
-                </span>
-                <span className="proposal-wizard__schedule-date">
-                  ~ {formatUtcDate(p.epochSec)}
-                </span>
-                <span className="proposal-wizard__schedule-amount">
-                  {form.paymentAmount} SYS
-                </span>
-              </li>
-            ))}
-          </ol>
+          {schedule.length > 0 ? (
+            <ol
+              className="proposal-wizard__schedule-list"
+              data-testid="review-schedule-list"
+            >
+              {schedule.map((p) => (
+                <li
+                  key={p.index}
+                  data-testid="review-schedule-row"
+                  data-payment-index={p.index}
+                >
+                  <span className="proposal-wizard__schedule-idx">
+                    #{p.index}
+                  </span>
+                  <span className="proposal-wizard__schedule-date">
+                    ~ {formatUtcDate(p.epochSec)}
+                  </span>
+                  <span className="proposal-wizard__schedule-amount">
+                    {form.paymentAmount} SYS
+                  </span>
+                </li>
+              ))}
+            </ol>
+          ) : null}
           {schedule.length < paymentCountNum ? (
             <p
               className="proposal-wizard__help proposal-wizard__help--warn"
               data-testid="review-schedule-trunc"
             >
-              Your voting window only fits {schedule.length} of the{' '}
-              {paymentCountNum} requested payments. Extend the voting
-              end date, or reduce the payment count, so every payment
-              has a superblock to land in.
+              {schedule.length === 0
+                ? `Your voting window is too short to land any of the ${paymentCountNum} requested payments on a superblock. Extend the voting end date so each payment has a superblock to land in.`
+                : `Your voting window only fits ${schedule.length} of the ${paymentCountNum} requested payments. Extend the voting end date, or reduce the payment count, so every payment has a superblock to land in.`}
             </p>
           ) : null}
         </div>
