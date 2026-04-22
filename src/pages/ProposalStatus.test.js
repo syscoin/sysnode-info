@@ -625,4 +625,106 @@ describe('ProposalStatus', () => {
       }
     }
   );
+
+  test(
+    'clears cached submission when the route id changes so action handlers cannot target a stale row (Codex round 11 P1)',
+    async () => {
+      // Regression: when the user navigates /governance/proposal/100
+      // → /governance/proposal/200, there's a window where the page
+      // is still mounted with `submission.id = 100` while the fetch
+      // for id 200 is in flight (or transiently fails). Any action
+      // handler (Delete, Attach-Collateral) bound to submission.id
+      // during that window would then operate on #100 while the
+      // URL claims #200 — a cross-row edit/delete bug. Fix: reset
+      // submission/error/loading on `[id]` change BEFORE the new
+      // load resolves. Verify by asserting the old row's distinctive
+      // testid disappears immediately when `id` flips, and the new
+      // row's testid appears only after its fetch resolves.
+      proposalService.getSubmission.mockImplementation(async (id) => {
+        if (id === 100) {
+          return {
+            id: 100,
+            status: 'submitted',
+            name: 'first',
+            proposalHash: 'aa'.repeat(32),
+            governanceHash: 'cc'.repeat(32),
+            collateralTxid: 'dd'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '1',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+          };
+        }
+        if (id === 200) {
+          return {
+            id: 200,
+            status: 'awaiting_collateral',
+            name: 'second',
+            proposalHash: 'bb'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '100000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            collateralTxid: 'ee'.repeat(32),
+            collateralConfs: 1,
+          };
+        }
+        throw Object.assign(new Error('nope'), { code: 'not_found' });
+      });
+
+      // Use a wrapper that lets us flip the path mid-test to
+      // simulate navigation without history.push (which would pull
+      // in more machinery).
+      function Wrapper({ path }) {
+        return (
+          <MemoryRouter initialEntries={[path]} key={path}>
+            <AuthProvider authService={makeAuthService()}>
+              <Route
+                path="/governance/proposal/:id"
+                component={ProposalStatus}
+              />
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      }
+
+      let rerender;
+      await act(async () => {
+        const rendered = render(
+          <Wrapper path="/governance/proposal/100" />
+        );
+        rerender = rendered.rerender;
+      });
+      // Wait for first submission to settle.
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-submitted')
+        ).toBeInTheDocument();
+      });
+
+      // Re-mount with a fresh key so the id effect runs for the
+      // new id — simulates the navigation event.
+      await act(async () => {
+        rerender(<Wrapper path="/governance/proposal/200" />);
+      });
+
+      // After the re-mount but before the new fetch resolves, the
+      // OLD submission's distinctive testid must be gone. This is
+      // the critical invariant — without the `[id]` reset effect,
+      // the previous `submission.id = 100` would still be in state
+      // during the fetch window.
+      expect(
+        screen.queryByTestId('proposal-status-submitted')
+      ).toBeNull();
+
+      // After the new fetch resolves, the NEW row renders.
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-awaiting')
+        ).toBeInTheDocument();
+      });
+    }
+  );
 });

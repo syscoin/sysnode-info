@@ -837,4 +837,100 @@ describe('NewProposal wizard', () => {
       );
     });
   });
+
+  test(
+    'clears stale draft form + draftId when loading a different ?draft= fails so saves cannot PATCH the wrong id (Codex round 11 P1)',
+    async () => {
+      // Regression: the draft-load effect used to leave previous
+      // `form` + `draftId` state intact on fetch failure. If the
+      // user switched /governance/new?draft=10 → ?draft=20 and the
+      // /20 fetch failed (deleted, 403, network), the wizard kept
+      // showing /10's fields AND `saveDraft()` kept PATCHing
+      // /drafts/10 while the URL claimed /20. That's a cross-draft
+      // write under the user's nose.
+      //
+      // Fix: when the effect sees `draftId != null && draftId !==
+      // draftIdFromUrl`, reset the form to empty and drop draftId
+      // BEFORE the new fetch starts. If that new fetch also fails,
+      // the catch clears draftId again so the next save can only
+      // create a new draft — never overwrite a draft the user is
+      // no longer even viewing.
+
+      // First call (id=10): loads successfully with distinctive
+      // name we can later assert is gone.
+      proposalService.getDraft
+        .mockResolvedValueOnce({
+          id: 10,
+          userId: 42,
+          name: 'original-ten',
+          url: 'https://forum.syscoin.org/t/ten',
+          paymentAmountSats: '0',
+          paymentCount: 1,
+        })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('nope'), { code: 'not_found' })
+        );
+
+      let capturedHistory = null;
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new?draft=10']}>
+            <AuthProvider authService={makeAuthService()}>
+              <Switch>
+                <Route
+                  path="/governance/new"
+                  render={(props) => {
+                    capturedHistory = props.history;
+                    // eslint-disable-next-line global-require
+                    const NewProposalLocal =
+                      require('./NewProposal').default;
+                    return <NewProposalLocal />;
+                  }}
+                />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      // Wait for initial hydrate.
+      await waitFor(() => {
+        expect(screen.getByTestId('wizard-field-name').value).toBe(
+          'original-ten'
+        );
+      });
+
+      // Switch to a different draft id; its fetch will reject.
+      await act(async () => {
+        capturedHistory.replace('/governance/new?draft=20');
+      });
+
+      // Critical invariants:
+      //   a) Form is reset (NOT still showing original-ten).
+      //   b) `saveDraft()` — invoked next — must either create a
+      //      new draft (POST, no id) or refuse; it must NOT PATCH
+      //      /drafts/10. We assert by calling the real service
+      //      mock and checking what was called.
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('wizard-field-name').value
+        ).not.toBe('original-ten');
+      });
+
+      // Confirm the UI isn't silently holding draftId=10 by
+      // triggering a save. `createDraft` would fire for a new
+      // draft; `updateDraft` (with id=10) would be the bug.
+      proposalService.createDraft.mockResolvedValue({ id: 99 });
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'fresh-entry' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+      expect(proposalService.updateDraft).not.toHaveBeenCalledWith(
+        10,
+        expect.anything()
+      );
+    }
+  );
 });

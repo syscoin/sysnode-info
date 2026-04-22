@@ -139,12 +139,15 @@ export default function ProposalStatus() {
     } catch (err) {
       if (!mountedRef.current) return null;
       setError(err);
-      // Codex PR8 round 9 P2: if the submission has been deleted
-      // out from under us (another session, admin action, etc.),
-      // clear any cached copy so the page stops showing stale
-      // status data. Transient errors (5xx, offline) keep the
-      // cached submission and just raise the inline banner so
-      // users aren't punished for a momentary hiccup.
+      // Codex PR8 round 9 P2: hard-failure codes clear the cached
+      // submission so the page stops rendering a row the user no
+      // longer has. Transient same-id failures keep the cache and
+      // surface the stale-data warning banner instead. (Round 11
+      // P1 also clears for route-id changes, but that's handled
+      // separately by the `[id]` effect below which resets
+      // submission=null BEFORE the load runs — so by the time we
+      // reach this catch, `submission` is either null or matches
+      // the current `id`. No extra check needed here.)
       const code = err && err.code;
       if (code === 'not_found' || code === 'forbidden') {
         setSubmission(null);
@@ -153,6 +156,23 @@ export default function ProposalStatus() {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
+  }, [id]);
+
+  // Codex PR8 round 11 P1: whenever the route param `id` changes,
+  // drop any cached submission/error from the previous id BEFORE
+  // the new fetch resolves. Without this, the page stays mounted
+  // with the PREVIOUS submission in state during the fetch window;
+  // any action handler bound to `submission.id` (attach-collateral,
+  // delete) would then operate on the wrong row if the user acts
+  // before the new load completes or if that load then fails
+  // transiently. Clearing `error` too so a stale "Could not load"
+  // banner from the old id doesn't carry over. `loading = true`
+  // keeps the spinner up until the new load either resolves or
+  // errors, which is the correct UX for a fresh navigation.
+  useEffect(() => {
+    setSubmission(null);
+    setError(null);
+    setLoading(true);
   }, [id]);
 
   useEffect(() => {

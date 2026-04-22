@@ -207,6 +207,24 @@ export default function NewProposal() {
     // `draftId` starts as null and only matches AFTER the first
     // successful fetch's setDraftId() settles.
     if (draftId != null && draftId === draftIdFromUrl) return () => {};
+    // Codex PR8 round 11 P1: clear any cached draft state tied to a
+    // DIFFERENT id before the new fetch resolves. Otherwise the
+    // UI keeps showing the previous draft's form and — worse —
+    // `saveDraft()` keeps PATCHing the previous `draftId` while
+    // the URL claims we're editing a new one. That crosses writes
+    // between drafts if the user types anything (or hits Save)
+    // during the fetch window, or if the new fetch then fails
+    // (network, 404 because deleted, 403). Reset the form to
+    // emptyForm() so the wizard renders a blank state rather than
+    // silently inheriting the prior draft's fields under a new
+    // URL. A subsequent successful load replaces it with the
+    // fetched draft; a persistent failure keeps the UI empty and
+    // surfaces `loadError`, which is the correct UX.
+    if (draftId != null && draftId !== draftIdFromUrl) {
+      const blank = emptyForm();
+      dispatch({ type: 'replace', form: blank, baseline: blank });
+      setDraftId(null);
+    }
     setLoadingDraft(true);
     setLoadError(null);
     proposalService
@@ -220,6 +238,16 @@ export default function NewProposal() {
       .catch((err) => {
         if (cancelled) return;
         setLoadError(err);
+        // Codex PR8 round 11 P1: any prior draftId left over after
+        // a successful `prepare` redirect (draftId is cleared on
+        // consume) or from a prior route should already be null
+        // by the time we reach this catch thanks to the reset
+        // above. But be defensive: on a hard load failure, make
+        // sure the wizard isn't still pointed at a draftId that
+        // no longer matches the URL — clear it so subsequent
+        // `saveDraft()` creates a new draft instead of PATCHing
+        // a stale one the user can no longer see.
+        setDraftId(null);
       })
       .finally(() => {
         if (!cancelled) setLoadingDraft(false);
