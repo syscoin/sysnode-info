@@ -419,37 +419,36 @@ export default function NewProposal() {
       setPrepared(envelope);
       // The backend consumed the draft atomically on success — clear
       // our local handle. Also sync the baseline so the leave-guard
-      // disengages (the wizard is now in post-prepare state and the
-      // only remaining action is pasting a txid or walking away).
+      // disengages before we navigate away.
       setDraftId(null);
       dispatch({ type: 'replace', form, baseline: form });
-      setStepIdx(3);
-      // Codex PR8 round 3 P2: strip ?draft=<id> from the URL now
-      // that the backend has consumed the draft (consumeDraft: true
-      // was sent above). If we left it, a reload on the Submit step
-      // would re-mount the wizard, the load effect would re-hit
-      // GET /gov/proposals/drafts/<id>, surface a not-found error
-      // toast, and drop the user out of the prepared flow even
-      // though their submission already exists server-side.
+
+      // Codex PR8 round 5 P2: redirect to the dedicated status page
+      // rather than parking the user on a local-state-only "Submit"
+      // step. The previous flow stored the prepared envelope *only*
+      // in `prepared` component state — a browser reload on the
+      // Submit step would lose that state, the draft-load effect
+      // would see no `?draft=` and exit early, and the user would
+      // land back on an empty wizard even though the submission
+      // already existed server-side. /governance/proposal/:id is
+      // the canonical, reload-safe view for a prepared submission
+      // (it renders the OP_RETURN hex, the CLI fallback, and the
+      // inline attach-collateral form — parity with the old
+      // SubmitStep) and is what the Proposals Created panel already
+      // deep-links into.
       //
-      // Pre-authorise this internal URL bump via allowedPathRef —
-      // the history.block guard may still be installed for a tick
-      // before the next render tears it down (dirty flips false on
-      // the SAME render that runs this code, but block removal
-      // happens in the effect that re-runs after the render).
-      if (draftIdFromUrl != null) {
-        const params = new URLSearchParams(history.location.search);
-        params.delete('draft');
-        const qs = params.toString();
-        const nextSearch = qs ? `?${qs}` : '';
-        allowedPathRef.current = `${history.location.pathname}${nextSearch}${
-          history.location.hash || ''
-        }`;
-        history.replace({
-          pathname: history.location.pathname,
-          search: nextSearch,
-        });
-      }
+      // Pre-authorise this single internal navigation via
+      // allowedPathRef because React 18 batches state updates:
+      // `dispatch({ type: 'replace', form, baseline: form })` flips
+      // dirty=false, but the block-installer effect only re-runs on
+      // the next render, AFTER the history.replace below. Without
+      // the whitelist, the block callback would observe dirty=true
+      // and pop the unsaved-changes modal on a flow that actually
+      // succeeded.
+      const nextPath = `/governance/proposal/${envelope.submission.id}`;
+      allowedPathRef.current = nextPath;
+      history.replace(nextPath);
+      return;
     } catch (err) {
       setPrepareError(err);
       // If the backend says "you already prepared this", pivot to

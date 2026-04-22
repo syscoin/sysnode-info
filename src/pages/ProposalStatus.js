@@ -95,6 +95,13 @@ export default function ProposalStatus() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  // Codex PR8 round 5 P2: delete-failure surface. The top-level
+  // `error` banner only renders when `submission` is null (it's the
+  // initial-fetch error channel), so a delete failure while the
+  // submission panel is on screen would silently re-enable the
+  // Delete button with no user-visible signal. Keep delete errors
+  // in their own channel rendered *inside* the panel.
+  const [deleteError, setDeleteError] = useState(null);
 
   // Inline attach-collateral form shown when a submission is
   // reopened in the `prepared` state (e.g. user reloaded the
@@ -207,11 +214,17 @@ export default function ProposalStatus() {
     if (!submission) return;
     if (!window.confirm('Delete this submission? This cannot be undone.')) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       await proposalService.deleteSubmission(submission.id);
       history.push('/governance');
     } catch (err) {
-      setError(err);
+      // Route delete failures to their own state so they render
+      // inline on the visible submission panel (see deleteError
+      // banner below). The existing top-level `error` banner is
+      // hidden whenever `submission` is set, so reusing it here
+      // would silently swallow the failure. (Codex PR8 round 5 P2.)
+      if (mountedRef.current) setDeleteError(err);
     } finally {
       if (mountedRef.current) setDeleting(false);
     }
@@ -281,6 +294,19 @@ export default function ProposalStatus() {
                 ) : null}
               </header>
 
+              {deleteError ? (
+                <div
+                  className="auth-alert auth-alert--error"
+                  role="alert"
+                  data-testid="proposal-status-delete-error"
+                >
+                  Could not delete this submission:{' '}
+                  {deleteError.code || 'error'}. Please retry — if it
+                  keeps failing, the submission may already be
+                  in-flight and can no longer be deleted.
+                </div>
+              ) : null}
+
               <dl className="proposal-wizard__summary">
                 <dt>Proposal hash</dt>
                 <dd>
@@ -342,6 +368,44 @@ export default function ProposalStatus() {
                       </code>
                     </dd>
                   </dl>
+
+                  {/* Manual-payment fallback: the canonical gobject
+                      prepare CLI line. Same derivation the wizard's
+                      SubmitStep used before /prepare redirected here —
+                      kept so a reload (or a user arriving from the
+                      Proposals Created panel) has full parity.
+                      (Codex PR8 round 5 P2.) */}
+                  {submission.dataHex && submission.timeUnix != null ? (
+                    <details className="proposal-status__cli-block">
+                      <summary>
+                        Use Syscoin-Qt / syscoin-cli instead
+                      </summary>
+                      <p className="proposal-status__help">
+                        Open Syscoin-Qt's <em>Debug console</em> (or
+                        your CLI) and paste this — Core will broadcast
+                        the 150 SYS burn and print the collateral TXID
+                        to paste above.
+                      </p>
+                      <pre
+                        className="proposal-wizard__cli"
+                        data-testid="proposal-status-cli-command"
+                      >
+                        <code>
+                          {`gobject prepare ${
+                            submission.parentHash != null
+                              ? String(submission.parentHash)
+                              : '0'
+                          } ${
+                            submission.revision != null
+                              ? String(submission.revision)
+                              : '1'
+                          } ${String(submission.timeUnix)} ${
+                            submission.dataHex
+                          }`}
+                        </code>
+                      </pre>
+                    </details>
+                  ) : null}
 
                   <label
                     className="proposal-wizard__field"

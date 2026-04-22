@@ -177,127 +177,81 @@ describe('NewProposal wizard', () => {
     expect(screen.getByTestId('wizard-next')).not.toBeDisabled();
   });
 
-  test('advances through Basics → Payment → Review and calls prepare', async () => {
-    proposalService.prepare.mockResolvedValue({
-      submission: {
-        id: 99,
-        proposalHash:
-          'aa'.repeat(32),
-        parentHash: '0',
-        revision: 1,
-        timeUnix: 1700000000,
-        dataHex: 'deadbeef',
+  test(
+    'advances through Basics → Payment → Review, calls prepare, and redirects to the status page (Codex round 5 P2)',
+    async () => {
+      // Codex PR8 round 5 P2: the wizard used to park the user on a
+      // local-state-only "Submit" step after /prepare. A browser
+      // reload there dropped the prepared envelope and sent the
+      // user back to an empty wizard even though the submission
+      // existed server-side. The fix redirects to the canonical
+      // reload-safe /governance/proposal/:id page, which already
+      // hydrates from the server row and hosts the attach-collateral
+      // UX + OP_RETURN + CLI fallback at feature parity with the old
+      // SubmitStep.
+      proposalService.prepare.mockResolvedValue({
+        submission: {
+          id: 99,
+          proposalHash: 'aa'.repeat(32),
+          parentHash: '0',
+          revision: 1,
+          timeUnix: 1700000000,
+          dataHex: 'deadbeef',
+          name: 'my-grant',
+          url: 'https://forum.syscoin.org/t/my-grant',
+          paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+          paymentAmountSats: '100000000000',
+          paymentCount: 1,
+          startEpoch: 1700000000,
+          endEpoch: 1701000000,
+        },
+        opReturnHex: 'aa'.repeat(32),
+        canonicalJson: '{}',
+        payloadBytes: 2,
+        collateralFeeSats: '15000000000',
+        requiredConfirmations: 6,
+      });
+
+      const { routeSeen } = await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
+
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      expect(screen.getByTestId('review-name')).toHaveTextContent('my-grant');
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      expect(proposalService.prepare).toHaveBeenCalledTimes(1);
+      const body = proposalService.prepare.mock.calls[0][0];
+      expect(body).toMatchObject({
         name: 'my-grant',
         url: 'https://forum.syscoin.org/t/my-grant',
         paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
         paymentAmountSats: '100000000000',
         paymentCount: 1,
-        startEpoch: 1700000000,
-        endEpoch: 1701000000,
-      },
-      opReturnHex: 'aa'.repeat(32),
-      canonicalJson: '{}',
-      payloadBytes: 2,
-      collateralFeeSats: '15000000000',
-      requiredConfirmations: 6,
-    });
+      });
 
-    await renderWizard();
-    await screen.findByTestId('wizard-panel-basics');
-
-    validBasics();
-    fireEvent.click(screen.getByTestId('wizard-next'));
-    expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
-
-    validPayment();
-    fireEvent.click(screen.getByTestId('wizard-next'));
-    expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
-    expect(screen.getByTestId('review-name')).toHaveTextContent('my-grant');
-
-    const prepareBtn = screen.getByTestId('wizard-prepare');
-    await act(async () => {
-      fireEvent.click(prepareBtn);
-    });
-
-    expect(proposalService.prepare).toHaveBeenCalledTimes(1);
-    const body = proposalService.prepare.mock.calls[0][0];
-    expect(body).toMatchObject({
-      name: 'my-grant',
-      url: 'https://forum.syscoin.org/t/my-grant',
-      paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
-      paymentAmountSats: '100000000000',
-      paymentCount: 1,
-    });
-
-    expect(screen.getByTestId('wizard-panel-submit')).toBeInTheDocument();
-    expect(screen.getByTestId('submit-cli-command')).toHaveTextContent(
-      /gobject prepare 0 1 1700000000 deadbeef/
-    );
-    expect(screen.getByTestId('submit-op-return')).toHaveTextContent(
-      'aa'.repeat(32)
-    );
-  });
-
-  test('attach collateral posts TXID and navigates to the status page', async () => {
-    proposalService.prepare.mockResolvedValue({
-      submission: {
-        id: 99,
-        proposalHash: 'bb'.repeat(32),
-        parentHash: '0',
-        revision: 1,
-        timeUnix: 1700000000,
-        dataHex: 'beef',
-        name: 'my-grant',
-        paymentAmountSats: '100000000000',
-        paymentCount: 1,
-        startEpoch: 1700000000,
-        endEpoch: 1701000000,
-      },
-      opReturnHex: 'bb'.repeat(32),
-      canonicalJson: '{}',
-      payloadBytes: 2,
-      collateralFeeSats: '15000000000',
-      requiredConfirmations: 6,
-    });
-    proposalService.attachCollateral.mockResolvedValue({ id: 99 });
-
-    const { routeSeen } = await renderWizard();
-    await screen.findByTestId('wizard-panel-basics');
-
-    validBasics();
-    fireEvent.click(screen.getByTestId('wizard-next'));
-    validPayment();
-    fireEvent.click(screen.getByTestId('wizard-next'));
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('wizard-prepare'));
-    });
-
-    // Malformed TXID client-side check
-    fireEvent.change(screen.getByTestId('submit-txid-input'), {
-      target: { value: 'not-hex' },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('submit-attach-btn'));
-    });
-    expect(proposalService.attachCollateral).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      /64-character hex TXID/i
-    );
-
-    // Valid 64-hex
-    const txid = 'cc'.repeat(32);
-    fireEvent.change(screen.getByTestId('submit-txid-input'), {
-      target: { value: txid },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('submit-attach-btn'));
-    });
-
-    expect(proposalService.attachCollateral).toHaveBeenCalledWith(99, txid);
-    await waitFor(() => {
-      expect(routeSeen.last).toBe('/governance/proposal/99');
-    });
-  });
+      // Critical invariant: on successful prepare the wizard hands
+      // off to the dedicated status page. The old in-wizard Submit
+      // panel must not be reachable because its state-only envelope
+      // would be lost on reload.
+      await waitFor(() => {
+        expect(routeSeen.last).toBe('/governance/proposal/99');
+      });
+      expect(screen.queryByTestId('wizard-panel-submit')).toBeNull();
+      // The unsaved-changes modal must not fire on this internal
+      // navigation (allowedPathRef whitelists the exact target).
+      expect(screen.queryByTestId('unsaved-modal')).toBeNull();
+    }
+  );
 
   test('saves a new draft, reflects id in URL, and does NOT trigger unsaved-changes modal (Codex round 2 P2)', async () => {
     // Regression: previously `dispatch({ type: 'mark_saved' })` was
@@ -409,15 +363,22 @@ describe('NewProposal wizard', () => {
     );
   });
 
-  test('successful prepare strips ?draft=<id> from URL (Codex round 3 P2)', async () => {
-    // Regression: /prepare is sent with consumeDraft: true, so the
-    // server deletes the draft row on success. If the wizard then
-    // leaves ?draft=<id> in the URL, a browser reload on the Submit
-    // step re-mounts the wizard, the load effect calls
-    // getDraft(<deleted id>), surfaces a not-found error, and drops
-    // the user out of the prepared flow — even though the
-    // submission exists server-side. The fix strips the query param
-    // after setPrepared() lands.
+  test(
+    'successful prepare navigates off /governance/new so reload never re-fetches the consumed draft (Codex round 3 P2 + round 5 P2)',
+    async () => {
+    // Regression history:
+    //   R3 P2: /prepare is sent with consumeDraft: true, so the
+    //     server deletes the draft row on success. If the wizard
+    //     left ?draft=<id> in the URL, a browser reload would call
+    //     getDraft(<deleted id>) and surface a not-found error.
+    //   R5 P2: the round-3 fix stripped the query param but kept
+    //     the user on /governance/new in a local-state-only Submit
+    //     step — a reload there still dropped them back to an empty
+    //     wizard. The round-5 fix redirects to
+    //     /governance/proposal/:id, which hydrates from the server
+    //     row, so reload is fully lossless. This test asserts the
+    //     stronger post-R5 invariant: after prepare, the location
+    //     is the dedicated status page (no ?draft, no /governance/new).
     proposalService.getDraft.mockResolvedValue({
       id: 15,
       userId: 42,
@@ -476,16 +437,20 @@ describe('NewProposal wizard', () => {
       draftId: 15,
       consumeDraft: true,
     });
-    // Critical: after a successful prepare the ?draft=15 must be
-    // gone so a reload on the Submit step does not re-hit getDraft
-    // with a now-deleted id.
-    expect(screen.getByTestId('location-display').textContent).toBe(
-      '/governance/new'
-    );
+    // Critical: after a successful prepare the user is on the
+    // status page (not /governance/new with stripped ?draft), so a
+    // reload hydrates from the server row instead of re-entering
+    // the wizard with an empty form.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-display').textContent).toBe(
+        '/governance/proposal/77'
+      );
+    });
     // And the unsaved-changes modal must not have been popped by
-    // our internal URL strip.
+    // our internal navigation.
     expect(screen.queryByTestId('unsaved-modal')).toBeNull();
-  });
+    }
+  );
 
   test('cold load with ?draft=<id> still fetches the server copy', async () => {
     // Sanity check: the guard in the draft-load effect must only

@@ -170,6 +170,71 @@ describe('ProposalStatus', () => {
     expect(screen.getByTestId('proposal-status-attach')).toBeDisabled();
   });
 
+  test(
+    'prepared state surfaces the gobject prepare CLI fallback when dataHex + timeUnix are available (Codex round 5 P2)',
+    async () => {
+      // Parity with the former wizard Submit step: users who want to
+      // pay collateral from Syscoin-Qt instead of a wallet that can
+      // emit an OP_RETURN need the exact `gobject prepare` argv. Now
+      // that /prepare redirects here, this page has to host that
+      // fallback so the manual-pay path is not regressed.
+      proposalService.getSubmission.mockResolvedValueOnce({
+        id: 21,
+        status: 'prepared',
+        title: 'cli-fallback',
+        name: 'cli-fallback',
+        proposalHash: 'aa'.repeat(32),
+        parentHash: '0',
+        revision: 1,
+        timeUnix: 1700000000,
+        dataHex: 'deadbeef',
+        paymentAddress: 'sys1qexample',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1700000000,
+        endEpoch: 1701000000,
+      });
+      await renderAt(21);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-prepared')
+        ).toBeInTheDocument();
+      });
+      expect(
+        screen.getByTestId('proposal-status-cli-command')
+      ).toHaveTextContent(/gobject prepare 0 1 1700000000 deadbeef/);
+    }
+  );
+
+  test(
+    'prepared state omits the CLI fallback when dataHex is missing (legacy rows)',
+    async () => {
+      // Defensive: very old prepared rows pre-dated the dataHex
+      // persistence. Without it we cannot reconstruct the correct
+      // CLI argv, so we must not render a broken command.
+      proposalService.getSubmission.mockResolvedValueOnce({
+        id: 22,
+        status: 'prepared',
+        name: 'legacy',
+        proposalHash: 'aa'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+      });
+      await renderAt(22);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-prepared')
+        ).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByTestId('proposal-status-cli-command')
+      ).toBeNull();
+    }
+  );
+
   test('prepared state: malformed TXID surfaces inline error, no RPC call', async () => {
     proposalService.getSubmission.mockResolvedValueOnce({
       id: 16,
@@ -338,4 +403,59 @@ describe('ProposalStatus', () => {
     expect(proposalService.deleteSubmission).toHaveBeenCalledWith(11);
     spy.mockRestore();
   });
+
+  test(
+    'delete failure surfaces an inline error banner on the visible submission (Codex round 5 P2)',
+    async () => {
+      // Regression: previously onDelete() stuffed the error into the
+      // top-level `error` state, but that banner only renders when
+      // `submission` is null. So a transient 5xx / 403 while the
+      // panel is on-screen just re-enabled the Delete button with
+      // no user-visible feedback. The fix routes delete failures to
+      // a distinct `deleteError` state rendered *inside* the panel.
+      proposalService.getSubmission.mockResolvedValueOnce({
+        id: 31,
+        status: 'prepared',
+        name: 't',
+        proposalHash: 'aa'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+      });
+      proposalService.deleteSubmission.mockRejectedValueOnce(
+        Object.assign(new Error('boom'), { code: 'transient_5xx' })
+      );
+      const spy = jest
+        .spyOn(window, 'confirm')
+        .mockImplementation(() => true);
+
+      await renderAt(31);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-prepared')
+        ).toBeInTheDocument();
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('proposal-status-delete'));
+      });
+
+      // Critical invariant: the inline banner must render AND the
+      // submission panel must still be visible (the user hasn't
+      // been navigated off, and the fetch-error top banner must
+      // remain hidden because submission is populated).
+      expect(
+        screen.getByTestId('proposal-status-delete-error')
+      ).toHaveTextContent(/transient_5xx/);
+      expect(
+        screen.getByTestId('proposal-status-panel')
+      ).toBeInTheDocument();
+      // Delete button re-enabled for retry.
+      expect(
+        screen.getByTestId('proposal-status-delete')
+      ).not.toBeDisabled();
+      spy.mockRestore();
+    }
+  );
 });
