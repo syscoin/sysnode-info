@@ -727,4 +727,107 @@ describe('ProposalStatus', () => {
       });
     }
   );
+
+  test(
+    'drops stale responses when a prior request resolves after a newer one (Codex round 12 P1)',
+    async () => {
+      // Regression: out-of-order response races. The user navigates
+      // /governance/proposal/100 → /200 quickly; the /100 fetch was
+      // slow and resolves AFTER /200's. Without a request-token
+      // guard, /100's response writes into state and overwrites the
+      // page with row 100 even though the URL points to 200. Any
+      // subsequent action handler (Delete, Attach-Collateral) binds
+      // to submission.id=100 and targets the wrong row.
+      //
+      // Reproduce by holding /100's promise pending while /200
+      // resolves first, then releasing /100 and asserting the page
+      // still renders #200 and not #100.
+      let release100;
+      proposalService.getSubmission.mockImplementation((reqId) => {
+        if (reqId === 100) {
+          return new Promise((resolve) => {
+            release100 = () =>
+              resolve({
+                id: 100,
+                status: 'submitted',
+                name: 'slow-hundred',
+                proposalHash: 'aa'.repeat(32),
+                governanceHash: 'cc'.repeat(32),
+                collateralTxid: 'dd'.repeat(32),
+                paymentAddress: 'sys1q',
+                paymentAmountSats: '1',
+                paymentCount: 1,
+                startEpoch: 1,
+                endEpoch: 2,
+              });
+          });
+        }
+        if (reqId === 200) {
+          return Promise.resolve({
+            id: 200,
+            status: 'awaiting_collateral',
+            name: 'fast-two-hundred',
+            proposalHash: 'bb'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '100000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            collateralTxid: 'ee'.repeat(32),
+            collateralConfs: 1,
+          });
+        }
+        return Promise.reject(new Error('unexpected id'));
+      });
+
+      function Wrapper({ path }) {
+        return (
+          <MemoryRouter initialEntries={[path]} key={path}>
+            <AuthProvider authService={makeAuthService()}>
+              <Route
+                path="/governance/proposal/:id"
+                component={ProposalStatus}
+              />
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      }
+
+      let rerender;
+      await act(async () => {
+        const r = render(<Wrapper path="/governance/proposal/100" />);
+        rerender = r.rerender;
+      });
+
+      // Navigate to /200 before /100 resolves.
+      await act(async () => {
+        rerender(<Wrapper path="/governance/proposal/200" />);
+      });
+
+      // /200 resolves first, page shows it.
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-awaiting')
+        ).toBeInTheDocument();
+      });
+
+      // Now release /100's stale response. The request-token guard
+      // must drop it — the page must keep rendering #200.
+      await act(async () => {
+        release100();
+        // Drain microtasks so the stale .then() fires.
+        for (let i = 0; i < 20; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await Promise.resolve();
+        }
+      });
+
+      expect(
+        screen.getByTestId('proposal-status-awaiting')
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('proposal-status-submitted')
+      ).toBeNull();
+    }
+  );
 });

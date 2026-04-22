@@ -116,6 +116,17 @@ export default function ProposalStatus() {
 
   const timerRef = useRef(null);
   const mountedRef = useRef(true);
+  // The id of the most recently issued request. Responses that
+  // complete after the user has navigated to a different proposal
+  // must be dropped — otherwise an old getSubmission() that happens
+  // to resolve after a newer one would overwrite the page with the
+  // previous row, and action handlers bound to submission.id would
+  // then target the wrong submission. A ref (not state) because
+  // stale closures inside in-flight async calls need to read the
+  // LIVE latest-id, not the snapshot captured when they were
+  // scheduled. Kept in sync with `id` on every render.
+  const latestReqIdRef = useRef(id);
+  latestReqIdRef.current = id;
   useEffect(() => () => {
     mountedRef.current = false;
     if (timerRef.current) {
@@ -130,31 +141,39 @@ export default function ProposalStatus() {
       setLoading(false);
       return null;
     }
+    const reqId = id;
     try {
-      const row = await proposalService.getSubmission(id);
+      const row = await proposalService.getSubmission(reqId);
       if (!mountedRef.current) return null;
+      // Request-token check: if the user navigated to another
+      // proposal while this fetch was in flight, the response
+      // belongs to a stale id. Drop it on the floor — the `[id]`
+      // reset effect has already cleared `submission`, and a
+      // fresh load() for the new id is already queued.
+      if (reqId !== latestReqIdRef.current) return null;
       setSubmission(row);
       setError(null);
       return row;
     } catch (err) {
       if (!mountedRef.current) return null;
+      if (reqId !== latestReqIdRef.current) return null;
       setError(err);
-      // Codex PR8 round 9 P2: hard-failure codes clear the cached
-      // submission so the page stops rendering a row the user no
-      // longer has. Transient same-id failures keep the cache and
-      // surface the stale-data warning banner instead. (Round 11
-      // P1 also clears for route-id changes, but that's handled
-      // separately by the `[id]` effect below which resets
-      // submission=null BEFORE the load runs — so by the time we
-      // reach this catch, `submission` is either null or matches
-      // the current `id`. No extra check needed here.)
+      // Hard-failure codes clear the cached submission so the page
+      // stops rendering a row the user no longer has. Transient
+      // same-id failures keep the cache and surface the stale-data
+      // warning banner instead. Route-id changes are handled by the
+      // `[id]` reset effect below, which zeroes submission BEFORE
+      // the new load runs, so by the time we reach this catch
+      // submission is either null or matches the current id.
       const code = err && err.code;
       if (code === 'not_found' || code === 'forbidden') {
         setSubmission(null);
       }
       return null;
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current && reqId === latestReqIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [id]);
 
