@@ -181,6 +181,16 @@ export default function NewProposal() {
   useEffect(() => {
     let cancelled = false;
     if (!draftIdFromUrl) return () => {};
+    // Codex PR8 round 3 P1: skip refetch when the draft is already
+    // loaded in local state. After a successful createDraft() we
+    // call `setDraftId(result.id)` AND `history.replace({ ?draft=id
+    // })`; without this guard the URL bump re-triggers this effect,
+    // overwriting the fresh in-memory form (including any keystrokes
+    // the user typed during the round trip) with the server echo.
+    // Cold loads (direct URL navigation, reload) still fetch because
+    // `draftId` starts as null and only matches AFTER the first
+    // successful fetch's setDraftId() settles.
+    if (draftId != null && draftId === draftIdFromUrl) return () => {};
     setLoadingDraft(true);
     setLoadError(null);
     proposalService
@@ -201,7 +211,7 @@ export default function NewProposal() {
     return () => {
       cancelled = true;
     };
-  }, [draftIdFromUrl]);
+  }, [draftIdFromUrl, draftId]);
 
   // ---- Before-unload guard ---------------------------------------------
 
@@ -414,6 +424,32 @@ export default function NewProposal() {
       setDraftId(null);
       dispatch({ type: 'replace', form, baseline: form });
       setStepIdx(3);
+      // Codex PR8 round 3 P2: strip ?draft=<id> from the URL now
+      // that the backend has consumed the draft (consumeDraft: true
+      // was sent above). If we left it, a reload on the Submit step
+      // would re-mount the wizard, the load effect would re-hit
+      // GET /gov/proposals/drafts/<id>, surface a not-found error
+      // toast, and drop the user out of the prepared flow even
+      // though their submission already exists server-side.
+      //
+      // Pre-authorise this internal URL bump via allowedPathRef —
+      // the history.block guard may still be installed for a tick
+      // before the next render tears it down (dirty flips false on
+      // the SAME render that runs this code, but block removal
+      // happens in the effect that re-runs after the render).
+      if (draftIdFromUrl != null) {
+        const params = new URLSearchParams(history.location.search);
+        params.delete('draft');
+        const qs = params.toString();
+        const nextSearch = qs ? `?${qs}` : '';
+        allowedPathRef.current = `${history.location.pathname}${nextSearch}${
+          history.location.hash || ''
+        }`;
+        history.replace({
+          pathname: history.location.pathname,
+          search: nextSearch,
+        });
+      }
     } catch (err) {
       setPrepareError(err);
       // If the backend says "you already prepared this", pivot to

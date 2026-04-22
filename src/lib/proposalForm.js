@@ -213,15 +213,27 @@ export function validatePayment(form, { nowSec } = {}) {
 // (which is tighter) gets done with it.
 export function estimatePayloadBytes(form) {
   const sats = sysToSatsString((form.paymentAmount || '').trim());
+  // Codex PR8 round 3 P2: the prior implementation used
+  //   Number(form.paymentAmount).toString()
+  // which silently rewrites large decimal inputs into scientific
+  // notation (e.g. "1234567890123.12345678" -> "1.234567890123123e+21").
+  // That undercounted payload bytes by hundreds of characters, so a
+  // proposal the backend's canonical JSON emitter would reject as
+  // oversized could pass the client-side gate here.
+  //
+  // The backend's canonical emitter (lib/proposalValidate.js ::
+  // formatSysAmount) formats the amount by dividing the sats BigInt
+  // by 10^8 and padding/trimming the fractional part. Our
+  // satsStringToSys() mirrors that exactly, so using it here makes
+  // this size estimate faithful to what the backend will actually
+  // serialize.
   const payload = {
     type: 1,
     name: (form.name || '').trim(),
     start_epoch: Math.trunc(Number(form.startEpoch) || 0),
     end_epoch: Math.trunc(Number(form.endEpoch) || 0),
     payment_address: (form.paymentAddress || '').trim(),
-    payment_amount: sats
-      ? Number(form.paymentAmount).toString()
-      : '0',
+    payment_amount: sats ? satsStringToSys(sats) : '0',
     url: (form.url || '').trim(),
   };
   const json = JSON.stringify(payload);

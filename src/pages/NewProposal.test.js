@@ -345,4 +345,170 @@ describe('NewProposal wizard', () => {
       '/governance/new?draft=7'
     );
   });
+
+  test('first-save URL bump does NOT refetch the draft (Codex round 3 P1)', async () => {
+    // Regression: after a successful createDraft(), the wizard calls
+    // setDraftId() AND history.replace({ ?draft=<id> }). The URL
+    // change re-triggers the draft-load effect. Without a guard, it
+    // re-fetches the draft and dispatches `replace` with the server
+    // echo, silently clobbering any edits the user started typing
+    // during the round-trip.
+    //
+    // The fix skips the fetch when local `draftId` already matches
+    // `?draft=<id>` (i.e. this is an internal URL-sync triggered by
+    // our own save path, not a cold reload). We assert two things:
+    //   1. getDraft is NOT called after the URL bump.
+    //   2. Local edits made AFTER save are preserved across the
+    //      effect re-run that the URL change causes.
+    proposalService.createDraft.mockResolvedValue({
+      id: 11,
+      userId: 42,
+      name: 'pre-save-name',
+      url: 'https://forum.syscoin.org/t/topic',
+      paymentAmountSats: '0',
+      paymentCount: 1,
+    });
+    // Never let getDraft resolve — any call here would be a bug.
+    // Keep it pending so a failed guard would hang the effect's
+    // "loading" state instead of silently overwriting.
+    proposalService.getDraft.mockImplementation(
+      () => new Promise(() => {})
+    );
+
+    await renderWizard();
+    await screen.findByTestId('wizard-panel-basics');
+
+    fireEvent.change(screen.getByTestId('wizard-field-name'), {
+      target: { value: 'pre-save-name' },
+    });
+    fireEvent.change(screen.getByTestId('wizard-field-url'), {
+      target: { value: 'https://forum.syscoin.org/t/topic' },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('wizard-save-draft'));
+    });
+
+    expect(proposalService.createDraft).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('location-display').textContent).toBe(
+      '/governance/new?draft=11'
+    );
+    // Critical invariant: the URL bump must NOT have re-triggered a
+    // server fetch for our own draft.
+    expect(proposalService.getDraft).not.toHaveBeenCalled();
+
+    // User continues typing AFTER save. If the effect had refetched
+    // and the mocked getDraft later resolved, it would clobber these
+    // edits. With getDraft left pending indefinitely, the only way
+    // this assertion passes is if the guard prevented the fetch.
+    fireEvent.change(screen.getByTestId('wizard-field-name'), {
+      target: { value: 'post-save-edit' },
+    });
+    expect(screen.getByTestId('wizard-field-name').value).toBe(
+      'post-save-edit'
+    );
+  });
+
+  test('successful prepare strips ?draft=<id> from URL (Codex round 3 P2)', async () => {
+    // Regression: /prepare is sent with consumeDraft: true, so the
+    // server deletes the draft row on success. If the wizard then
+    // leaves ?draft=<id> in the URL, a browser reload on the Submit
+    // step re-mounts the wizard, the load effect calls
+    // getDraft(<deleted id>), surfaces a not-found error, and drops
+    // the user out of the prepared flow — even though the
+    // submission exists server-side. The fix strips the query param
+    // after setPrepared() lands.
+    proposalService.getDraft.mockResolvedValue({
+      id: 15,
+      userId: 42,
+      name: 'my-grant',
+      url: 'https://forum.syscoin.org/t/my-grant',
+      paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+      paymentAmountSats: '100000000000',
+      paymentCount: 1,
+      startEpoch: Math.floor(Date.now() / 1000) + 3600,
+      endEpoch: Math.floor(Date.now() / 1000) + 7200,
+    });
+    proposalService.prepare.mockResolvedValue({
+      submission: {
+        id: 77,
+        proposalHash: 'cc'.repeat(32),
+        parentHash: '0',
+        revision: 1,
+        timeUnix: 1700000000,
+        dataHex: 'feed',
+        name: 'my-grant',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1700000000,
+        endEpoch: 1701000000,
+      },
+      opReturnHex: 'cc'.repeat(32),
+      canonicalJson: '{}',
+      payloadBytes: 2,
+      collateralFeeSats: '15000000000',
+      requiredConfirmations: 6,
+    });
+
+    await renderWizard({ initialEntry: '/governance/new?draft=15' });
+    await waitFor(() => {
+      expect(proposalService.getDraft).toHaveBeenCalledWith(15);
+    });
+    // URL reflects the hydrated draft on mount.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-display').textContent).toBe(
+        '/governance/new?draft=15'
+      );
+    });
+
+    // Walk the wizard to Review.
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('wizard-prepare'));
+    });
+
+    expect(proposalService.prepare).toHaveBeenCalledTimes(1);
+    expect(proposalService.prepare.mock.calls[0][0]).toMatchObject({
+      draftId: 15,
+      consumeDraft: true,
+    });
+    // Critical: after a successful prepare the ?draft=15 must be
+    // gone so a reload on the Submit step does not re-hit getDraft
+    // with a now-deleted id.
+    expect(screen.getByTestId('location-display').textContent).toBe(
+      '/governance/new'
+    );
+    // And the unsaved-changes modal must not have been popped by
+    // our internal URL strip.
+    expect(screen.queryByTestId('unsaved-modal')).toBeNull();
+  });
+
+  test('cold load with ?draft=<id> still fetches the server copy', async () => {
+    // Sanity check: the guard in the draft-load effect must only
+    // skip refetches when local `draftId` ALREADY matches the URL
+    // (post-save path). Direct navigation to /governance/new?draft=9
+    // must still call getDraft() and hydrate the form.
+    proposalService.getDraft.mockResolvedValue({
+      id: 9,
+      userId: 42,
+      name: 'hydrated-from-server',
+      url: 'https://forum.syscoin.org/t/remote',
+      paymentAmountSats: '0',
+      paymentCount: 1,
+    });
+
+    await renderWizard({ initialEntry: '/governance/new?draft=9' });
+    await waitFor(() => {
+      expect(proposalService.getDraft).toHaveBeenCalledWith(9);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('wizard-field-name').value).toBe(
+        'hydrated-from-server'
+      );
+    });
+  });
 });

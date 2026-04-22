@@ -258,6 +258,61 @@ describe('estimatePayloadBytes', () => {
     });
     expect(large).toBeGreaterThan(small + 150);
   });
+
+  test(
+    'large payment amounts are counted at full decimal width, not scientific notation (Codex round 3 P2)',
+    () => {
+      // Regression: prior impl used Number(paymentAmount).toString(),
+      // which collapses "1234567890123.12345678" into
+      // "1.2345678901231234e+21" — so the 512-byte gate could pass
+      // a proposal the backend serializer (which emits the full
+      // decimal) would then reject as oversized. Use a huge amount
+      // and assert the byte estimate contains the full decimal text.
+      const amountDecimal = '1234567890123.12345678';
+      const bytes = estimatePayloadBytes({
+        name: 'huge-ask',
+        url: 'https://syscoin.org/p/huge',
+        paymentAddress: 'sys1qexample',
+        paymentAmount: amountDecimal,
+        startEpoch: '1900000000',
+        endEpoch: '1902592000',
+      });
+      // Full decimal (22 chars) is noticeably larger than sci-form
+      // "1.2345678901231234e+21" (22 chars — similar) so we also
+      // assert on a smaller precision case that clearly diverges:
+      // a huge integer coerces to "1.23456789012e+21"-ish whereas
+      // the real decimal "1234567890123" keeps all 13 digits.
+      const bytesSmallFrac = estimatePayloadBytes({
+        name: 'huge-ask',
+        url: 'https://syscoin.org/p/huge',
+        paymentAddress: 'sys1qexample',
+        paymentAmount: '1234567890123',
+        startEpoch: '1900000000',
+        endEpoch: '1902592000',
+      });
+      // Sanity bound: the fractional variant is at least as large
+      // as the integer variant (more chars in payment_amount).
+      expect(bytes).toBeGreaterThanOrEqual(bytesSmallFrac);
+
+      // The critical invariant: the byte-count must reflect the
+      // FULL canonical decimal. We reconstruct what the backend's
+      // canonical emitter produces and compare via a crude
+      // string-inclusion check (the JSON stringify passes through
+      // the same text). Because we use TextEncoder for bytes, we
+      // validate the underlying JSON contains the literal string.
+      const probe = JSON.stringify({
+        type: 1,
+        name: 'huge-ask',
+        start_epoch: 1900000000,
+        end_epoch: 1902592000,
+        payment_address: 'sys1qexample',
+        payment_amount: amountDecimal,
+        url: 'https://syscoin.org/p/huge',
+      });
+      expect(bytes).toBe(new TextEncoder().encode(probe).length);
+      expect(probe).not.toMatch(/e\+/i); // no scientific notation anywhere
+    }
+  );
 });
 
 describe('formsEqual', () => {
