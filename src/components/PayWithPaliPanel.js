@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 import {
   isPaliAvailable,
@@ -92,13 +92,23 @@ export default function PayWithPaliPanel({
   // Bump to force a re-probe. The useEffect below keys on this.
   const [probeNonce, setProbeNonce] = useState(0);
   const mountedRef = useRef(true);
-  const paliInstalled = useMemo(() => {
+  // Pali (like MetaMask) injects `window.pali` from its content script
+  // after DOMContentLoaded — which can race with React mounting this
+  // component on a direct navigation. If we memoised the first check
+  // forever, users whose extension woke up a beat later would be
+  // permanently told "Pali not detected" until a hard reload (Codex
+  // PR10 P2). Instead: seed from the synchronous check, then poll
+  // briefly so the panel flips to armed the moment the provider
+  // appears. We intentionally only watch for the transition from
+  // absent→present; once we've seen Pali we trust it for the rest of
+  // the mount (the provider doesn't disappear without a page reload).
+  const [paliInstalled, setPaliInstalled] = useState(() => {
     try {
       return isPaliAvailable();
     } catch (_e) {
       return false;
     }
-  }, []);
+  });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -106,6 +116,35 @@ export default function PayWithPaliPanel({
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (paliInstalled) return undefined;
+    let cancelled = false;
+    const started = Date.now();
+    const WINDOW_MS = 10_000;
+    const INTERVAL_MS = 300;
+    const handle = setInterval(() => {
+      if (cancelled) return;
+      let present = false;
+      try {
+        present = isPaliAvailable();
+      } catch (_e) {
+        present = false;
+      }
+      if (present) {
+        clearInterval(handle);
+        if (!cancelled && mountedRef.current) setPaliInstalled(true);
+        return;
+      }
+      if (Date.now() - started >= WINDOW_MS) {
+        clearInterval(handle);
+      }
+    }, INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [paliInstalled]);
 
   useEffect(() => {
     if (!paliInstalled || !proposalServiceImpl) {
@@ -382,20 +421,25 @@ export default function PayWithPaliPanel({
 export function PaliAttachFailedBlock({ txid, error, onRetryAttach }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
-    try {
-      if (
-        typeof navigator !== 'undefined' &&
-        navigator.clipboard &&
-        typeof navigator.clipboard.writeText === 'function'
-      ) {
-        await navigator.clipboard.writeText(txid);
-      }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch (_e) {
-      // Clipboard API unavailable / denied. The txid is still
-      // shown verbatim in the UI for manual copy.
+    // Only flash "Copied!" when the clipboard write actually succeeded
+    // (Codex PR14 P3). In environments where the Clipboard API is
+    // missing or blocked, the txid is already rendered verbatim in the
+    // <code> block for manual copy — claiming we copied it when we
+    // didn't is actively misleading in this burn-recovery path.
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.clipboard ||
+      typeof navigator.clipboard.writeText !== 'function'
+    ) {
+      return;
     }
+    try {
+      await navigator.clipboard.writeText(txid);
+    } catch (_e) {
+      return;
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
   }
   const code = (error && (error.code || error.message)) || 'attach_failed';
   return (

@@ -90,6 +90,43 @@ describe('PayWithPaliPanel', () => {
     expect(api.getGovernanceNetwork).not.toHaveBeenCalled();
   });
 
+  test('picks up Pali when provider is injected after mount', async () => {
+    // Pali's content script can finish injecting `window.pali` a beat
+    // after React mounts this panel (common on cold deep-link nav).
+    // The panel must flip from "render nothing" to the armed panel
+    // within the poll window; otherwise users would need a hard reload.
+    jest.useFakeTimers();
+    try {
+      const api = buildHappyApi();
+      const { container } = render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+      // First commit: Pali absent -> panel renders null.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(container).toBeEmptyDOMElement();
+
+      installPali(happyPaliRequest('d'.repeat(64)));
+
+      // Drive the 300ms poll + flush the probe effect that follows.
+      await act(async () => {
+        jest.advanceTimersByTime(400);
+        await Promise.resolve();
+      });
+      jest.useRealTimers();
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).toBeInTheDocument()
+      );
+    } finally {
+      if (jest.isMockFunction(setTimeout)) jest.useRealTimers();
+    }
+  });
+
   test('disables the button and shows hint when server disables the path', async () => {
     installPali(jest.fn());
     const api = buildHappyApi();
@@ -443,6 +480,52 @@ describe('PayWithPaliPanel', () => {
       // No side effects on the submission flow.
       expect(api.buildCollateralPsbt).toHaveBeenCalledTimes(1);
       expect(api.attachCollateral).toHaveBeenCalledTimes(1);
+      // Write succeeded -> we may advertise the copy.
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-attach-copy-txid')).toHaveTextContent(
+          /copied/i
+        )
+      );
+    });
+
+    test('Copy TXID stays silent when the Clipboard API is unavailable', async () => {
+      // Codex PR14 P3: don't flash "Copied!" unless we actually
+      // copied anything — users in the attach-failed recovery path
+      // need the txid reliably, and a false positive would bury the
+      // fact that the API is blocked.
+      const TXID = 'a'.repeat(64);
+      installPali(happyPaliRequest(TXID));
+      const api = buildHappyApi();
+      api.attachCollateral.mockRejectedValue(
+        Object.assign(new Error('boom'), { code: 'http_error', status: 500 })
+      );
+      Object.defineProperty(navigator, 'clipboard', {
+        value: undefined,
+        configurable: true,
+      });
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-pay-button'));
+      });
+      await screen.findByTestId('pali-attach-failed');
+
+      const copyBtn = screen.getByTestId('pali-attach-copy-txid');
+      await act(async () => {
+        fireEvent.click(copyBtn);
+      });
+      // Button label must not flip to "Copied!" — the txid is
+      // shown verbatim in the alert body for manual selection.
+      expect(copyBtn).not.toHaveTextContent(/copied/i);
     });
   });
 });
