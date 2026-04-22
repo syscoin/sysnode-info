@@ -34,10 +34,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
+          # Intentionally no `cache: npm` — package-lock.json is
+          # gitignored in this repo (see .gitignore), and
+          # setup-node's npm cache requires a tracked lockfile.
 
       - name: Install
-        run: npm ci
+        # `npm install` rather than `npm ci` because this repo
+        # intentionally does NOT track package-lock.json. If that
+        # policy ever flips, switch this to `npm ci` + add
+        # `cache: npm` above.
+        run: npm install --no-audit --no-fund
 
       - name: Run tests
         # test:ci in package.json already forces --watchAll=false
