@@ -1011,4 +1011,151 @@ describe('NewProposal wizard', () => {
       );
     }
   );
+
+  test(
+    'clears "Couldn\'t load draft" banner when ?draft= is removed from URL (Codex round 13 P2)',
+    async () => {
+      // Regression: a failed ?draft=<id> load set loadError AND
+      // cleared draftId to null (via the catch branch). The
+      // !draftIdFromUrl branch then gated the loadError reset on
+      // `draftId != null`, so when the user navigated away from
+      // the failed draft URL to a bare /governance/new, the
+      // "Couldn't load draft" banner persisted on the fresh route
+      // with no draft context — misleading error state that made
+      // the page look broken even though nothing was being loaded.
+      // Fix: always clear loadError on the !draftIdFromUrl branch.
+      proposalService.getDraft.mockRejectedValue(
+        Object.assign(new Error('nope'), { code: 'not_found' })
+      );
+
+      let capturedHistory = null;
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new?draft=999']}>
+            <AuthProvider authService={makeAuthService()}>
+              <Switch>
+                <Route
+                  path="/governance/new"
+                  render={(props) => {
+                    capturedHistory = props.history;
+                    // eslint-disable-next-line global-require
+                    const NewProposalLocal =
+                      require('./NewProposal').default;
+                    return <NewProposalLocal />;
+                  }}
+                />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      // Banner shows once the failed fetch settles.
+      await waitFor(() => {
+        expect(screen.getByText(/Couldn't load draft/i)).toBeInTheDocument();
+      });
+
+      // Drop the ?draft= query (user decides to start fresh).
+      await act(async () => {
+        capturedHistory.replace('/governance/new');
+      });
+
+      // Banner must disappear — the route is no longer tied to any
+      // draft, so "couldn't load draft #NNN" is stale and wrong.
+      await waitFor(() => {
+        expect(
+          screen.queryByText(/Couldn't load draft/i)
+        ).not.toBeInTheDocument();
+      });
+    }
+  );
+
+  test(
+    'updateDraft sends explicit empty strings for cleared text fields so the backend clears them (Codex round 13 P2)',
+    async () => {
+      // Regression: prior behavior dropped empty text fields from
+      // the draft body entirely, so when a user resumed a draft,
+      // deleted e.g. `url`, and clicked Save, the PATCH omitted
+      // `url`. The backend kept the old stored value, while the
+      // UI marked the blank snapshot as saved. Reload then
+      // silently restored the deleted value. Fix: the update
+      // branch emits empty-string for cleared text fields so the
+      // PATCH actually clears them.
+      proposalService.getDraft.mockResolvedValue({
+        id: 77,
+        userId: 42,
+        name: 'resumed',
+        url: 'https://forum.syscoin.org/t/original',
+        paymentAddress: 'sys1qresumed1234567890',
+        paymentAmountSats: '100000000',
+        paymentCount: 1,
+        startEpoch: 1800000000,
+        endEpoch: 1802592000,
+      });
+      proposalService.updateDraft.mockResolvedValue({
+        id: 77,
+        userId: 42,
+        name: 'resumed',
+        url: '',
+        paymentAddress: 'sys1qresumed1234567890',
+        paymentAmountSats: '100000000',
+        paymentCount: 1,
+        startEpoch: 1800000000,
+        endEpoch: 1802592000,
+      });
+
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new?draft=77']}>
+            <AuthProvider authService={makeAuthService()}>
+              <Switch>
+                <Route
+                  path="/governance/new"
+                  render={() => {
+                    // eslint-disable-next-line global-require
+                    const NewProposalLocal =
+                      require('./NewProposal').default;
+                    return <NewProposalLocal />;
+                  }}
+                />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+
+      // Wait for the draft to load into the form.
+      await waitFor(() => {
+        expect(screen.getByTestId('wizard-field-name').value).toBe('resumed');
+        expect(screen.getByTestId('wizard-field-url').value).toBe(
+          'https://forum.syscoin.org/t/original'
+        );
+      });
+
+      // User deletes the url on step 1 (basics).
+      fireEvent.change(screen.getByTestId('wizard-field-url'), {
+        target: { value: '' },
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+
+      expect(proposalService.updateDraft).toHaveBeenCalledTimes(1);
+      const [calledId, body] = proposalService.updateDraft.mock.calls[0];
+      expect(calledId).toBe(77);
+      // The critical invariant: cleared text fields MUST be sent
+      // as explicit empty strings, NOT dropped from the body. Pre-
+      // round-13 code dropped the empty `url` key entirely, so the
+      // backend kept the old value and the user's delete was
+      // silently reverted on reload.
+      expect(body).toHaveProperty('url', '');
+      // Populated text fields still flow through untouched.
+      expect(body.name).toBe('resumed');
+      // paymentAddress was loaded and NOT cleared — should be
+      // included with its original value (forUpdate emits populated
+      // text fields as-is).
+      expect(body.paymentAddress).toBe('sys1qresumed1234567890');
+    }
+  );
 });

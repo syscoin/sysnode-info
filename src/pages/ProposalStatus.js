@@ -188,10 +188,25 @@ export default function ProposalStatus() {
   // banner from the old id doesn't carry over. `loading = true`
   // keeps the spinner up until the new load either resolves or
   // errors, which is the correct UX for a fresh navigation.
+  //
+  // Codex PR8 round 13 P2: extend this reset to ALL per-submission
+  // UI state — `deleteError` / `attachError` / `txidInput`. A
+  // failed delete or attach on submission #A sets an inline banner
+  // keyed to that row; if the user then opens submission #B, the
+  // banner would otherwise carry over even though it describes an
+  // action against a completely different row. Worse: `txidInput`
+  // holds a collateral TXID the user pasted into #A's form, and
+  // leaving it set on #B's render would prefill #B's attach box
+  // with the wrong txid, one "Submit" click away from an
+  // accidental cross-row attach attempt. Clearing all of them is
+  // the only safe default on route-id change.
   useEffect(() => {
     setSubmission(null);
     setError(null);
     setLoading(true);
+    setDeleteError(null);
+    setAttachError(null);
+    setTxidInput('');
   }, [id]);
 
   useEffect(() => {
@@ -226,8 +241,22 @@ export default function ProposalStatus() {
     // refusal by retrying, and we already cleared `submission` so
     // the full-page banner is up. Any OTHER error code is assumed
     // retryable (5xx, network blip, transient SQLITE_BUSY, etc.).
+    //
+    // Codex PR8 round 13 P3: `not_found` is also terminal for
+    // polling purposes. It surfaces when the submission row does
+    // not exist (never created, or deleted). The backend will
+    // never spontaneously materialise the row, so re-firing
+    // `getSubmission` every 60s just churns state, emits repeated
+    // log noise, and wastes a server round-trip per interval for
+    // every mounted stale tab. The user's only path to a valid
+    // view is to navigate to a different URL, which will retrigger
+    // `load()` via the [id] effect anyway.
     const errCode = error && error.code;
-    if (errCode === 'invalid_id' || errCode === 'forbidden') {
+    if (
+      errCode === 'invalid_id' ||
+      errCode === 'forbidden' ||
+      errCode === 'not_found'
+    ) {
       return undefined;
     }
     const delay =

@@ -830,4 +830,179 @@ describe('ProposalStatus', () => {
       ).toBeNull();
     }
   );
+
+  test(
+    'id change also clears deleteError / attachError / txidInput so action state does not bleed across submissions (Codex round 13 P2)',
+    async () => {
+      // Regression: the [id] reset effect previously cleared
+      // submission/error/loading only. deleteError, attachError,
+      // and txidInput are ALSO per-submission UI state, so
+      // leaving them set across navigations showed stale action
+      // banners on a different row AND — worse — prefilled the
+      // attach-collateral textbox on row B with a txid the user
+      // pasted into row A, one click away from accidentally
+      // attaching A's collateral to B.
+      proposalService.getSubmission.mockImplementation(async (reqId) => {
+        if (reqId === 100) {
+          return {
+            id: 100,
+            status: 'prepared',
+            name: 'first',
+            proposalHash: 'aa'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '100000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            dataHex: '7b2274797065223a317d',
+            timeUnix: 1800000000,
+            parentHash: '0',
+            revision: 1,
+          };
+        }
+        if (reqId === 200) {
+          return {
+            id: 200,
+            status: 'prepared',
+            name: 'second',
+            proposalHash: 'bb'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '200000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            dataHex: '7b2274797065223a317d',
+            timeUnix: 1800000000,
+            parentHash: '0',
+            revision: 1,
+          };
+        }
+        throw Object.assign(new Error('nope'), { code: 'not_found' });
+      });
+      // deleteSubmission rejects once (to populate deleteError on
+      // #100); we only need the rejection for #100's click.
+      proposalService.deleteSubmission.mockRejectedValueOnce(
+        Object.assign(new Error('oops'), { code: 'delete_failed' })
+      );
+
+      function Wrapper({ path }) {
+        return (
+          <MemoryRouter initialEntries={[path]} key={path}>
+            <AuthProvider authService={makeAuthService()}>
+              <Route
+                path="/governance/proposal/:id"
+                component={ProposalStatus}
+              />
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      }
+
+      let rerender;
+      await act(async () => {
+        const r = render(<Wrapper path="/governance/proposal/100" />);
+        rerender = r.rerender;
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-prepared')
+        ).toBeInTheDocument();
+      });
+
+      // 1) Type a txid into row #100's attach-collateral input.
+      const txidInput = screen.getByTestId('proposal-status-txid-input');
+      fireEvent.change(txidInput, { target: { value: 'ff'.repeat(32) } });
+      expect(txidInput.value).toBe('ff'.repeat(32));
+
+      // 2) Trigger a delete failure so deleteError is set.
+      // onDelete gates on window.confirm — stub it to accept.
+      const confirmSpy = jest
+        .spyOn(window, 'confirm')
+        .mockReturnValue(true);
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('proposal-status-delete'));
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-delete-error')
+        ).toBeInTheDocument();
+      });
+
+      // 3) Navigate to a different submission (id=200).
+      await act(async () => {
+        rerender(<Wrapper path="/governance/proposal/200" />);
+      });
+
+      // After the navigation and new fetch resolves, none of the
+      // per-submission UI state from #100 may survive:
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-prepared')
+        ).toBeInTheDocument();
+      });
+      // Delete error banner from #100 is gone.
+      expect(
+        screen.queryByTestId('proposal-status-delete-error')
+      ).toBeNull();
+      // Txid input is empty (not carrying over #100's paste).
+      expect(
+        screen.getByTestId('proposal-status-txid-input').value
+      ).toBe('');
+      confirmSpy.mockRestore();
+    }
+  );
+
+  test(
+    'not_found is non-retryable: polling does not re-fire getSubmission every interval (Codex round 13 P3)',
+    async () => {
+      // Regression: the polling short-circuit previously excluded
+      // only `invalid_id` and `forbidden`, leaving `not_found` to
+      // re-arm the 60s poll indefinitely for stale/deleted IDs.
+      // That's pointless (the backend won't materialise the row)
+      // and creates repeated error churn + wasted traffic for
+      // every stale tab. Fix: `not_found` is now also terminal in
+      // the poll guard.
+      jest.useFakeTimers();
+      proposalService.getSubmission.mockRejectedValue(
+        Object.assign(new Error('gone'), { code: 'not_found' })
+      );
+
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/proposal/999']}>
+            <AuthProvider authService={makeAuthService()}>
+              <Route
+                path="/governance/proposal/:id"
+                component={ProposalStatus}
+              />
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+      // Drain the initial promise.
+      await act(async () => {
+        for (let i = 0; i < 20; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await Promise.resolve();
+        }
+      });
+
+      expect(proposalService.getSubmission).toHaveBeenCalledTimes(1);
+
+      // Fast-forward past both the fast (1s) and slow (60s) poll
+      // intervals. A retryable error would have triggered at
+      // least one more call; `not_found` must not.
+      await act(async () => {
+        jest.advanceTimersByTime(120_000);
+        for (let i = 0; i < 20; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await Promise.resolve();
+        }
+      });
+
+      expect(proposalService.getSubmission).toHaveBeenCalledTimes(1);
+      jest.useRealTimers();
+    }
+  );
 });

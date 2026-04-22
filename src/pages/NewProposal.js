@@ -215,8 +215,19 @@ export default function NewProposal() {
         const blank = emptyForm();
         dispatch({ type: 'replace', form: blank, baseline: blank });
         setDraftId(null);
-        setLoadError(null);
       }
+      // Codex PR8 round 13 P2: always clear loadError on this
+      // transition, even when draftId was already null. A failed
+      // prior load wipes draftId to null inside the catch block
+      // below but leaves loadError set (so the error banner
+      // persists). If the user then drops the ?draft= query to
+      // start fresh, the old "Couldn't load draft #NN" banner
+      // would otherwise follow them onto the new-proposal route
+      // with no draft context, making the page look broken even
+      // though there is no draft being loaded. Hoisting this
+      // reset outside the `draftId != null` guard keeps the
+      // banner's lifecycle tied to the URL state.
+      setLoadError(null);
       return () => {};
     }
     // Codex PR8 round 3 P1: skip refetch when the draft is already
@@ -385,10 +396,16 @@ export default function NewProposal() {
     // baseline and the dirty-leave guard stops prompting for data
     // that was never persisted.
     const savedSnapshot = form;
-    const body = draftBodyFromForm(savedSnapshot);
+    // Codex PR8 round 13 P2: when updating an existing draft, the
+    // body must explicitly include cleared fields (empty-string for
+    // text, null for epochs) so the backend clears them. Create
+    // paths drop empties so a brand-new row isn't peppered with
+    // spurious "" columns; see draftBodyFromForm for the contract.
+    const isUpdate = draftId != null;
+    const body = draftBodyFromForm(savedSnapshot, { forUpdate: isUpdate });
     try {
       let result;
-      if (draftId) {
+      if (isUpdate) {
         result = await proposalService.updateDraft(draftId, body);
       } else {
         result = await proposalService.createDraft(body);

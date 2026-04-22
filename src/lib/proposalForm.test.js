@@ -342,7 +342,7 @@ describe('formsEqual', () => {
 });
 
 describe('draftBodyFromForm + prepareBodyFromForm', () => {
-  test('drops blank fields from the draft body', () => {
+  test('drops blank fields from the draft body (create path)', () => {
     const body = draftBodyFromForm({ ...emptyForm(), name: 'x' });
     expect(body).toEqual({ name: 'x', paymentCount: 1 });
   });
@@ -351,6 +351,76 @@ describe('draftBodyFromForm + prepareBodyFromForm', () => {
     const body = draftBodyFromForm({ ...emptyForm(), paymentAmount: '1.5' });
     expect(body.paymentAmountSats).toBe('150000000');
   });
+
+  // Codex PR8 round 13 P2: resuming an existing draft, clearing a
+  // text field (e.g. url), then hitting Save must PATCH the field
+  // as an explicit empty string so the backend clears the
+  // previously-stored value. Prior behavior dropped empty strings
+  // from the body, so the backend kept the old value while the UI
+  // marked the blank snapshot as "saved" — reload brought back the
+  // old text, silently discarding the user's explicit delete.
+  test(
+    'forUpdate=true: emits explicit empty strings for cleared text fields so PATCH clears them',
+    () => {
+      const body = draftBodyFromForm(
+        {
+          ...emptyForm(),
+          name: 'still has name',
+          url: '', // user cleared this
+          paymentAddress: '', // and this
+          paymentAmount: '1',
+          startEpoch: '',
+          endEpoch: '',
+        },
+        { forUpdate: true }
+      );
+      expect(body.name).toBe('still has name');
+      expect(body.url).toBe('');
+      expect(body.paymentAddress).toBe('');
+      // Epochs use explicit null (backend accepts null as clear;
+      // `Math.trunc(Number(''))` would be 0, which fails the
+      // start/end validators as a garbage value).
+      expect(body.startEpoch).toBeNull();
+      expect(body.endEpoch).toBeNull();
+    }
+  );
+
+  test(
+    'forUpdate=true preserves populated text fields as non-empty (no spurious clears)',
+    () => {
+      const body = draftBodyFromForm(
+        {
+          ...emptyForm(),
+          name: 'proposal',
+          url: 'https://example.org/p',
+          paymentAddress: 'sys1qabcdef1234567890',
+        },
+        { forUpdate: true }
+      );
+      expect(body.name).toBe('proposal');
+      expect(body.url).toBe('https://example.org/p');
+      expect(body.paymentAddress).toBe('sys1qabcdef1234567890');
+    }
+  );
+
+  test(
+    'forUpdate=false (create path) still drops blank text fields',
+    () => {
+      const body = draftBodyFromForm(
+        {
+          ...emptyForm(),
+          name: 'x',
+          url: '',
+          paymentAddress: '',
+        },
+        { forUpdate: false }
+      );
+      expect(body).not.toHaveProperty('url');
+      expect(body).not.toHaveProperty('paymentAddress');
+      expect(body).not.toHaveProperty('startEpoch');
+      expect(body).not.toHaveProperty('endEpoch');
+    }
+  );
 
   test('prepareBodyFromForm attaches draftId when provided', () => {
     const body = prepareBodyFromForm(

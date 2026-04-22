@@ -265,22 +265,55 @@ export function formsEqual(a, b) {
 // Body builder shared by the "save draft" and "update draft" flows.
 // Amounts are converted to sats-strings here rather than in the
 // component so the tests can pin the conversion matrix.
-export function draftBodyFromForm(form) {
+//
+// `forUpdate` distinguishes create-new from update-existing:
+//
+// - For CREATE, omit blank fields. The new draft row simply has no
+//   value for them (column stays empty/null). Sending `{ url: '' }`
+//   is equivalent but noisy.
+//
+// - For UPDATE (PATCH), blank fields MUST be sent as explicit empty
+//   strings or `null` so the backend can clear the previously-saved
+//   value. Dropping the key instead (the pre-round-13 behavior)
+//   silently kept the old stored value, while the UI snapshot now
+//   showed the empty field — so the "save" appeared to succeed but
+//   the user's explicit delete of e.g. `url` was discarded on
+//   reload. `normalizeDraftPatch` on the backend accepts empty
+//   strings for text fields and `null` for epochs as clears;
+//   payment amount has no "null" representation (0 is a real value,
+//   not a clear), so a blank amount is omitted — the wizard
+//   validation blocks progress past this screen anyway until the
+//   user enters a number.
+export function draftBodyFromForm(form, { forUpdate = false } = {}) {
   const out = {};
   const name = (form.name || '').trim();
-  if (name) out.name = name;
+  if (name || forUpdate) out.name = name;
   const url = (form.url || '').trim();
-  if (url) out.url = url;
+  if (url || forUpdate) out.url = url;
   const addr = (form.paymentAddress || '').trim();
-  if (addr) out.paymentAddress = addr;
+  if (addr || forUpdate) out.paymentAddress = addr;
   const sats = sysToSatsString((form.paymentAmount || '').trim());
   if (sats !== null) out.paymentAmountSats = sats;
   const count = Number(form.paymentCount);
   if (Number.isInteger(count) && count >= 1) out.paymentCount = count;
-  const start = Number(form.startEpoch);
-  if (Number.isInteger(start) && start > 0) out.startEpoch = start;
-  const end = Number(form.endEpoch);
-  if (Number.isInteger(end) && end > 0) out.endEpoch = end;
+  const startRaw = (form.startEpoch || '').toString().trim();
+  const start = Number(startRaw);
+  if (Number.isInteger(start) && start > 0) {
+    out.startEpoch = start;
+  } else if (forUpdate && !startRaw) {
+    // Explicit clear: only send when the string is empty on an
+    // update. A non-empty-but-invalid value (`"abc"`, `"-5"`) is
+    // ambiguous — we leave it out so the backend doesn't misread
+    // garbage typing-in-progress as "clear this column".
+    out.startEpoch = null;
+  }
+  const endRaw = (form.endEpoch || '').toString().trim();
+  const end = Number(endRaw);
+  if (Number.isInteger(end) && end > 0) {
+    out.endEpoch = end;
+  } else if (forUpdate && !endRaw) {
+    out.endEpoch = null;
+  }
   return out;
 }
 
