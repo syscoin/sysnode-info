@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Jest + build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json engines is ">=20 <24"; cover both active LTS
+        # lines so a bump in either doesn't silently break CI.
+        node: ['20', '22']
+
+    env:
+      CI: 'true'
+      # react-scripts build wraps any warning as an error under CI=true
+      # on its own, but some consumers of this action read DISABLE_ESLINT_PLUGIN.
+      # We intentionally keep lint errors failing the build.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Run tests
+        # test:ci in package.json already forces --watchAll=false
+        # and caps workers; don't reinvent that flag set here.
+        run: npm run test:ci
+
+      - name: Production build
+        # Smoke-test that the bundle still compiles on this Node
+        # version — covers things that unit tests won't catch
+        # (e.g. ESM/CJS interop regressions in new deps).
+        run: npm run build
