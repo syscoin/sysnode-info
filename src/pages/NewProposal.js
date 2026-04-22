@@ -627,7 +627,25 @@ export default function NewProposal() {
                 <button
                   type="button"
                   className="button button--ghost"
-                  onClick={saveDraft}
+                  // Codex PR8 round 6 P2: saveDraft() rethrows on
+                  // failure so onModalSave() (which awaits it) can
+                  // distinguish success from failure and keep the
+                  // unsaved-changes modal open on errors. A bare
+                  // `onClick={saveDraft}` binding makes this async
+                  // function's rejection an unhandled promise —
+                  // React does not attach a catch to event-handler
+                  // returns, so transient network / 4xx errors
+                  // bubble to the global `unhandledrejection`
+                  // listener (and pollute test logs / trigger any
+                  // error-reporting hook the host app installs).
+                  // Swallow here; the error is already surfaced in
+                  // `saveDraftError` state below, so user feedback
+                  // is unchanged.
+                  onClick={() => {
+                    saveDraft().catch(() => {
+                      /* already surfaced via setSaveDraftError */
+                    });
+                  }}
                   disabled={savingDraft}
                   data-testid="wizard-save-draft"
                 >

@@ -493,6 +493,61 @@ describe('NewProposal wizard', () => {
     }
   );
 
+  test(
+    'toolbar Save draft swallows rejections and surfaces saveDraftError (Codex round 6 P2)',
+    async () => {
+      // Regression: saveDraft() rethrows on failure so that
+      // onModalSave() (which awaits it) can keep the unsaved-changes
+      // modal open. The toolbar button, however, used to bind
+      // `onClick={saveDraft}` directly — that turns the async
+      // function's rejection into an unhandled promise because
+      // React never attaches a catch to event-handler return
+      // values. In production that hits the global
+      // `unhandledrejection` hook; in CI it fails the test suite
+      // under Jest's default handling. Fix wraps the call with a
+      // local `.catch(() => {})` because the error is already
+      // surfaced via `saveDraftError` state. Assert:
+      //   1. clicking Save does NOT produce an unhandled rejection
+      //   2. the visible save-error banner is still rendered
+      const rejections = [];
+      const handler = (ev) => rejections.push(ev.reason || ev);
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('unhandledrejection', handler);
+      }
+
+      proposalService.createDraft.mockRejectedValue(
+        Object.assign(new Error('transient 500'), { code: 'server_error' })
+      );
+      try {
+        await renderWizard();
+        await screen.findByTestId('wizard-panel-basics');
+        validBasics();
+
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('wizard-save-draft'));
+        });
+        // Let any microtasks settle so a bare unhandled rejection
+        // would actually surface before we assert.
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(proposalService.createDraft).toHaveBeenCalledTimes(1);
+        // Error banner is still shown to the user.
+        expect(
+          screen.getByText(/save failed/i)
+        ).toBeInTheDocument();
+        // No unhandled rejection leaked.
+        expect(rejections).toEqual([]);
+      } finally {
+        if (typeof window !== 'undefined' && window.removeEventListener) {
+          window.removeEventListener('unhandledrejection', handler);
+        }
+      }
+    }
+  );
+
   test('cold load with ?draft=<id> still fetches the server copy', async () => {
     // Sanity check: the guard in the draft-load effect must only
     // skip refetches when local `draftId` ALREADY matches the URL
