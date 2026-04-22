@@ -9,6 +9,9 @@ import React, {
 import { Link, useHistory, useLocation } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
+import PayWithPaliPanel, {
+  usePaliAvailable,
+} from '../components/PayWithPaliPanel';
 import UnsavedChangesModal from '../components/UnsavedChangesModal';
 import { useAuth } from '../context/AuthContext';
 import { proposalService } from '../lib/proposalService';
@@ -44,11 +47,12 @@ import { HEX64_RE } from '../lib/proposalService';
 //    — save draft?" flow, which is the single most-loved draft UX in
 //    the consumer web.
 //
-//  - Submit step is two lanes: Pali (stubbed for this PR — the module
-//    rejects payWithOpReturn with `pali_psbt_builder_not_wired`) and
-//    the manual Syscoin-Qt / syscoin-cli fallback. The copy makes
-//    clear that 150 SYS is BURNED (not refunded) and that 6
-//    confirmations are required before the backend auto-submits.
+//  - Submit step is three lanes: "Pay with Pali" (when the extension
+//    is installed and the backend exposes the PSBT endpoint), the
+//    manual Syscoin-Qt / syscoin-cli fallback, and the generic
+//    external-wallet OP_RETURN walkthrough. The copy makes clear
+//    that 150 SYS is BURNED (not refunded) and that 6 confirmations
+//    are required before the backend auto-submits.
 //
 //  - All state transitions are idempotent. Reloading the page at any
 //    point picks up the draft (or the prepared submission) and lets
@@ -726,6 +730,11 @@ export default function NewProposal() {
               attaching={attaching}
               attachError={attachError}
               onAttachCollateral={onAttachCollateral}
+              proposalServiceImpl={proposalService}
+              onPaliAttached={(txid) => {
+                if (!prepared || !prepared.submission) return;
+                history.push(`/governance/proposal/${prepared.submission.id}`);
+              }}
             />
           ) : null}
 
@@ -1284,12 +1293,22 @@ function SubmitStep({
   attaching,
   attachError,
   onAttachCollateral,
+  proposalServiceImpl,
+  onPaliAttached,
 }) {
   // IMPORTANT: every hook must run on every render regardless of
   // `prepared` — React's rules-of-hooks forbid conditional calls.
   // Compute the CLI command up-front with a safe fallback and only
   // branch the JSX below.
   const submission = prepared && prepared.submission;
+  // Track Pali visibility at the wizard level too so the sibling
+  // "Option B/C" manual-lane headings stay numbered correctly even
+  // when PayWithPaliPanel renders nothing (no A). Uses the same
+  // installed-now / installed-later poll as the panel, so labels
+  // flip in lockstep with panel appearance. Codex PR14 P3.
+  const paliPresent = usePaliAvailable();
+  const manualOptionLabel = paliPresent ? 'Option B' : 'Option A';
+  const walletOptionLabel = paliPresent ? 'Option C' : 'Option B';
   const cliCommand = useMemo(() => {
     if (!submission) return '';
     // Exactly matches the backend's hash inputs:
@@ -1351,7 +1370,13 @@ function SubmitStep({
         more to do on your end.
       </p>
 
-      <h3>Option A — Pay manually from Syscoin-Qt or syscoin-cli</h3>
+      <PayWithPaliPanel
+        submission={submission}
+        proposalServiceImpl={proposalServiceImpl}
+        onAttached={onPaliAttached}
+      />
+
+      <h3>{manualOptionLabel} — Pay manually from Syscoin-Qt or syscoin-cli</h3>
       <ol className="proposal-wizard__steps-list">
         <li>
           Open Syscoin-Qt's <em>Debug console</em> (or your CLI) and
@@ -1377,7 +1402,7 @@ function SubmitStep({
         </li>
       </ol>
 
-      <h3>Option B — Using a different wallet?</h3>
+      <h3>{walletOptionLabel} — Using a different wallet?</h3>
       <p>
         Any wallet that can send to an address with an extra{' '}
         <code>OP_RETURN</code> output works. Send{' '}
@@ -1435,6 +1460,7 @@ function SubmitStep({
     </div>
   );
 }
+
 
 function PayloadSizeMeter({ bytes }) {
   const pct = Math.min(100, Math.round((bytes / MAX_DATA_SIZE) * 100));
