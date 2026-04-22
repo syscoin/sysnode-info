@@ -16,9 +16,9 @@ import PayWithPaliPanel from './PayWithPaliPanel';
 // (auth, router, draft persistence) aren't relevant to the Pali
 // behaviour and would drag the test surface into unrelated territory.
 
-function installPali(request, { chainId = '0x39' } = {}) {
+function installPali(request) {
   Object.defineProperty(window, 'pali', {
-    value: { request, chainId },
+    value: { request },
     configurable: true,
     writable: true,
   });
@@ -220,5 +220,149 @@ describe('PayWithPaliPanel', () => {
     const err = await screen.findByTestId('pali-pay-error');
     expect(err).toHaveTextContent('not have enough SYS');
     expect(api.attachCollateral).not.toHaveBeenCalled();
+  });
+
+  // Codex PR14 P1: attach failure AFTER a successful burn must NOT
+  // surface the generic "Try again" (which re-runs buildPSBT +
+  // sys_signAndSend, double-burning 150 SYS). It must park in an
+  // attach-only retry state that preserves the txid.
+  describe('attach failure after successful broadcast (double-burn guard)', () => {
+    test('parks in attach_failed, preserves txid, "Retry attach" only hits attachCollateral', async () => {
+      const TXID = 'd'.repeat(64);
+      const request = happyPaliRequest(TXID);
+      installPali(request);
+      const api = buildHappyApi();
+      api.attachCollateral
+        .mockRejectedValueOnce(
+          Object.assign(new Error('boom'), {
+            code: 'http_error',
+            status: 503,
+          })
+        )
+        .mockResolvedValueOnce({ id: 7, status: 'awaiting_collateral' });
+      const onAttached = jest.fn();
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={onAttached}
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-pay-button'));
+      });
+
+      // Attach-failed UI appears, txid is shown, and the primary
+      // "Pay with Pali" button is DISABLED so the user cannot
+      // accidentally re-burn.
+      const panel = await screen.findByTestId('pali-attach-failed');
+      expect(panel).toBeInTheDocument();
+      expect(screen.getByTestId('pali-attach-txid')).toHaveTextContent(TXID);
+      expect(screen.getByTestId('pali-pay-button')).toBeDisabled();
+      // Generic "Try again" must NOT be rendered in this state.
+      expect(screen.queryByTestId('pali-pay-retry')).toBeNull();
+      // We only called buildPSBT + sys_signAndSend ONCE. The burn
+      // has happened exactly once.
+      expect(api.buildCollateralPsbt).toHaveBeenCalledTimes(1);
+      expect(
+        request.mock.calls.filter((c) => c[0].method === 'sys_signAndSend')
+      ).toHaveLength(1);
+      // Attach was tried once and failed.
+      expect(api.attachCollateral).toHaveBeenCalledTimes(1);
+      expect(api.attachCollateral).toHaveBeenLastCalledWith(7, TXID);
+
+      // Retry attach: no re-sign, just a second attachCollateral.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-attach-retry'));
+      });
+      await waitFor(() =>
+        expect(screen.getByText(/Paid/)).toBeInTheDocument()
+      );
+      expect(api.buildCollateralPsbt).toHaveBeenCalledTimes(1);
+      expect(
+        request.mock.calls.filter((c) => c[0].method === 'sys_signAndSend')
+      ).toHaveLength(1);
+      expect(api.attachCollateral).toHaveBeenCalledTimes(2);
+      expect(api.attachCollateral).toHaveBeenLastCalledWith(7, TXID);
+      expect(onAttached).toHaveBeenCalledWith(TXID);
+    });
+
+    test('retry attach that keeps failing stays in attach_failed, txid preserved', async () => {
+      const TXID = 'e'.repeat(64);
+      installPali(happyPaliRequest(TXID));
+      const api = buildHappyApi();
+      api.attachCollateral.mockRejectedValue(
+        Object.assign(new Error('boom'), { code: 'http_error', status: 500 })
+      );
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-pay-button'));
+      });
+      await screen.findByTestId('pali-attach-failed');
+
+      // Retry once more — still fails — stay in the same recovery
+      // state with the SAME txid still visible.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-attach-retry'));
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-attach-failed')).toBeInTheDocument()
+      );
+      expect(screen.getByTestId('pali-attach-txid')).toHaveTextContent(TXID);
+      expect(api.buildCollateralPsbt).toHaveBeenCalledTimes(1);
+      expect(api.attachCollateral).toHaveBeenCalledTimes(2);
+    });
+
+    test('Copy TXID button writes to clipboard without restarting the flow', async () => {
+      const TXID = 'f'.repeat(64);
+      installPali(happyPaliRequest(TXID));
+      const api = buildHappyApi();
+      api.attachCollateral.mockRejectedValue(
+        Object.assign(new Error('boom'), { code: 'http_error', status: 500 })
+      );
+      const writeText = jest.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      });
+
+      render(
+        <PayWithPaliPanel
+          submission={{ id: 7 }}
+          proposalServiceImpl={api}
+          onAttached={jest.fn()}
+        />
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('pali-pay-button')).not.toBeDisabled()
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-pay-button'));
+      });
+      await screen.findByTestId('pali-attach-failed');
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('pali-attach-copy-txid'));
+      });
+      expect(writeText).toHaveBeenCalledWith(TXID);
+      // No side effects on the submission flow.
+      expect(api.buildCollateralPsbt).toHaveBeenCalledTimes(1);
+      expect(api.attachCollateral).toHaveBeenCalledTimes(1);
+    });
   });
 });

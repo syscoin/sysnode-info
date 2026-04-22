@@ -120,36 +120,6 @@ export async function requestAccounts() {
   return paliRequest('sys_requestAccounts');
 }
 
-// Public: read the currently-connected chain without prompting. Used
-// by the wizard to warn users who are on the wrong network ("this
-// draft is mainnet, your wallet is on testnet").
-export async function getChainId() {
-  // Pali's Syscoin provider exposes this as a property on the object
-  // rather than a method call, but the spec-y way is also supported.
-  const p = readPali();
-  if (!p) {
-    const e = new Error('pali_unavailable');
-    e.code = 'pali_unavailable';
-    throw e;
-  }
-  if (typeof p.chainId === 'string' && p.chainId.length > 0) {
-    return p.chainId;
-  }
-  return paliRequest('eth_chainId');
-}
-
-// Public: prompt Pali to switch to a target chain id. Syscoin mainnet
-// is 0x39 (57 decimal). The method name is deliberately the same as
-// the EIP-3326 EVM path so Pali's internal routing keeps working.
-export async function switchChain(chainIdHex) {
-  if (typeof chainIdHex !== 'string' || !/^0x[0-9a-f]+$/i.test(chainIdHex)) {
-    const e = new Error('invalid_chain_id');
-    e.code = 'invalid_chain_id';
-    throw e;
-  }
-  return paliRequest('wallet_switchEthereumChain', [{ chainId: chainIdHex }]);
-}
-
 // Internal: accept whatever shape Pali's `sys_signAndSend` returns and
 // distill it down to a 64-hex txid. Historically Pali has shipped:
 //   - '<txid>'                                    (bare string)
@@ -182,29 +152,6 @@ function normalizeSignAndSendResult(result) {
   return candidate.toLowerCase();
 }
 
-// Compare the chainId Pali reports against the network the backend is
-// pinned to. Keeps the "switch Pali to Syscoin mainnet" copy in the
-// wizard short, one-shot, and correct.
-//
-// Syscoin's canonical chainIds:
-//   mainnet (UTXO) : '0x39'  (57 decimal)
-//   testnet (UTXO) : '0x40'  (64 decimal)
-//   mainnet (NEVM) : '0x39'  (57) — same as UTXO, but a different provider
-//   testnet (NEVM) : '0xcc'  (204) — again, different provider
-//
-// We only care about the UTXO side because `window.pali` IS the UTXO
-// provider. Any answer outside {'0x39','0x40'} means Pali is in
-// EVM-provider mode or on a non-Syscoin chain; the caller surfaces
-// that as `network_mismatch` with the target copy derived from the
-// server's networkKey.
-function chainIdMatchesServer(paliChainId, serverNetworkKey) {
-  if (typeof paliChainId !== 'string') return false;
-  const norm = paliChainId.toLowerCase();
-  if (serverNetworkKey === 'mainnet') return norm === '0x39';
-  if (serverNetworkKey === 'testnet') return norm === '0x40';
-  return false;
-}
-
 // Public: run the full Pali collateral-payment flow for a submission
 // that is still in `prepared` state. Returns `{ txid, feeSats }`.
 //
@@ -217,13 +164,31 @@ function chainIdMatchesServer(paliChainId, serverNetworkKey) {
 //   feeRate      : optional sat/vByte integer, clamped by the server
 //                  to 1..1000; omit to let the backend pick 10.
 //
+// Network check design: we intentionally do NOT do a client-side
+// chainId comparison here. Pali's UTXO provider exposes `chainId` as
+// a convention label (`0x${network.chainId.toString(16)}` — e.g.
+// `0x39` for mainnet, `0x1644` for testnet), but:
+//   * `window.pali.chainId` is null until the first
+//     `pali_chainChanged` notification fires, which has usually NOT
+//     happened on a cold page load. A null-fallback check gives us
+//     false confidence.
+//   * chainId on UTXO is a Pali UX label, not a consensus value.
+// The server, by contrast, validates the xpub's version bytes
+// (zpub/vpub) and the change address's bech32 HRP (sys/tsys) —
+// cryptographic facts about the key material. Those are both the
+// correct boundary and already implemented in
+// `lib/proposalPsbt.js::assertXpubMatchesNetwork`/`assertChangeAddress`,
+// so a wrong-network click lands as `network_mismatch` from the
+// server one round-trip later. We accept that extra RTT in exchange
+// for dropping a brittle client-side layer.
+//
 // Error taxonomy (all thrown with `.code` set):
 //   pali_unavailable       -> extension not installed / disabled
 //   pali_path_disabled     -> backend hasn't set SYSCOIN_BLOCKBOOK_URL
 //                             (the server returned 503 on the network
 //                             probe); UI should hide the button
-//   network_mismatch       -> Pali is on a chain the server doesn't
-//                             serve (UI copy depends on serverNetworkKey)
+//   network_mismatch       -> server detected xpub/address on a
+//                             different Syscoin network than it serves
 //   user_rejected          -> EIP-1193 4001 from the Pali popup
 //   unauthorized           -> EIP-1193 4100
 //   insufficient_funds     -> server 422 (shortfall attached via .cause)
@@ -293,32 +258,15 @@ export async function payProposalCollateralWithPali(
     throw e;
   }
 
-  // 3) Chain sanity check. We do this AFTER grabbing xpub/change so
-  //    the error copy can name the right target network (the xpub
-  //    prefix already hints at what Pali is currently on).
-  let paliChainId;
-  try {
-    paliChainId = await getChainId();
-  } catch (_err) {
-    // `getChainId` resolves lazily — if Pali hasn't injected its
-    // chainId yet we try once to read it via `eth_chainId` before
-    // giving up. A raw throw here means we have no way to verify;
-    // fall through to the server call and let the xpub-prefix check
-    // on the backend surface `network_mismatch` explicitly.
-    paliChainId = null;
-  }
-  if (paliChainId && !chainIdMatchesServer(paliChainId, serverNet.networkKey)) {
-    const e = new Error('network_mismatch');
-    e.code = 'network_mismatch';
-    e.detail = `pali:${paliChainId} vs server:${serverNet.networkKey}`;
-    throw e;
-  }
-
   notify('building');
 
-  // 4) Server builds the PSBT. This is where insufficient-funds /
+  // 3) Server builds the PSBT. This is where insufficient-funds /
   //    Blockbook-down / bad-xpub errors surface as typed error codes
   //    — we let them bubble up as-is so the caller can pick copy.
+  //    Network-mismatch is detected here (xpub version bytes +
+  //    change-address HRP against the server's pinned network); see
+  //    the doc-comment above for why we don't pre-flight on the
+  //    client.
   const built = await api.buildCollateralPsbt(submissionId, {
     xpub,
     changeAddress,
@@ -332,7 +280,7 @@ export async function payProposalCollateralWithPali(
 
   notify('awaiting_signature');
 
-  // 5) Pali signs + broadcasts. The extension takes `[ { psbt, assets } ]`
+  // 4) Pali signs + broadcasts. The extension takes `[ { psbt, assets } ]`
   //    as the params array — single-element tuple, matching the
   //    in-page provider shim.
   const signedResult = await paliRequest('sys_signAndSend', [built.psbt]);
@@ -350,5 +298,4 @@ export async function payProposalCollateralWithPali(
 export const __internal = {
   translatePaliError,
   normalizeSignAndSendResult,
-  chainIdMatchesServer,
 };

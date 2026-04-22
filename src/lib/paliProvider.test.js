@@ -3,8 +3,6 @@ import {
   getPali,
   paliRequest,
   requestAccounts,
-  getChainId,
-  switchChain,
   payProposalCollateralWithPali,
   __internal,
 } from './paliProvider';
@@ -139,56 +137,6 @@ describe('requestAccounts', () => {
   });
 });
 
-describe('getChainId', () => {
-  afterEach(uninstallPaliMock);
-
-  test('returns the provider property when set (no request roundtrip)', async () => {
-    const request = jest.fn();
-    installPaliMock({ request, chainId: '0x39' });
-    await expect(getChainId()).resolves.toBe('0x39');
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  test('falls back to eth_chainId when the property is missing', async () => {
-    const request = jest.fn().mockResolvedValue('0x39');
-    installPaliMock({ request, chainId: null });
-    await expect(getChainId()).resolves.toBe('0x39');
-    expect(request).toHaveBeenCalledWith({ method: 'eth_chainId' });
-  });
-
-  test('throws pali_unavailable when no provider', async () => {
-    await expect(getChainId()).rejects.toMatchObject({
-      code: 'pali_unavailable',
-    });
-  });
-});
-
-describe('switchChain', () => {
-  afterEach(uninstallPaliMock);
-
-  test('rejects malformed chain ids without a round trip', async () => {
-    const request = jest.fn();
-    installPaliMock({ request });
-    await expect(switchChain('57')).rejects.toMatchObject({
-      code: 'invalid_chain_id',
-    });
-    await expect(switchChain('0xZZ')).rejects.toMatchObject({
-      code: 'invalid_chain_id',
-    });
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  test('forwards valid chain id via wallet_switchEthereumChain', async () => {
-    const request = jest.fn().mockResolvedValue(null);
-    installPaliMock({ request });
-    await switchChain('0x39');
-    expect(request).toHaveBeenCalledWith({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId: '0x39' }],
-    });
-  });
-});
-
 describe('normalizeSignAndSendResult', () => {
   const { normalizeSignAndSendResult } = __internal;
   const hex = 'a'.repeat(64);
@@ -218,27 +166,6 @@ describe('normalizeSignAndSendResult', () => {
       /bad_signer_response/
     );
     expect(() => normalizeSignAndSendResult(null)).toThrow(/bad_signer_response/);
-  });
-});
-
-describe('chainIdMatchesServer', () => {
-  const { chainIdMatchesServer } = __internal;
-
-  test('mainnet server matches 0x39 (case insensitive)', () => {
-    expect(chainIdMatchesServer('0x39', 'mainnet')).toBe(true);
-    expect(chainIdMatchesServer('0X39', 'mainnet')).toBe(true);
-    expect(chainIdMatchesServer('0x40', 'mainnet')).toBe(false);
-  });
-
-  test('testnet server matches 0x40', () => {
-    expect(chainIdMatchesServer('0x40', 'testnet')).toBe(true);
-    expect(chainIdMatchesServer('0x39', 'testnet')).toBe(false);
-  });
-
-  test('returns false for unknown server keys or missing pali chainId', () => {
-    expect(chainIdMatchesServer('0x39', 'devnet')).toBe(false);
-    expect(chainIdMatchesServer(null, 'mainnet')).toBe(false);
-    expect(chainIdMatchesServer(undefined, 'mainnet')).toBe(false);
   });
 });
 
@@ -278,7 +205,7 @@ describe('payProposalCollateralWithPali', () => {
           throw new Error(`unexpected method ${method}`);
       }
     });
-    installPaliMock({ request: requestOverride || request, chainId: '0x39' });
+    installPaliMock({ request: requestOverride || request });
     return requestOverride || request;
   }
 
@@ -330,28 +257,20 @@ describe('payProposalCollateralWithPali', () => {
     expect(api.buildCollateralPsbt).not.toHaveBeenCalled();
   });
 
-  test('throws network_mismatch when Pali chainId does not match server', async () => {
-    const request = jest.fn(async ({ method }) => {
-      switch (method) {
-        case 'sys_requestAccounts':
-          return ['addr'];
-        case 'sys_getPublicKey':
-          return 'zpub6q'.padEnd(30, 'a');
-        case 'sys_getChangeAddress':
-          return 'sys1qchange';
-        default:
-          throw new Error(`unexpected method ${method}`);
-      }
+  test('propagates server-side network_mismatch verbatim', async () => {
+    // Wrong-network detection is the server's job (xpub version
+    // bytes + change-address HRP). We just confirm the code bubbles
+    // up unchanged so the UI can pick the right copy.
+    installHappyPali();
+    const err = Object.assign(new Error('xpub on wrong network'), {
+      code: 'network_mismatch',
     });
-    installPaliMock({ request, chainId: '0x40' });
-    const api = buildApi();
+    const api = buildApi({
+      buildCollateralPsbt: jest.fn().mockRejectedValue(err),
+    });
     await expect(payProposalCollateralWithPali(1, api)).rejects.toMatchObject({
       code: 'network_mismatch',
     });
-    expect(api.buildCollateralPsbt).not.toHaveBeenCalled();
-    expect(request).not.toHaveBeenCalledWith(
-      expect.objectContaining({ method: 'sys_signAndSend' })
-    );
   });
 
   test('bubbles user_rejected from sys_signAndSend', async () => {
@@ -369,7 +288,7 @@ describe('payProposalCollateralWithPali', () => {
           throw new Error(`unexpected method ${method}`);
       }
     });
-    installPaliMock({ request, chainId: '0x39' });
+    installPaliMock({ request });
     const api = buildApi();
     await expect(payProposalCollateralWithPali(7, api)).rejects.toMatchObject({
       code: 'user_rejected',
@@ -406,7 +325,7 @@ describe('payProposalCollateralWithPali', () => {
           throw new Error(`unexpected method ${method}`);
       }
     });
-    installPaliMock({ request, chainId: '0x39' });
+    installPaliMock({ request });
     const api = buildApi();
     await expect(payProposalCollateralWithPali(5, api)).rejects.toMatchObject({
       code: 'bad_signer_response',
@@ -414,7 +333,7 @@ describe('payProposalCollateralWithPali', () => {
   });
 
   test('asserts API shape: missing methods throw synchronously (as a rejection)', async () => {
-    installPaliMock({ request: jest.fn(), chainId: '0x39' });
+    installPaliMock({ request: jest.fn() });
     await expect(
       payProposalCollateralWithPali(1, { buildCollateralPsbt: () => {} })
     ).rejects.toThrow(/buildCollateralPsbt \+ getGovernanceNetwork/);

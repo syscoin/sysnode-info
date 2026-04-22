@@ -27,7 +27,18 @@ import {
 // State machine (see plan PR10):
 //   idle -> connecting -> building -> awaiting_signature -> attaching -> attached
 //     \_________________________________________________________________/
-//                                  |-> failed (any step) -> idle via Retry
+//                                  |-> failed (pre-sign error) -> idle via Retry
+//                                  |-> attach_failed (post-broadcast) -> attach_retry
+//
+// CRITICAL (Codex PR14 P1): the transition to `failed` vs
+// `attach_failed` is load-bearing. Once `sys_signAndSend` returns a
+// txid, the 150 SYS is ALREADY burned on-chain — retrying the full
+// flow would build a second PSBT and burn a second 150 SYS for the
+// same submission. When attachCollateral fails after a successful
+// broadcast, we park in `attach_failed` with the txid preserved,
+// and the only recovery affordance is "Retry attach" (which re-
+// runs just the DB write) plus a "Copy TXID" escape hatch so the
+// user can paste into the manual form if our backend stays down.
 //
 // `attached` is terminal — we call onAttached(txid), which the caller
 // uses to either redirect to the status page (wizard) or refresh the
@@ -55,6 +66,11 @@ export default function PayWithPaliPanel({
 }) {
   const [phase, setPhase] = useState('idle');
   const [error, setError] = useState(null);
+  // Txid stashed when broadcast succeeded but attach failed.
+  // Consumed by onRetryAttach + rendered in attach_failed copy so
+  // the user has an escape hatch to manually attach if our attach
+  // endpoint is persistently down.
+  const [pendingTxid, setPendingTxid] = useState(null);
   const [networkProbe, setNetworkProbe] = useState({
     loading: true,
     enabled: false,
@@ -133,14 +149,26 @@ export default function PayWithPaliPanel({
     networkProbe.loading ||
     !networkProbe.enabled ||
     pending ||
-    phase === 'attached';
+    phase === 'attached' ||
+    // Pay button is locked while a successful broadcast is awaiting
+    // its DB attach; we do NOT want the user to press "Pay" again
+    // and double-burn.
+    phase === 'attach_failed';
 
   async function onClick() {
     if (!submission) return;
     setError(null);
+    setPendingTxid(null);
     setPhase('connecting');
+    // Split the flow into two explicit stages: (1) the
+    // broadcast-capable steps that could burn 150 SYS on the chain,
+    // and (2) the DB attach. A failure inside (1) is safe to retry
+    // from scratch (no on-chain state produced). A failure inside
+    // (2) means the burn happened; restarting the flow would double
+    // it, so we park in attach_failed with the txid preserved.
+    let txid;
     try {
-      const { txid } = await payProposalCollateralWithPali(
+      ({ txid } = await payProposalCollateralWithPali(
         submission.id,
         proposalServiceImpl,
         {
@@ -149,23 +177,58 @@ export default function PayWithPaliPanel({
             setPhase(nextPhase);
           },
         }
-      );
-      if (!mountedRef.current) return;
-      setPhase('attaching');
-      await proposalServiceImpl.attachCollateral(submission.id, txid);
-      if (!mountedRef.current) return;
-      setPhase('attached');
-      if (typeof onAttached === 'function') onAttached(txid);
+      ));
     } catch (err) {
       if (!mountedRef.current) return;
       setPhase('failed');
       setError(err);
+      return;
     }
+    if (!mountedRef.current) return;
+    setPhase('attaching');
+    try {
+      await proposalServiceImpl.attachCollateral(submission.id, txid);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      // Broadcast already landed (txid is a real on-chain tx).
+      // Stash it and enter the recovery-only state; "Pay with Pali"
+      // is no longer a valid action for this submission.
+      setPendingTxid(txid);
+      setPhase('attach_failed');
+      setError(err);
+      return;
+    }
+    if (!mountedRef.current) return;
+    setPhase('attached');
+    if (typeof onAttached === 'function') onAttached(txid);
   }
 
   function onRetry() {
     setError(null);
+    setPendingTxid(null);
     setPhase('idle');
+  }
+
+  // Post-broadcast retry: re-runs ONLY the attach step against the
+  // stashed txid. The on-chain tx already exists; we just need the
+  // backend row to reflect that. No Pali roundtrip. No double-burn.
+  async function onRetryAttach() {
+    if (!submission || !pendingTxid) return;
+    setError(null);
+    setPhase('attaching');
+    try {
+      await proposalServiceImpl.attachCollateral(submission.id, pendingTxid);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setPhase('attach_failed');
+      setError(err);
+      return;
+    }
+    if (!mountedRef.current) return;
+    setPhase('attached');
+    const finalTxid = pendingTxid;
+    setPendingTxid(null);
+    if (typeof onAttached === 'function') onAttached(finalTxid);
   }
 
   let statusLine = null;
@@ -231,9 +294,88 @@ export default function PayWithPaliPanel({
         </p>
       ) : null}
       {statusLine}
-      {error ? (
+      {phase === 'attach_failed' && pendingTxid ? (
+        <PaliAttachFailedBlock
+          txid={pendingTxid}
+          error={error}
+          onRetryAttach={onRetryAttach}
+        />
+      ) : error ? (
         <PaliErrorBlock error={error} onRetry={onRetry} />
       ) : null}
+    </div>
+  );
+}
+
+// PaliAttachFailedBlock — shown ONLY when Pali has already broadcast
+// the 150 SYS burn but our /attach-collateral call failed (transient
+// 5xx, network blip, etc.). The only primary affordance is "Retry
+// attach" (no re-sign). A secondary affordance copies the txid so
+// the user can paste it into the manual form if our backend stays
+// down — critically, NOT a "Try again" that would kick off a second
+// broadcast.
+export function PaliAttachFailedBlock({ txid, error, onRetryAttach }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(txid);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch (_e) {
+      // Clipboard API unavailable / denied. The txid is still
+      // shown verbatim in the UI for manual copy.
+    }
+  }
+  const code = (error && (error.code || error.message)) || 'attach_failed';
+  return (
+    <div
+      className="auth-alert auth-alert--warning"
+      role="alert"
+      data-testid="pali-attach-failed"
+    >
+      <p>
+        <strong>Your 150 SYS burn broadcast successfully</strong>, but
+        we couldn't record it against your proposal. Your funds are
+        safe on-chain — we just need to reconcile the TXID.
+      </p>
+      <p className="proposal-wizard__pali-txid" data-testid="pali-attach-txid">
+        <code>{txid}</code>
+      </p>
+      <p>
+        Click <em>Retry attach</em> to try again — this will NOT
+        broadcast another transaction. If the problem persists, copy
+        the TXID and paste it into the manual form below.
+      </p>
+      <div className="proposal-wizard__pali-attach-actions">
+        <button
+          type="button"
+          className="button button--primary button--small"
+          onClick={onRetryAttach}
+          data-testid="pali-attach-retry"
+        >
+          Retry attach
+        </button>
+        <button
+          type="button"
+          className="button button--ghost button--small"
+          onClick={copy}
+          data-testid="pali-attach-copy-txid"
+        >
+          {copied ? 'Copied!' : 'Copy TXID'}
+        </button>
+      </div>
+      <p
+        className="proposal-wizard__pali-attach-hint"
+        data-testid="pali-attach-error-code"
+      >
+        Attach error: {code}
+      </p>
     </div>
   );
 }
