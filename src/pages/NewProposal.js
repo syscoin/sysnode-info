@@ -1042,11 +1042,13 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
 }
 
 // Approximate cadence of Syscoin governance superblocks — 30 days,
-// roughly. The on-chain cadence is ~16,560 blocks with a 60s block
-// target, so the REAL gap between any two superblocks can drift a
-// few hours depending on network hash-rate. We surface this number
-// as a planning-grade estimate ONLY; pairing every rendered date
-// with a "~" prefix and a caveat in the copy keeps us honest.
+// roughly. Mainnet consensus sets `nSuperblockCycle = 17520` blocks
+// at a 150-second (2.5-minute) block target, which works out to
+// 17520 * 150 = 2,628,000 s ≈ 30.42 days. The REAL gap between any
+// two superblocks still drifts a few hours either way depending on
+// network hash-rate, so we surface this number as a planning-grade
+// estimate ONLY; pairing every rendered date with a "~" prefix and
+// a caveat in the copy keeps us honest.
 //
 // Kept as a module constant (not a backend-fed value) because the
 // wizard is a pre-submission planning surface — the user is
