@@ -452,6 +452,47 @@ describe('NewProposal wizard', () => {
     }
   );
 
+  test(
+    'submission_exists redirect is pre-authorised via allowedPathRef and does not pop the leave-modal (Codex round 5 P2)',
+    async () => {
+      // Regression: when /prepare comes back with `submission_exists`
+      // (another tab/device already prepared this payload, or a
+      // previous prepare landed but the client never navigated away),
+      // the wizard pushes the user to the existing submission's
+      // status page. In that branch we deliberately do NOT flip the
+      // baseline via `mark_saved` — the draft was not consumed this
+      // call — so the form is still dirty relative to pristine. The
+      // block callback would therefore pop the unsaved-changes modal
+      // in front of a legitimate redirect. Fix: whitelist the exact
+      // target via allowedPathRef before calling history.push.
+      proposalService.prepare.mockRejectedValue(
+        Object.assign(new Error('submission_exists'), {
+          code: 'submission_exists',
+          details: { id: 123 },
+        })
+      );
+
+      const { routeSeen } = await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-prepare'));
+      });
+
+      await waitFor(() => {
+        expect(routeSeen.last).toBe('/governance/proposal/123');
+      });
+      // The leave-guard must NOT have intercepted this redirect.
+      expect(screen.queryByTestId('unsaved-modal')).toBeNull();
+    }
+  );
+
   test('cold load with ?draft=<id> still fetches the server copy', async () => {
     // Sanity check: the guard in the draft-load effect must only
     // skip refetches when local `draftId` ALREADY matches the URL

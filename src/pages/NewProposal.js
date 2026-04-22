@@ -454,7 +454,19 @@ export default function NewProposal() {
       // If the backend says "you already prepared this", pivot to
       // the status page for the existing submission.
       if (err && err.code === 'submission_exists' && err.details && err.details.id) {
-        history.push(`/governance/proposal/${err.details.id}`);
+        // Codex PR8 round 5 P2: pre-authorise this redirect too.
+        // Unlike the success path above, we didn't dispatch
+        // `mark_saved`/`replace baseline` here — the draft wasn't
+        // consumed server-side — so the form is still dirty and
+        // the block callback would otherwise pop the unsaved-
+        // changes modal in front of what is a legitimate
+        // "your prior prepare already took; here's its status
+        // page" redirect. Whitelisting the exact path is safer
+        // than flipping the dirty flag because the draft state
+        // really is unsaved relative to the pristine baseline.
+        const nextPath = `/governance/proposal/${err.details.id}`;
+        allowedPathRef.current = nextPath;
+        history.push(nextPath);
       }
     } finally {
       setPreparing(false);
