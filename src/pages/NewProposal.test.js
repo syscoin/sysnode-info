@@ -661,6 +661,102 @@ describe('NewProposal wizard', () => {
     }
   );
 
+  test(
+    'Discard in the leave modal preserves the saved server draft and only reverts unsaved edits (Codex round 8 P1)',
+    async () => {
+      // Regression: `discardDraft()` used to unconditionally call
+      // `proposalService.deleteDraft(draftId)` whenever a draftId
+      // existed. That meant the common flow:
+      //   - resume an existing saved draft
+      //   - edit a field
+      //   - navigate away
+      //   - pick "Discard" in the unsaved-changes modal
+      // silently deleted the entire draft from the server, so the
+      // user lost previously-saved work and could no longer resume
+      // it from the drafts list. The correct semantics are "throw
+      // away my recent edits, but keep the persisted draft" — the
+      // leave-modal's Discard button is NOT a delete button.
+      //
+      // This test:
+      //   1. Cold-loads the wizard with ?draft=9 so the existing
+      //      server draft is hydrated as both `form` and `baseline`.
+      //   2. Edits the name field (flips dirty=true).
+      //   3. Triggers a navigation away to a non-whitelisted path.
+      //   4. Clicks Discard in the unsaved-changes modal.
+      //   5. Asserts that deleteDraft was NOT called, and the form
+      //      reverted to the saved baseline value.
+      proposalService.getDraft.mockResolvedValue({
+        id: 9,
+        userId: 42,
+        name: 'server-saved-name',
+        url: 'https://forum.syscoin.org/t/server-saved',
+        paymentAmountSats: '0',
+        paymentCount: 1,
+      });
+
+      let capturedHistory = null;
+      function HistoryGrabber() {
+        // eslint-disable-next-line global-require
+        const { useHistory } = require('react-router-dom');
+        capturedHistory = useHistory();
+        return null;
+      }
+
+      const svc = makeAuthService();
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new?draft=9']}>
+            <AuthProvider authService={svc}>
+              <LocationDisplay />
+              <HistoryGrabber />
+              <Switch>
+                <Route path="/governance/new" component={NewProposal} />
+                <Route render={() => <div>elsewhere</div>} />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+      // Wait for the server draft to land in the form.
+      await waitFor(() => {
+        expect(screen.getByTestId('wizard-field-name').value).toBe(
+          'server-saved-name'
+        );
+      });
+
+      // 2. User edits. Form becomes dirty relative to baseline.
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'unsaved-edit' },
+      });
+      expect(screen.getByTestId('wizard-field-name').value).toBe(
+        'unsaved-edit'
+      );
+
+      // 3. Navigate to a non-whitelisted path. The leave-guard pops.
+      await act(async () => {
+        capturedHistory.push('/somewhere-else');
+      });
+      const modal = await screen.findByTestId('unsaved-modal');
+      expect(modal).toBeInTheDocument();
+
+      // 4. Click Discard.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('unsaved-modal-discard'));
+      });
+
+      // 5a. The server-side draft MUST still exist — no delete call.
+      expect(proposalService.deleteDraft).not.toHaveBeenCalled();
+      // 5b. Local form is reverted to the saved baseline, not wiped.
+      //     (Wizard may have navigated to /somewhere-else now, so
+      //     the field may be unmounted. Check form value only if
+      //     wizard is still mounted.)
+      const stillMounted = screen.queryByTestId('wizard-field-name');
+      if (stillMounted) {
+        expect(stillMounted.value).toBe('server-saved-name');
+      }
+    }
+  );
+
   test('cold load with ?draft=<id> still fetches the server copy', async () => {
     // Sanity check: the guard in the draft-load effect must only
     // skip refetches when local `draftId` ALREADY matches the URL

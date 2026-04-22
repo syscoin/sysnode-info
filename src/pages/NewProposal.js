@@ -385,15 +385,29 @@ export default function NewProposal() {
   }
 
   async function discardDraft() {
+    // Codex PR8 round 8 P1: "Discard" in the unsaved-changes modal
+    // means "drop the edits I made in this session", NOT "permanently
+    // delete my saved draft". Previously this function unconditionally
+    // called `proposalService.deleteDraft(draftId)` whenever a
+    // draftId was present — so resuming an existing server-side
+    // draft, tweaking a field, then clicking Discard on the leave
+    // prompt would wipe the entire draft from the server. That turns
+    // a "throw away my recent keystrokes" action into permanent data
+    // loss and breaks the resume-on-another-device flow we explicitly
+    // promised users.
+    //
+    // Correct semantics:
+    //   - If the draft has a server-side row (draftId != null), the
+    //     last persisted `baseline` IS that row's content. Reverting
+    //     the local form to `baseline` reconciles the in-memory state
+    //     with what's on disk, drops `dirty`, and leaves the draft
+    //     intact so it's still listed/resumable.
+    //   - If there is NO server-side draft (user started fresh and
+    //     never saved), there is nothing to preserve; clear the local
+    //     form entirely so the wizard is reset for the next use.
     if (draftId) {
-      try {
-        await proposalService.deleteDraft(draftId);
-      } catch (err) {
-        // Swallow — user wants to abandon the draft locally either way.
-        // The leave modal surfaces a gentle "we couldn't clean up on
-        // the server" toast via the error slot.
-        console.warn('discardDraft failed:', err && err.code);
-      }
+      dispatch({ type: 'replace', form: baseline, baseline });
+      return;
     }
     dispatch({ type: 'replace', form: emptyForm(), baseline: emptyForm() });
     setDraftId(null);
