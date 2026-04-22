@@ -29,17 +29,19 @@ Sysnode is designed to make that information easier to read, easier to verify, a
 
 ## Data Source
 
-The frontend currently reads live dashboard data from the Sysnode backend API:
+The frontend reads live dashboard data from the Sysnode backend API. The default production build targets:
 
 ```text
 https://syscoin.dev
 ```
 
-The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. If you fork this project for another deployment, update the API base URL in:
+The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. For a fork or private deployment, override the API base URL at build time (no code change required):
 
-```text
-src/lib/api.js
+```bash
+REACT_APP_API_BASE=https://your-backend.example npm run build
 ```
+
+The value is read at build time by `src/lib/apiClient.js`; without it, development builds use `http://localhost:3001` and production builds use `https://syscoin.dev`.
 
 ## Getting Started
 
@@ -72,6 +74,10 @@ Run tests:
 ```bash
 npm test -- --watchAll=false
 ```
+
+## Full-stack deployment
+
+For a single-host deployment that runs this dashboard alongside the API backend and a Syscoin Core node (mainnet or testnet), see the **Full-stack test deployment** section of the [`sysnode-backend` README](https://github.com/syscoin/sysnode-backend#full-stack-test-deployment-single-host). It covers Node.js setup, Mailpit (open-source SMTP catcher) for verification-email testing, RPC cookie auth against a local `syscoind`, firewall rules, and `pm2` supervision.
 
 ## Project Structure
 
