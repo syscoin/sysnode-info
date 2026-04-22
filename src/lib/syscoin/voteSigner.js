@@ -1,4 +1,3 @@
-/* global BigInt */
 // Syscoin governance vote — client-side signer.
 //
 // Produces the 65-byte recoverable-ECDSA "vchSig" that Syscoin Core's

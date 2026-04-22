@@ -5,6 +5,7 @@ import DataState from '../components/DataState';
 import GovernanceActivity from '../components/GovernanceActivity';
 import GovernanceOpsHero from '../components/GovernanceOpsHero';
 import PageMeta from '../components/PageMeta';
+import ProposalsCreatedPanel from '../components/ProposalsCreatedPanel';
 import ProposalVoteModal from '../components/ProposalVoteModal';
 import { useAuth } from '../context/AuthContext';
 import useGovernanceData from '../hooks/useGovernanceData';
@@ -631,6 +632,7 @@ export default function Governance() {
               </p>
             </div>
           ) : null}
+          {isAuthenticated ? <ProposalsCreatedPanel /> : null}
           {isAuthenticated && stats ? (
             <div className="gov-auth-rail">
               <GovernanceOpsHero
