@@ -494,6 +494,119 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'edits typed while save is in flight remain dirty (baseline is the saved snapshot, not the live form) (Codex round 7 P1)',
+    async () => {
+      // Regression: `mark_saved` used to set
+      //   baseline = state.form
+      // at reducer-time. saveDraft snapshots the form BEFORE
+      // awaiting the server, then dispatches mark_saved AFTER. If
+      // the user keeps typing during that window, those new edits
+      // end up in `state.form` by the time the reducer runs and
+      // silently become the new baseline — dirty flips false and
+      // the leave-guard stops prompting for data the server never
+      // saw. Fix: callers now pass the saved snapshot explicitly
+      // via `action.baseline`, so only what was actually persisted
+      // becomes the new baseline.
+      //
+      // This test:
+      //   1. Clicks Save (snapshots name="snapshot-value").
+      //   2. While createDraft is still pending, types a new name.
+      //   3. Resolves createDraft.
+      //   4. Tries to navigate away to a non-whitelisted path and
+      //      asserts the unsaved-changes modal DOES appear (the
+      //      guard must still see the post-save edit as dirty).
+      let resolveCreate;
+      proposalService.createDraft.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveCreate = resolve;
+          })
+      );
+
+      // Capture history so we can simulate a non-whitelisted push.
+      let capturedHistory = null;
+      function HistoryGrabber() {
+        // eslint-disable-next-line global-require
+        const { useHistory } = require('react-router-dom');
+        capturedHistory = useHistory();
+        return null;
+      }
+
+      const svc = makeAuthService();
+      await act(async () => {
+        render(
+          <MemoryRouter initialEntries={['/governance/new']}>
+            <AuthProvider authService={svc}>
+              <LocationDisplay />
+              <HistoryGrabber />
+              <Switch>
+                <Route path="/governance/new" component={NewProposal} />
+                <Route render={() => <div>elsewhere</div>} />
+              </Switch>
+            </AuthProvider>
+          </MemoryRouter>
+        );
+      });
+      await screen.findByTestId('wizard-panel-basics');
+
+      // 1. Populate form and click Save. createDraft is pending.
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'snapshot-value' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-url'), {
+        target: { value: 'https://forum.syscoin.org/t/original' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-save-draft'));
+      });
+      expect(proposalService.createDraft).toHaveBeenCalledTimes(1);
+      expect(
+        proposalService.createDraft.mock.calls[0][0].name
+      ).toBe('snapshot-value');
+
+      // 2. User keeps typing while createDraft is in flight.
+      fireEvent.change(screen.getByTestId('wizard-field-name'), {
+        target: { value: 'post-save-edit' },
+      });
+
+      // 3. Resolve the save.
+      await act(async () => {
+        resolveCreate({
+          id: 42,
+          userId: 42,
+          name: 'snapshot-value',
+          url: 'https://forum.syscoin.org/t/original',
+          paymentAmountSats: '0',
+          paymentCount: 1,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // URL has the draft id (save completed end-to-end).
+      await waitFor(() => {
+        expect(screen.getByTestId('location-display').textContent).toBe(
+          '/governance/new?draft=42'
+        );
+      });
+
+      // 4. Critical invariant: the form is still dirty relative to
+      //    the saved snapshot. Attempt a non-whitelisted navigation
+      //    and assert the leave-guard kicks in.
+      act(() => {
+        capturedHistory.push('/somewhere-else');
+      });
+      // The leave-modal comes from UnsavedChangesModal (testid
+      // "unsaved-modal"). Pre-fix it would be absent because
+      // baseline silently absorbed "post-save-edit" and `dirty`
+      // went false.
+      expect(
+        await screen.findByTestId('unsaved-modal')
+      ).toBeInTheDocument();
+    }
+  );
+
+  test(
     'toolbar Save draft swallows rejections and surfaces saveDraftError (Codex round 6 P2)',
     async () => {
       // Regression: saveDraft() rethrows on failure so that

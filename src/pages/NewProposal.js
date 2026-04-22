@@ -79,7 +79,23 @@ function formReducer(state, action) {
       };
     }
     case 'mark_saved': {
-      return { ...state, baseline: state.form };
+      // Codex PR8 round 7 P1: the baseline MUST be the form snapshot
+      // we actually persisted, not the live `state.form`. `saveDraft`
+      // captures the form at call-time for the request body, awaits
+      // the server round-trip, then dispatches `mark_saved`. If the
+      // user keeps typing during that round-trip, `state.form` at
+      // reducer-time contains newer edits the server never saw — if
+      // we read `state.form` here, those unsaved edits silently
+      // become the new baseline, `dirty` flips false, and the
+      // history.block guard stops prompting for data that was never
+      // persisted. Callers now pass the saved snapshot explicitly
+      // via `action.baseline`; we fall back to `state.form` only if
+      // the caller omits it (preserves behaviour for any future call
+      // site that really does want "I just synced state.form to
+      // storage atomically").
+      const nextBaseline =
+        action.baseline != null ? action.baseline : state.form;
+      return { ...state, baseline: nextBaseline };
     }
     default:
       return state;
@@ -311,7 +327,15 @@ export default function NewProposal() {
   async function saveDraft() {
     setSavingDraft(true);
     setSaveDraftError(null);
-    const body = draftBodyFromForm(form);
+    // Codex PR8 round 7 P1: capture the form snapshot the server
+    // will actually see, so the post-await `mark_saved` dispatch
+    // installs *this* snapshot as the new baseline instead of
+    // whatever the user has typed into state.form in the meantime.
+    // Without this, post-click edits are silently absorbed into
+    // baseline and the dirty-leave guard stops prompting for data
+    // that was never persisted.
+    const savedSnapshot = form;
+    const body = draftBodyFromForm(savedSnapshot);
     try {
       let result;
       if (draftId) {
@@ -340,7 +364,7 @@ export default function NewProposal() {
         allowedPathRef.current = `${history.location.pathname}${nextSearch}${
           history.location.hash || ''
         }`;
-        dispatch({ type: 'mark_saved' });
+        dispatch({ type: 'mark_saved', baseline: savedSnapshot });
         history.replace({
           pathname: history.location.pathname,
           search: nextSearch,
@@ -349,7 +373,7 @@ export default function NewProposal() {
         return result;
       }
       // Sync baseline — we are no longer "dirty" relative to storage.
-      dispatch({ type: 'mark_saved' });
+      dispatch({ type: 'mark_saved', baseline: savedSnapshot });
       setDraftSavedAt(Date.now());
       return result;
     } catch (err) {
