@@ -1709,6 +1709,22 @@
 }
 
 /* -------------------------------------------------------------------------
+   auth-alert warning variant (PR 8)
+   Paired with .auth-alert above; used for soft-fail / stale-data
+   notices where the page still has usable content (e.g. a cached
+   submission panel) but a background refresh just failed. Less
+   alarming than the red error variant, but still unmistakably a
+   "something needs attention" colour so users don't read stale data
+   as authoritative.
+   ------------------------------------------------------------------------- */
+
+.auth-alert--warning {
+  background: rgba(214, 158, 46, 0.12);
+  border-color: rgba(214, 158, 46, 0.45);
+  color: #7a4e00;
+}
+
+/* -------------------------------------------------------------------------
    auth-toggle (PR 7)
    Checkbox row used by NotificationPreferencesCard. Styled as a
    flex-row so the native checkbox gets a generous 44×44 hit target

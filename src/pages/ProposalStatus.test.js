@@ -458,4 +458,171 @@ describe('ProposalStatus', () => {
       spy.mockRestore();
     }
   );
+
+  test(
+    'transient poll failure surfaces a stale-data banner while keeping the cached panel (Codex round 9 P2)',
+    async () => {
+      // Regression: load()'s catch left `submission` untouched but
+      // the only error banner was guarded by `!submission`, so a
+      // later failed poll (transient 5xx, network blip) rendered no
+      // feedback at all — users kept reading stale status as if the
+      // server were healthy. Fix: a new warning banner renders
+      // when both a cached submission AND a fresh error exist.
+      //
+      // Use fake timers BEFORE mount so the effect's scheduled
+      // setTimeout is captured by the mock clock (in jest 27's
+      // legacy fake timers, switching mid-test does not retarget
+      // already-scheduled real timers).
+      jest.useFakeTimers();
+      try {
+        proposalService.getSubmission
+          .mockResolvedValueOnce({
+            id: 55,
+            status: 'awaiting_collateral',
+            name: 'grant',
+            proposalHash: 'aa'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '100000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            collateralTxid: 'bb'.repeat(32),
+            collateralConfs: 3,
+          })
+          .mockRejectedValueOnce(
+            Object.assign(new Error('boom'), { code: 'server_error' })
+          );
+
+        await act(async () => {
+          render(
+            <MemoryRouter initialEntries={[`/governance/proposal/55`]}>
+              <AuthProvider authService={makeAuthService()}>
+                <Route
+                  path="/governance/proposal/:id"
+                  component={ProposalStatus}
+                />
+              </AuthProvider>
+            </MemoryRouter>
+          );
+        });
+
+        // Drain microtasks for mount + first getSubmission to resolve
+        // and React to commit the panel. Each async boundary inside
+        // the component (me() in AuthProvider, then getSubmission)
+        // needs its own microtask flush cycle.
+        for (let i = 0; i < 30; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await act(async () => {
+            await Promise.resolve();
+          });
+          if (screen.queryByTestId('proposal-status-panel')) break;
+        }
+        expect(
+          screen.getByTestId('proposal-status-panel')
+        ).toBeInTheDocument();
+
+        // Advance past POLL_FAST_MS (10s) so the scheduled poll
+        // fires the second (rejecting) getSubmission.
+        await act(async () => {
+          jest.advanceTimersByTime(15000);
+        });
+        for (let i = 0; i < 30; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await act(async () => {
+            await Promise.resolve();
+          });
+          if (screen.queryByTestId('proposal-status-stale-banner')) break;
+        }
+
+        // Cached panel is still visible (transient failures must
+        // not displace usable data) …
+        expect(
+          screen.getByTestId('proposal-status-panel')
+        ).toBeInTheDocument();
+        // … and the stale-data warning banner is shown with the
+        // error code so users know the data may be out of date.
+        expect(
+          screen.getByTestId('proposal-status-stale-banner')
+        ).toHaveTextContent(/server_error/);
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+  );
+
+  test(
+    'hard not_found clears cached submission and shows the full-page error (Codex round 9 P2)',
+    async () => {
+      // Regression companion to the stale-banner test above. If a
+      // later poll returns `not_found` (or `forbidden`), the
+      // submission is gone from the user's perspective and we must
+      // stop showing the cached panel — otherwise a deleted row
+      // keeps rendering as if it were live. Fix: on those two
+      // error codes, clear `submission` so the "Could not load"
+      // banner (gated by !submission) takes over.
+      jest.useFakeTimers();
+      try {
+        proposalService.getSubmission
+          .mockResolvedValueOnce({
+            id: 77,
+            status: 'awaiting_collateral', // 10s poll for a fast test
+            name: 'gone-soon',
+            proposalHash: 'aa'.repeat(32),
+            paymentAddress: 'sys1q',
+            paymentAmountSats: '100000000000',
+            paymentCount: 1,
+            startEpoch: 1,
+            endEpoch: 2,
+            collateralTxid: 'bb'.repeat(32),
+            collateralConfs: 3,
+          })
+          .mockRejectedValueOnce(
+            Object.assign(new Error('gone'), { code: 'not_found' })
+          );
+
+        await act(async () => {
+          render(
+            <MemoryRouter initialEntries={[`/governance/proposal/77`]}>
+              <AuthProvider authService={makeAuthService()}>
+                <Route
+                  path="/governance/proposal/:id"
+                  component={ProposalStatus}
+                />
+              </AuthProvider>
+            </MemoryRouter>
+          );
+        });
+        for (let i = 0; i < 30; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await act(async () => {
+            await Promise.resolve();
+          });
+          if (screen.queryByTestId('proposal-status-panel')) break;
+        }
+        expect(
+          screen.getByTestId('proposal-status-panel')
+        ).toBeInTheDocument();
+
+        await act(async () => {
+          jest.advanceTimersByTime(15000);
+        });
+        for (let i = 0; i < 30; i++) {
+          // eslint-disable-next-line no-await-in-loop
+          await act(async () => {
+            await Promise.resolve();
+          });
+          if (!screen.queryByTestId('proposal-status-panel')) break;
+        }
+
+        // Cached panel is gone; full-page "Could not load" banner
+        // takes over with the not_found code.
+        expect(
+          screen.queryByTestId('proposal-status-panel')
+        ).toBeNull();
+        expect(screen.getByRole('alert')).toHaveTextContent(/not_found/);
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+  );
 });

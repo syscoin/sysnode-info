@@ -139,6 +139,16 @@ export default function ProposalStatus() {
     } catch (err) {
       if (!mountedRef.current) return null;
       setError(err);
+      // Codex PR8 round 9 P2: if the submission has been deleted
+      // out from under us (another session, admin action, etc.),
+      // clear any cached copy so the page stops showing stale
+      // status data. Transient errors (5xx, offline) keep the
+      // cached submission and just raise the inline banner so
+      // users aren't punished for a momentary hiccup.
+      const code = err && err.code;
+      if (code === 'not_found' || code === 'forbidden') {
+        setSubmission(null);
+      }
       return null;
     } finally {
       if (mountedRef.current) setLoading(false);
@@ -274,6 +284,26 @@ export default function ProposalStatus() {
           {error && !submission ? (
             <div className="auth-alert auth-alert--error" role="alert">
               Could not load submission: {error.code || 'error'}
+            </div>
+          ) : null}
+          {/* Codex PR8 round 9 P2: when a later poll fails but we
+              still have cached submission data (common for
+              transient 5xx / network blips), surface the failure
+              so users don't keep reading stale status as if the
+              server were healthy. The cached panel still renders
+              below; this banner just flags that the displayed
+              data may be out-of-date. Hard-failure codes
+              (`not_found`, `forbidden`) clear `submission` above
+              and fall through to the "Could not load" banner. */}
+          {error && submission ? (
+            <div
+              className="auth-alert auth-alert--warning"
+              role="alert"
+              data-testid="proposal-status-stale-banner"
+            >
+              Could not refresh submission status ({error.code || 'error'}).
+              The details below may be out of date; we&rsquo;ll retry
+              automatically.
             </div>
           ) : null}
 
