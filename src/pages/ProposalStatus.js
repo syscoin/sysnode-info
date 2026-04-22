@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useHistory, useParams } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
+import PayWithPaliPanel from '../components/PayWithPaliPanel';
 import { useAuth } from '../context/AuthContext';
 import { COLLATERAL_FEE_SATS } from '../lib/proposalForm';
 import { proposalService, HEX64_RE } from '../lib/proposalService';
@@ -680,6 +681,30 @@ export default function ProposalStatus() {
                     This 150 SYS is a non-refundable burn required by
                     Syscoin Core for spam prevention — not a deposit.
                   </p>
+
+                  <PayWithPaliPanel
+                    submission={submission}
+                    proposalServiceImpl={proposalService}
+                    onAttached={async () => {
+                      // The panel's internal attachCollateral call
+                      // already flipped the row to
+                      // `awaiting_collateral` server-side; pull a
+                      // fresh snapshot so the UI jumps to the
+                      // confirmation progress bar without waiting for
+                      // the next 60s poll tick.
+                      if (!mountedRef.current) return;
+                      try {
+                        const fresh = await proposalService.getSubmission(
+                          submission.id
+                        );
+                        if (!mountedRef.current) return;
+                        setSubmission(fresh);
+                      } catch (_e) {
+                        // Poll loop will catch up; swallow.
+                      }
+                    }}
+                    fallbackHint="Pay with Pali is not available on this instance. Use the manual paste form below."
+                  />
 
                   <dl className="proposal-wizard__summary">
                     <dt>Amount to send</dt>

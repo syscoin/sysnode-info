@@ -172,6 +172,81 @@ export function createProposalService({ client = defaultClient } = {}) {
     }
   }
 
+  // Build an unsigned collateral PSBT for Pali to sign. The caller
+  // (paliProvider.payProposalCollateralWithPali) harvested `xpub` and
+  // `changeAddress` from the injected provider; we pass them straight
+  // through. `feeRate` is a sat/vByte integer or omitted (server
+  // defaults to 10 and clamps to 1..1000).
+  //
+  // Returns `{ psbt: { psbt, assets }, feeSats, opReturnHex,
+  // collateralFeeSats, networkKey }`. The `psbt` sub-object is the
+  // envelope Pali's `sys_signAndSend` consumes verbatim.
+  async function buildCollateralPsbt(id, { xpub, changeAddress, feeRate } = {}) {
+    if (!Number.isInteger(id) || id <= 0) {
+      throw proposalError('invalid_id', 0);
+    }
+    if (typeof xpub !== 'string' || !xpub) {
+      throw proposalError('bad_xpub', 0);
+    }
+    if (typeof changeAddress !== 'string' || !changeAddress) {
+      throw proposalError('bad_change_address', 0);
+    }
+    try {
+      const res = await client.post(
+        `${BASE}/submissions/${id}/collateral/psbt`,
+        {
+          xpub,
+          changeAddress,
+          ...(feeRate != null ? { feeRate } : {}),
+        }
+      );
+      const data = assertShape('buildCollateralPsbt', res.data);
+      if (
+        !data.psbt ||
+        typeof data.psbt.psbt !== 'string' ||
+        !data.psbt.psbt
+      ) {
+        throw proposalError('invalid_response', res.status || 0, {
+          message: 'buildCollateralPsbt: missing psbt.psbt in response',
+        });
+      }
+      return data;
+    } catch (err) {
+      if (err && err.code && err.code !== 'http_error') throw err;
+      throw proposalError(
+        err.code || 'build_collateral_psbt_failed',
+        err.status,
+        err
+      );
+    }
+  }
+
+  // Describe the chain this backend is pinned to. FE uses this to
+  // feature-detect the Pali path (paliPathEnabled=false → hide
+  // button) and to pick the "Switch Pali to Syscoin mainnet / testnet"
+  // copy when Pali is on the wrong chain.
+  async function getGovernanceNetwork() {
+    try {
+      const res = await client.get(`${BASE}/network`);
+      const data = assertShape('getGovernanceNetwork', res.data);
+      return {
+        chain: typeof data.chain === 'string' ? data.chain : 'unknown',
+        slip44: Number.isInteger(data.slip44) ? data.slip44 : null,
+        networkKey:
+          data.networkKey === 'mainnet' || data.networkKey === 'testnet'
+            ? data.networkKey
+            : null,
+        paliPathEnabled: !!data.paliPathEnabled,
+      };
+    } catch (err) {
+      throw proposalError(
+        err.code || 'get_network_failed',
+        err.status,
+        err
+      );
+    }
+  }
+
   async function attachCollateral(id, collateralTxid) {
     if (!Number.isInteger(id) || id <= 0) {
       throw proposalError('invalid_id', 0);
@@ -223,6 +298,8 @@ export function createProposalService({ client = defaultClient } = {}) {
     getSubmission,
     attachCollateral,
     deleteSubmission,
+    buildCollateralPsbt,
+    getGovernanceNetwork,
   };
 }
 

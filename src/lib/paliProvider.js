@@ -7,29 +7,30 @@
 //   window.ethereum     -> PaliInpageProviderEth  (EVM, not used here)
 //
 // Both speak EIP-1193 `request({ method, params })`. For the proposal
-// flow we care about:
+// flow we consume four UTXO methods:
 //
-//   - detection
-//   - account unlock status
-//   - current account / xpub (for "connected as ...")
-//   - block-explorer url (so users can verify our link trust)
-//   - switching the active chain to a user-selected one (mainnet
-//     typically) so a draft built against mainnet doesn't get sent
-//     from a testnet account by accident
+//   sys_requestAccounts     -> ["<address>"]  (connect prompt)
+//   sys_getPublicKey        -> zpub / vpub string
+//   sys_getChangeAddress    -> "<bech32 change address>"
+//   sys_signAndSend         -> { txid: "<64-hex>" } or "<64-hex>"
 //
-// What this module DOES NOT do: build or sign a PSBT. Pali's
-// `sys_signAndSend` needs a fully-formed PSBT in Pali's JSON shape,
-// which requires `syscoinjs-lib` on the dApp side (not trivial, and
-// a live interop test against the extension is mandatory before
-// shipping — see the PR description for why this is a deferred
-// followup). Calling `payWithOpReturn` returns a "not_supported"
-// error on purpose, so the UI can fall back to the manual-collateral
-// flow without ever appearing to have succeeded.
+// PSBT BUILDING LIVES ON THE SERVER. syscoinjs-lib has a Node-first
+// require graph (bip174, bitcoinjs, buffer polyfills) that bloats a
+// CRA bundle by >200KB and depends on Node globals that don't exist
+// in the browser. The flow instead is:
+//
+//   1. We collect xpub + change address from Pali.
+//   2. We POST them to the backend, which builds an unsigned PSBT
+//      committing 150 SYS to an OP_RETURN output (the proposal-hash
+//      push Syscoin Core requires).
+//   3. We hand the PSBT envelope to Pali's `sys_signAndSend`. The
+//      extension prompts the user to confirm, signs, and broadcasts.
+//   4. The returned txid goes back to the backend's
+//      /attach-collateral route, and the existing dispatcher takes
+//      over from there.
 //
 // All public functions are safe to call in an SSR / test environment:
 // they guard against `window` being undefined.
-
-const NOT_SUPPORTED = 'pali_psbt_builder_not_wired';
 
 function readPali() {
   if (typeof window === 'undefined') return null;
@@ -149,21 +150,205 @@ export async function switchChain(chainIdHex) {
   return paliRequest('wallet_switchEthereumChain', [{ chainId: chainIdHex }]);
 }
 
-// Public (stub): pay `valueSats` to `to` with an extra OP_RETURN output
-// carrying `opReturnHex` (no "6a" length prefix — caller provides the
-// raw pushed bytes). Returns a txid.
+// Internal: accept whatever shape Pali's `sys_signAndSend` returns and
+// distill it down to a 64-hex txid. Historically Pali has shipped:
+//   - '<txid>'                                    (bare string)
+//   - { txid: '<txid>' }
+//   - { transactionId: '<txid>' }
+//   - { hex: '<rawtx>', txid: '<txid>' }          (old versions)
+// Anything we can't translate throws `bad_signer_response` so the
+// caller renders an explicit error rather than persisting a truncated
+// or stringified-object value as the collateral txid (which would
+// land on the dispatcher as an opaque "getRawTransaction failed"
+// loop).
+function normalizeSignAndSendResult(result) {
+  const hex64 = /^[0-9a-fA-F]{64}$/;
+  const candidate =
+    typeof result === 'string'
+      ? result.trim()
+      : result && typeof result === 'object'
+      ? typeof result.txid === 'string'
+        ? result.txid.trim()
+        : typeof result.transactionId === 'string'
+        ? result.transactionId.trim()
+        : ''
+      : '';
+  if (!hex64.test(candidate)) {
+    const e = new Error('bad_signer_response');
+    e.code = 'bad_signer_response';
+    e.raw = result;
+    throw e;
+  }
+  return candidate.toLowerCase();
+}
+
+// Compare the chainId Pali reports against the network the backend is
+// pinned to. Keeps the "switch Pali to Syscoin mainnet" copy in the
+// wizard short, one-shot, and correct.
 //
-// This is where a future PR will call `sys_signAndSend` with a fully
-// constructed PSBT. For now we fail loudly with a stable error code
-// the UI can switch on to render the manual-payment fallback. The
-// function exists at all (rather than being absent) so the UI can
-// feature-detect with a clean try/catch instead of peeking at module
-// internals.
-export async function payWithOpReturn(/* { to, valueSats, opReturnHex, feeRate } */) {
-  const e = new Error(NOT_SUPPORTED);
-  e.code = NOT_SUPPORTED;
-  throw e;
+// Syscoin's canonical chainIds:
+//   mainnet (UTXO) : '0x39'  (57 decimal)
+//   testnet (UTXO) : '0x40'  (64 decimal)
+//   mainnet (NEVM) : '0x39'  (57) — same as UTXO, but a different provider
+//   testnet (NEVM) : '0xcc'  (204) — again, different provider
+//
+// We only care about the UTXO side because `window.pali` IS the UTXO
+// provider. Any answer outside {'0x39','0x40'} means Pali is in
+// EVM-provider mode or on a non-Syscoin chain; the caller surfaces
+// that as `network_mismatch` with the target copy derived from the
+// server's networkKey.
+function chainIdMatchesServer(paliChainId, serverNetworkKey) {
+  if (typeof paliChainId !== 'string') return false;
+  const norm = paliChainId.toLowerCase();
+  if (serverNetworkKey === 'mainnet') return norm === '0x39';
+  if (serverNetworkKey === 'testnet') return norm === '0x40';
+  return false;
+}
+
+// Public: run the full Pali collateral-payment flow for a submission
+// that is still in `prepared` state. Returns `{ txid, feeSats }`.
+//
+// Parameters:
+//   submissionId : number — must match a submission this session owns.
+//   api          : {
+//     buildCollateralPsbt(submissionId, { xpub, changeAddress, feeRate? }),
+//     getGovernanceNetwork()
+//   }
+//   feeRate      : optional sat/vByte integer, clamped by the server
+//                  to 1..1000; omit to let the backend pick 10.
+//
+// Error taxonomy (all thrown with `.code` set):
+//   pali_unavailable       -> extension not installed / disabled
+//   pali_path_disabled     -> backend hasn't set SYSCOIN_BLOCKBOOK_URL
+//                             (the server returned 503 on the network
+//                             probe); UI should hide the button
+//   network_mismatch       -> Pali is on a chain the server doesn't
+//                             serve (UI copy depends on serverNetworkKey)
+//   user_rejected          -> EIP-1193 4001 from the Pali popup
+//   unauthorized           -> EIP-1193 4100
+//   insufficient_funds     -> server 422 (shortfall attached via .cause)
+//   blockbook_unreachable  -> server 502
+//   bad_signer_response    -> Pali returned something we can't parse
+//                             as a 64-hex txid
+//   <other server codes>   -> pass through verbatim via proposalError
+// `onProgress(phase)` (optional) is called with one of:
+//   'connecting'         -> just after isPaliAvailable, before any prompt
+//   'building'           -> backend PSBT request dispatched
+//   'awaiting_signature' -> Pali sys_signAndSend sent to the extension
+// The final `attached` state is signalled by the function returning;
+// we don't emit a 'broadcasting' phase because Pali's signAndSend is a
+// single opaque call — broadcast completion is tied to resolution of
+// that promise.
+export async function payProposalCollateralWithPali(
+  submissionId,
+  api,
+  { feeRate, onProgress } = {}
+) {
+  const notify = (phase) => {
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress(phase);
+      } catch (_e) {
+        // never let a UI callback explode the transaction flow
+      }
+    }
+  };
+  if (!isPaliAvailable()) {
+    const e = new Error('pali_unavailable');
+    e.code = 'pali_unavailable';
+    throw e;
+  }
+  if (!api || typeof api.buildCollateralPsbt !== 'function' || typeof api.getGovernanceNetwork !== 'function') {
+    throw new Error('payProposalCollateralWithPali: api must expose buildCollateralPsbt + getGovernanceNetwork');
+  }
+
+  notify('connecting');
+
+  // 1) Server network probe first. Cheap, tells us upfront whether the
+  //    Pali path is enabled at all and what chain we're expecting.
+  const serverNet = await api.getGovernanceNetwork();
+  if (!serverNet || !serverNet.paliPathEnabled || !serverNet.networkKey) {
+    const e = new Error('pali_path_disabled');
+    e.code = 'pali_path_disabled';
+    throw e;
+  }
+
+  // 2) Prompt for connection + pull wallet-level identifiers. These
+  //    DO not cost a popup (connection is one-time), and they're
+  //    idempotent — repeated calls in the same session just return
+  //    the cached values from the Pali background script.
+  await requestAccounts();
+  const xpub = await paliRequest('sys_getPublicKey');
+  if (typeof xpub !== 'string' || xpub.length < 20) {
+    const e = new Error('bad_signer_response');
+    e.code = 'bad_signer_response';
+    e.detail = 'sys_getPublicKey returned non-string';
+    throw e;
+  }
+  const changeAddress = await paliRequest('sys_getChangeAddress');
+  if (typeof changeAddress !== 'string' || changeAddress.length < 10) {
+    const e = new Error('bad_signer_response');
+    e.code = 'bad_signer_response';
+    e.detail = 'sys_getChangeAddress returned non-string';
+    throw e;
+  }
+
+  // 3) Chain sanity check. We do this AFTER grabbing xpub/change so
+  //    the error copy can name the right target network (the xpub
+  //    prefix already hints at what Pali is currently on).
+  let paliChainId;
+  try {
+    paliChainId = await getChainId();
+  } catch (_err) {
+    // `getChainId` resolves lazily — if Pali hasn't injected its
+    // chainId yet we try once to read it via `eth_chainId` before
+    // giving up. A raw throw here means we have no way to verify;
+    // fall through to the server call and let the xpub-prefix check
+    // on the backend surface `network_mismatch` explicitly.
+    paliChainId = null;
+  }
+  if (paliChainId && !chainIdMatchesServer(paliChainId, serverNet.networkKey)) {
+    const e = new Error('network_mismatch');
+    e.code = 'network_mismatch';
+    e.detail = `pali:${paliChainId} vs server:${serverNet.networkKey}`;
+    throw e;
+  }
+
+  notify('building');
+
+  // 4) Server builds the PSBT. This is where insufficient-funds /
+  //    Blockbook-down / bad-xpub errors surface as typed error codes
+  //    — we let them bubble up as-is so the caller can pick copy.
+  const built = await api.buildCollateralPsbt(submissionId, {
+    xpub,
+    changeAddress,
+    ...(feeRate != null ? { feeRate } : {}),
+  });
+  if (!built || !built.psbt || typeof built.psbt.psbt !== 'string') {
+    const e = new Error('bad_server_psbt');
+    e.code = 'bad_server_psbt';
+    throw e;
+  }
+
+  notify('awaiting_signature');
+
+  // 5) Pali signs + broadcasts. The extension takes `[ { psbt, assets } ]`
+  //    as the params array — single-element tuple, matching the
+  //    in-page provider shim.
+  const signedResult = await paliRequest('sys_signAndSend', [built.psbt]);
+  const txid = normalizeSignAndSendResult(signedResult);
+
+  return {
+    txid,
+    feeSats: built.feeSats,
+    xpub,
+    changeAddress,
+  };
 }
 
 // Exposed for tests.
-export const __internal = { translatePaliError, NOT_SUPPORTED };
+export const __internal = {
+  translatePaliError,
+  normalizeSignAndSendResult,
+  chainIdMatchesServer,
+};
