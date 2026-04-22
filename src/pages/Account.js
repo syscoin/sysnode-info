@@ -6,6 +6,7 @@ import VaultStatusCard from '../components/VaultStatusCard';
 import ChangePasswordCard from '../components/ChangePasswordCard';
 import NotificationPreferencesCard from '../components/NotificationPreferencesCard';
 import DeleteAccountCard from '../components/DeleteAccountCard';
+import GovernanceActivityLink from '../components/GovernanceActivityLink';
 import { useAuth } from '../context/AuthContext';
 
 export default function Account() {
@@ -95,6 +96,8 @@ export default function Account() {
           </div>
 
           <VaultStatusCard user={user} />
+
+          <GovernanceActivityLink />
 
           <ChangePasswordCard />
 

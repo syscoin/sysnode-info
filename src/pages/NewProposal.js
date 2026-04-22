@@ -22,6 +22,8 @@ import {
   formsEqual,
   fromDraft,
   prepareBodyFromForm,
+  satsStringToSys,
+  sysToSatsString,
   validateBasics,
   validatePayment,
 } from '../lib/proposalForm';
@@ -1039,7 +1041,134 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
   );
 }
 
+// Approximate cadence of Syscoin governance superblocks — 30 days,
+// roughly. Mainnet consensus sets `nSuperblockCycle = 17520` blocks
+// at a 150-second (2.5-minute) block target, which works out to
+// 17520 * 150 = 2,628,000 s ≈ 30.42 days. The REAL gap between any
+// two superblocks still drifts a few hours either way depending on
+// network hash-rate, so we surface this number as a planning-grade
+// estimate ONLY; pairing every rendered date with a "~" prefix and
+// a caveat in the copy keeps us honest.
+//
+// Kept as a module constant (not a backend-fed value) because the
+// wizard is a pre-submission planning surface — the user is
+// estimating what their proposal would look like, not querying the
+// live chain. Once the proposal is actually on-chain, the
+// ProposalStatus page shows the live `start_epoch`/`end_epoch`
+// from Core instead.
+const SUPERBLOCK_INTERVAL_DAYS = 30;
+const DAY_SECONDS = 86400;
+
+// Format a UNIX-seconds timestamp as a short UTC calendar date. We
+// intentionally drop the time portion in the schedule breakdown
+// because the approximation error (~several hours) is larger than
+// the clock portion would imply precision for.
+function formatUtcDate(epochSec) {
+  if (!Number.isFinite(epochSec) || epochSec <= 0) return '';
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(epochSec * 1000));
+  } catch (_e) {
+    return new Date(epochSec * 1000).toUTCString();
+  }
+}
+
+// Build an APPROXIMATE schedule of payment dates for a proposal's
+// Review step. Returns one entry per payment, each projected to
+// the NEXT superblock after `startEpoch`. Capped by the voting
+// window: we never project a payment date past `endEpoch` because
+// the proposal's window says Core won't pay it beyond that point.
+// Negative / invalid inputs return an empty array so callers can
+// just gate on `.length`.
+//
+// Why we step by (i + 1), not i:
+//
+//   Syscoin governance payouts are executed on superblocks — not
+//   at `startEpoch` itself. The first payable point is the next
+//   superblock that lands at or after `startEpoch`, not the raw
+//   start timestamp. The frontend has no network anchor for
+//   superblock timing, so we use the conservative worst-case
+//   model: assume the next superblock is exactly
+//   `SUPERBLOCK_INTERVAL_DAYS` after startEpoch. That matches
+//   real consensus behavior when startEpoch happens to be right
+//   after a superblock (the most common case when a user has
+//   just dragged a date picker forward), and it AVOIDS the
+//   bug Codex flagged on round 3: treating payment #1 as if it
+//   lands on `startEpoch` overestimates how many payments fit
+//   inside the voting window, which in turn hides the
+//   truncation warning for proposals that can't actually pay
+//   out every requested installment before `endEpoch`.
+//
+//   The tradeoff: for the rare case where `startEpoch` is
+//   moments before a superblock, we show payment #1 one
+//   interval later than reality — erring safely toward a user
+//   seeing more truncation warnings, not fewer. A false
+//   "won't fit, extend the window" warning costs one picker
+//   drag; a silent omission costs a proposal that can't
+//   actually pay all installments.
+function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
+  const start = Number(startEpoch);
+  const end = Number(endEpoch);
+  const count = Math.floor(Number(paymentCount));
+  if (!Number.isFinite(start) || start <= 0) return [];
+  if (!Number.isFinite(end) || end <= start) return [];
+  if (!Number.isFinite(count) || count <= 0) return [];
+  const step = SUPERBLOCK_INTERVAL_DAYS * DAY_SECONDS;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const at = start + (i + 1) * step;
+    if (at > end) break;
+    out.push({ index: i + 1, epochSec: at });
+  }
+  return out;
+}
+
+// Compute the total budget (SYS) for the review panel using exact
+// BigInt sats arithmetic. We deliberately do NOT use
+// `Number(amount) * Number(count)` here — governance proposals can
+// carry very large amounts, and once amount_sats * count crosses
+// 2^53 the IEEE-754 double collapses to a rounded neighbor. Since
+// this block is the user's final confirmation before burning
+// 150 SYS on collateral, showing a rounded total would be a
+// silent correctness regression flagged by Codex review P2.
+//
+// The backend already canonicalizes amounts as sats strings
+// (`sysToSatsString`) and renders them back with
+// `satsStringToSys`; reusing those helpers keeps the UI display
+// pipeline identical to the on-wire representation.
+function computeTotalBudgetSys(amount, count) {
+  const sats = sysToSatsString(typeof amount === 'string' ? amount : '');
+  if (sats === null) return null;
+  const n = Number(count);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  try {
+    const total = BigInt(sats) * BigInt(n);
+    if (total <= 0n) return null;
+    return satsStringToSys(total.toString());
+  } catch (_err) {
+    return null;
+  }
+}
+
 function ReviewStep({ form, payloadBytes }) {
+  const paymentCountNum = Number(form.paymentCount);
+  const totalBudgetSys = computeTotalBudgetSys(
+    form.paymentAmount,
+    form.paymentCount
+  );
+  const schedule =
+    paymentCountNum >= 2
+      ? buildApproximateSchedule({
+          startEpoch: form.startEpoch,
+          endEpoch: form.endEpoch,
+          paymentCount: paymentCountNum,
+        })
+      : [];
+
   return (
     <div className="proposal-wizard__panel" data-testid="wizard-panel-review">
       <h2>Review your proposal</h2>
@@ -1058,10 +1187,16 @@ function ReviewStep({ form, payloadBytes }) {
         </dd>
         <dt>Payment address</dt>
         <dd data-testid="review-address">{form.paymentAddress}</dd>
-        <dt>Amount per month</dt>
+        <dt>Amount per payment</dt>
         <dd data-testid="review-amount">{form.paymentAmount} SYS</dd>
         <dt>Number of payments</dt>
         <dd data-testid="review-count">{form.paymentCount}</dd>
+        {totalBudgetSys ? (
+          <>
+            <dt>Total budget</dt>
+            <dd data-testid="review-total">{totalBudgetSys} SYS</dd>
+          </>
+        ) : null}
         <dt>Voting window</dt>
         <dd>
           {new Date(Number(form.startEpoch) * 1000).toUTCString()}
@@ -1069,6 +1204,62 @@ function ReviewStep({ form, payloadBytes }) {
           {new Date(Number(form.endEpoch) * 1000).toUTCString()}
         </dd>
       </dl>
+
+      {paymentCountNum >= 2 ? (
+        <div
+          className="proposal-wizard__schedule"
+          data-testid="review-schedule"
+        >
+          <h3 className="proposal-wizard__schedule-heading">
+            Approximate payment schedule
+          </h3>
+          <p className="proposal-wizard__help">
+            Governance payouts are paid on Syscoin superblocks —
+            roughly every {SUPERBLOCK_INTERVAL_DAYS} days — and
+            the first payable superblock is the one that lands{' '}
+            <em>after</em> your start date. The dates below are
+            worst-case (one full cycle past start) so your voting
+            window has room even when start lands right after a
+            superblock. Actual payout dates may run a bit earlier
+            depending on when your proposal opens relative to the
+            next superblock.
+          </p>
+          {schedule.length > 0 ? (
+            <ol
+              className="proposal-wizard__schedule-list"
+              data-testid="review-schedule-list"
+            >
+              {schedule.map((p) => (
+                <li
+                  key={p.index}
+                  data-testid="review-schedule-row"
+                  data-payment-index={p.index}
+                >
+                  <span className="proposal-wizard__schedule-idx">
+                    #{p.index}
+                  </span>
+                  <span className="proposal-wizard__schedule-date">
+                    ~ {formatUtcDate(p.epochSec)}
+                  </span>
+                  <span className="proposal-wizard__schedule-amount">
+                    {form.paymentAmount} SYS
+                  </span>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+          {schedule.length < paymentCountNum ? (
+            <p
+              className="proposal-wizard__help proposal-wizard__help--warn"
+              data-testid="review-schedule-trunc"
+            >
+              {schedule.length === 0
+                ? `Your voting window is too short to land any of the ${paymentCountNum} requested payments on a superblock. Extend the voting end date so each payment has a superblock to land in.`
+                : `Your voting window only fits ${schedule.length} of the ${paymentCountNum} requested payments. Extend the voting end date, or reduce the payment count, so every payment has a superblock to land in.`}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="proposal-wizard__burn-warning" role="note">
         <strong>Heads up — 150 SYS will be burned.</strong>

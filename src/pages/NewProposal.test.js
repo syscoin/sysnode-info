@@ -550,6 +550,170 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'Review step surfaces an approximate payment schedule and total budget for paymentCount >= 2 (QA v3-ER03)',
+    async () => {
+      // QA v3-ER03: when a proposal requests multiple monthly
+      // payments, the Review step must break down approximately
+      // WHEN each payment would be paid and what the total budget
+      // works out to. Shipping just "Number of payments: 3" left
+      // users to mentally multiply and to guess at superblock
+      // cadence. Added as a planning-grade estimate (~30d cadence)
+      // with a caveat.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      // Fill a window wide enough to fit 3 monthly payments:
+      // start now+1h, end now+120 days.
+      const now = Math.floor(Date.now() / 1000);
+      fireEvent.change(screen.getByTestId('wizard-field-address'), {
+        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
+        target: { value: '500' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-count'), {
+        target: { value: '3' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-start'), {
+        target: { value: String(now + 3600) },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-end'), {
+        target: { value: String(now + 120 * 86400) },
+      });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      expect(screen.getByTestId('review-count')).toHaveTextContent('3');
+      // Total budget = 3 × 500 = 1,500 SYS (with locale-aware
+      // grouping separators, so we tolerate either a comma or a
+      // space as the thousands separator).
+      expect(screen.getByTestId('review-total')).toHaveTextContent(
+        /1[,\s]?500 SYS/
+      );
+      const rows = screen.getAllByTestId('review-schedule-row');
+      expect(rows).toHaveLength(3);
+      // All three rows carry an index and a date. We don't assert
+      // the exact date strings (they depend on system clock) but
+      // they must be non-empty.
+      for (const row of rows) {
+        expect(row.textContent).toMatch(/#\d+/);
+        expect(row.textContent).toMatch(/SYS/);
+      }
+      // Truncation warning absent when every payment fits.
+      expect(screen.queryByTestId('review-schedule-trunc')).toBeNull();
+    }
+  );
+
+  test(
+    'Review step warns when the voting window cannot fit every requested payment',
+    async () => {
+      // If user sets paymentCount=3 but picks a 45-day window,
+      // only 1 of the 3 requested monthly superblocks will fall
+      // inside (the first payable superblock is one full cycle
+      // after start under worst-case alignment; see
+      // `buildApproximateSchedule`) and the remaining 2 payments
+      // will never be paid. Surface this explicitly — silently
+      // omitting rows from the schedule would let the user
+      // prepare a misconfigured proposal and burn their 150 SYS
+      // collateral for nothing.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      const now = Math.floor(Date.now() / 1000);
+      fireEvent.change(screen.getByTestId('wizard-field-address'), {
+        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
+        target: { value: '500' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-count'), {
+        target: { value: '3' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-start'), {
+        target: { value: String(now + 3600) },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-end'), {
+        target: { value: String(now + 45 * 86400) },
+      });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      const rows = screen.queryAllByTestId('review-schedule-row');
+      expect(rows.length).toBeLessThan(3);
+      expect(
+        screen.getByTestId('review-schedule-trunc')
+      ).toHaveTextContent(/of the 3/i);
+    }
+  );
+
+  test(
+    'Review step warns when the voting window cannot fit any payment at all (Codex PR9 R3)',
+    async () => {
+      // Regression guard for the Codex-flagged schedule alignment
+      // fix: under worst-case superblock alignment the first
+      // payable superblock is a full cycle AFTER startEpoch, so a
+      // multi-payment proposal with a window shorter than one
+      // cycle yields zero payable rows. The schedule panel must
+      // still render the truncation warning instead of being
+      // hidden — otherwise the user would think the schedule is
+      // fine when in reality no payment can land at all.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      const now = Math.floor(Date.now() / 1000);
+      fireEvent.change(screen.getByTestId('wizard-field-address'), {
+        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
+        target: { value: '500' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-count'), {
+        target: { value: '3' },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-start'), {
+        target: { value: String(now + 3600) },
+      });
+      fireEvent.change(screen.getByTestId('wizard-field-end'), {
+        target: { value: String(now + 15 * 86400) },
+      });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      expect(screen.getByTestId('review-schedule')).toBeInTheDocument();
+      expect(
+        screen.queryAllByTestId('review-schedule-row')
+      ).toHaveLength(0);
+      expect(
+        screen.getByTestId('review-schedule-trunc')
+      ).toHaveTextContent(/too short to land any/i);
+    }
+  );
+
+  test(
+    'Review step hides the schedule block for single-payment proposals',
+    async () => {
+      // paymentCount=1 is the default and most common case.
+      // The schedule breakdown adds no useful information
+      // ("payment #1 will be paid on the next superblock") and
+      // would visually clutter the Review for the 99%-path user.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      expect(screen.queryByTestId('review-schedule')).toBeNull();
+    }
+  );
+
+  test(
     'edits typed while save is in flight remain dirty (baseline is the saved snapshot, not the live form) (Codex round 7 P1)',
     async () => {
       // Regression: `mark_saved` used to set

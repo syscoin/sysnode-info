@@ -178,8 +178,26 @@
 .site-footer__inner {
   display: flex;
   justify-content: space-between;
-  gap: 24px;
+  gap: 16px 24px;
   align-items: center;
+  /* QA v3-ER06: without `flex-wrap` the inner row used to
+     collide at viewport widths between the main mobile
+     breakpoint and ~1000px — the nav link cluster would
+     overflow onto the copy paragraph, producing a visual
+     overlap that the QA report flagged as a layout bug.
+     Allowing wrap lets the nav drop to its own row before
+     touching the copy; the mobile-stack breakpoint below
+     still collapses the columns for narrow screens. */
+  flex-wrap: wrap;
+}
+
+.site-footer__copy {
+  /* flex children default to `min-width: auto`, which means
+     long copy cannot shrink and forces the sibling nav to
+     overflow. Clamp to 0 so the text wraps gracefully once
+     horizontal space runs out. */
+  min-width: 0;
+  flex: 1 1 320px;
 }
 
 .site-footer__copy p {
@@ -189,6 +207,7 @@
 
 .site-footer__copy span {
   color: var(--muted);
+  display: block;
 }
 
 .site-footer__links {
@@ -196,6 +215,10 @@
   flex-wrap: wrap;
   gap: 16px;
   color: var(--muted);
+  /* Ensure links cluster never splits across "copy" column
+     during a wrap — keep them together on the right edge. */
+  justify-content: flex-end;
+  flex: 0 1 auto;
 }
 
 .site-footer__links a:hover {
@@ -1612,6 +1635,19 @@
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
+/* QA v1-SG10: the browser default placeholder color on
+   light backgrounds drifts toward ~#888 or lower depending
+   on UA. Pin to our darker --muted so placeholder text
+   still clears WCAG AA against .auth-input's light
+   surface; without this override the border + placeholder
+   can both sit below 4:1 on Safari. */
+.auth-input::placeholder,
+.proposal-wizard .form-field input::placeholder,
+.proposal-wizard .form-field textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
 .auth-input:focus {
   outline: none;
   border-color: var(--accent);
@@ -2686,6 +2722,17 @@
   margin-top: 0;
 }
 
+.vote-modal__hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.vote-modal__hint--warn {
+  color: #b45309;
+}
+
 .vote-modal__outcome {
   border: 0;
   padding: 0;
@@ -3625,6 +3672,69 @@
   font-size: 0.9rem;
 }
 
+.proposal-wizard__help--warn {
+  color: #b45309;
+}
+
+.proposal-wizard__schedule {
+  border: 1px solid var(--panel-outline);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--panel-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.proposal-wizard__schedule-heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.proposal-wizard__schedule-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proposal-wizard__schedule-list li {
+  display: grid;
+  grid-template-columns: 48px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.04);
+  font-variant-numeric: tabular-nums;
+}
+
+.proposal-wizard__schedule-idx {
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.proposal-wizard__schedule-amount {
+  text-align: right;
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .proposal-wizard__schedule-list li {
+    grid-template-columns: 36px 1fr;
+    row-gap: 2px;
+  }
+  .proposal-wizard__schedule-amount {
+    grid-column: 2 / 3;
+    text-align: left;
+    color: var(--muted);
+  }
+}
+
 .proposal-wizard__cli {
   background: #0f172a;
   color: #e2e8f0;
@@ -3849,8 +3959,82 @@
   margin: 0;
 }
 
+.proposal-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.proposal-status__detail {
+  margin-top: 6px;
+}
+
+.proposal-status__detail > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+.proposal-status__detail > summary:hover {
+  color: inherit;
+}
+
 .status-chip.is-info {
   background: rgba(37, 99, 235, 0.15);
   color: #1e40af;
   border: 1px solid rgba(37, 99, 235, 0.3);
 }
+
+/* Session-expired banner
+   ---------------------
+   Global, non-blocking strip shown between <Header> and the page
+   content when AuthContext.sessionExpired is true. Uses the warn
+   palette (amber) deliberately — it's not an error we can recover
+   from automatically, but it's not a hard failure either. The copy
+   + actions live in the component; this file owns positioning,
+   surface, and the mobile stack. */
+.session-expired-banner {
+  background: #fff7ed;
+  border-bottom: 1px solid rgba(180, 83, 9, 0.35);
+  color: #7c2d12;
+}
+
+.session-expired-banner__wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+
+.session-expired-banner__copy {
+  flex: 1 1 260px;
+  line-height: 1.45;
+  font-size: 0.95rem;
+}
+
+.session-expired-banner__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .session-expired-banner__wrap {
+    padding: 10px 0 12px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .session-expired-banner__actions {
+    width: 100%;
+  }
+
+  .session-expired-banner__actions > .button {
+    flex: 1 1 auto;
+  }
+}
+

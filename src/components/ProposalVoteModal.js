@@ -1333,28 +1333,73 @@ export default function ProposalVoteModal({
     // network already has the exact vote we wanted to cast. Don't
     // let them drive the "Retry failed" CTA; retrying a dedup
     // would just produce another dedup.
-    const hasFailures = results.byEntry.some(
-      (r) => !r.ok && !isBenignDup(r.error)
-    );
-    // "Retry failed" is only meaningful if at least one failed row
-    // maps back to a masternode we can still see in `owned` — if
-    // the failures are all for MNs that dropped off the list
-    // (deregistered, etc) there's nothing we could actually retry.
+    // Count-aware bookkeeping for the DONE screen. We need THREE
+    // numbers to render the right CTAs:
+    //
+    //   failedCount      — rows the user actually needs to know about
+    //                      (non-OK AND non-benign-dup). Drives whether
+    //                      the retry CTA is visible at all.
+    //   retryableCount   — subset of failedCount where the MN is still
+    //                      in `owned` and carries a collateral outpoint.
+    //                      Only these rows have a feasible re-send.
+    //   dedupCount       — benign dup rows. Not failures from the user
+    //                      perspective, but we surface the count so they
+    //                      know the dedup is why "rejected" was non-zero.
+    //
+    // Previously the code only tracked the boolean existence
+    // (`hasFailures`, `retryable`), which was enough to gate the
+    // button but left the user without an "X out of Y still need
+    // action" signal. Explicit counts let us:
+    //   * Label the retry button "Retry 3 failed" or
+    //     "Retry 2 of 3 failed" when some rows are unrecoverable,
+    //     so the user knows before clicking exactly how many
+    //     masternodes get re-attempted.
+    //   * Render an inline note when failedCount > retryableCount
+    //     (i.e. some failures will remain after retry no matter
+    //     what) so there's no "I clicked retry and the row is
+    //     still red" surprise.
     const ownedIds = new Set(owned.map(mnId));
-    const retryable = results.byEntry.some(
-      (r) =>
-        !r.ok &&
-        !isBenignDup(r.error) &&
+    let failedCount = 0;
+    let retryableCount = 0;
+    let dedupCount = 0;
+    for (const r of results.byEntry) {
+      if (r.ok) continue;
+      if (isBenignDup(r.error)) {
+        dedupCount += 1;
+        continue;
+      }
+      failedCount += 1;
+      if (
         r.collateralHash &&
         r.collateralIndex != null &&
         ownedIds.has(outpointKey(r.collateralHash, r.collateralIndex))
-    );
+      ) {
+        retryableCount += 1;
+      }
+    }
+    const hasFailures = failedCount > 0;
+    const retryable = retryableCount > 0;
+    const unretryableCount = failedCount - retryableCount;
+    const retryButtonLabel =
+      unretryableCount > 0
+        ? `Retry ${retryableCount} of ${failedCount} failed`
+        : `Retry ${retryableCount} failed`;
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-done">
         <p>
           <strong>{results.accepted}</strong> accepted,{' '}
           <strong>{results.rejected}</strong> rejected.
         </p>
+        {dedupCount > 0 ? (
+          <p
+            className="vote-modal__hint"
+            data-testid="vote-modal-dedup-note"
+          >
+            {dedupCount} of the {dedupCount === 1 ? 'rejected row is' : 'rejected rows are'}{' '}
+            an identical vote already on-chain, so {dedupCount === 1 ? 'it counts' : 'they count'}{' '}
+            as success from your side — nothing to retry.
+          </p>
+        ) : null}
         <ul className="vote-result-list">
           {results.byEntry.map((r, idx) => {
             // "Benign dup" rows (already_voted) surface from the
@@ -1424,6 +1469,31 @@ export default function ProposalVoteModal({
             );
           })}
         </ul>
+        {hasFailures && unretryableCount > 0 ? (
+          <p
+            className="vote-modal__hint vote-modal__hint--warn"
+            data-testid="vote-modal-unretryable-note"
+          >
+            {unretryableCount === failedCount ? (
+              <>
+                Retry isn't available for these {unretryableCount}{' '}
+                {unretryableCount === 1 ? 'failure' : 'failures'} — the
+                affected masternodes are no longer in your owned list
+                (deregistered, transferred, or missing collateral
+                metadata). Resolve from the Account page and vote
+                again from the proposal row.
+              </>
+            ) : (
+              <>
+                {unretryableCount} of {failedCount}{' '}
+                {unretryableCount === 1 ? 'failure is' : 'failures are'}{' '}
+                not retryable here — those masternodes are no longer in
+                your owned list, so they'll stay in the "not voted"
+                column until you fix ownership and run the vote again.
+              </>
+            )}
+          </p>
+        ) : null}
         <div className="vote-modal__actions">
           {hasFailures && retryable ? (
             <button
@@ -1431,8 +1501,10 @@ export default function ProposalVoteModal({
               className="button button--primary button--small"
               onClick={retryFailed}
               data-testid="vote-modal-retry-failed"
+              data-retryable-count={retryableCount}
+              data-failed-count={failedCount}
             >
-              Retry failed
+              {retryButtonLabel}
             </button>
           ) : null}
           <button

@@ -1688,6 +1688,168 @@ describe('ProposalVoteModal — error paths', () => {
     expect(phantomRow.getAttribute('data-ok')).toBe('false');
   });
 
+  test(
+    'Retry-failed button surfaces explicit "X of Y" counter when failures split retryable/unretryable',
+    async () => {
+      // Same scenario as the previous test (2 retryable + 1
+      // phantom) but asserting the UX counter: the button must say
+      // "Retry 2 of 3 failed" so the user sees, before clicking,
+      // how many rows the retry will actually cover. Prior UX just
+      // said "Retry failed" — leaving the user to count the red
+      // rows themselves and guess which ones the retry path
+      // would pick up.
+      const PHANTOM = 'e'.repeat(64);
+      const service = makeService({
+        submit: jest.fn().mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 3,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: PHANTOM,
+              collateralIndex: 0,
+              ok: false,
+              error: 'mn_not_found',
+            },
+          ],
+        }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+
+      const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+      expect(retryBtn).toHaveTextContent(/Retry 2 of 3 failed/i);
+      expect(retryBtn.getAttribute('data-retryable-count')).toBe('2');
+      expect(retryBtn.getAttribute('data-failed-count')).toBe('3');
+      expect(
+        screen.getByTestId('vote-modal-unretryable-note')
+      ).toHaveTextContent(/1 of 3 .* not retryable/i);
+    }
+  );
+
+  test(
+    'Retry-failed button reads "Retry N failed" when every failure is retryable',
+    async () => {
+      // When every red row CAN be retried, the "X of Y" framing is
+      // noise — collapse to the simpler "Retry N failed" label and
+      // suppress the unretryable note. Protects against the UX
+      // regression of always showing "Retry 2 of 2 failed" on
+      // clean retry scenarios.
+      const service = makeService({
+        submit: jest.fn().mockResolvedValueOnce({
+          accepted: 0,
+          rejected: 2,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: false,
+              error: 'vote_too_often',
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'vote_too_often',
+            },
+          ],
+        }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+
+      const retryBtn = screen.getByTestId('vote-modal-retry-failed');
+      expect(retryBtn).toHaveTextContent(/^Retry 2 failed$/);
+      expect(retryBtn.getAttribute('data-retryable-count')).toBe('2');
+      expect(retryBtn.getAttribute('data-failed-count')).toBe('2');
+      expect(
+        screen.queryByTestId('vote-modal-unretryable-note')
+      ).toBeNull();
+    }
+  );
+
+  test(
+    'benign already_voted dedups surface a clarifier note (not counted as user-actionable failures)',
+    async () => {
+      // Scenario: user votes yes on two MNs, one of which already
+      // has an on-chain yes receipt. The backend reports it as
+      // `already_voted` (benign dup) so results.rejected = 1 but
+      // from the user's perspective there's nothing to retry. The
+      // DONE view must:
+      //   * keep the "1 accepted, 1 rejected" summary line
+      //     (matches the raw backend totals users cross-check),
+      //   * add a clarifier note "1 of the rejected is already
+      //     on-chain" so the user doesn't wonder why a vote they
+      //     intended as yes shows up as rejected,
+      //   * NOT show the Retry button (there's nothing
+      //     retryable).
+      const service = makeService({
+        submit: jest.fn().mockResolvedValueOnce({
+          accepted: 1,
+          rejected: 1,
+          results: [
+            {
+              collateralHash: 'c'.repeat(64),
+              collateralIndex: 0,
+              ok: true,
+            },
+            {
+              collateralHash: 'd'.repeat(64),
+              collateralIndex: 1,
+              ok: false,
+              error: 'already_voted',
+            },
+          ],
+        }),
+      });
+      renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled();
+      });
+      fireEvent.click(screen.getByTestId('vote-modal-submit'));
+
+      await waitFor(() => {
+        expect(screen.getByTestId('vote-modal-done')).toBeInTheDocument();
+      });
+
+      expect(
+        screen.getByTestId('vote-modal-dedup-note')
+      ).toHaveTextContent(/1 of the rejected row is.*already on-chain/i);
+      expect(screen.queryByTestId('vote-modal-retry-failed')).toBeNull();
+      expect(
+        screen.queryByTestId('vote-modal-unretryable-note')
+      ).toBeNull();
+    }
+  );
+
   test('Retry failed tolerates case-mismatched collateral hashes between endpoints', async () => {
     // Codex-review guard: if `/gov/mns/lookup` emits lowercase hashes
     // but `/gov/vote`'s response echoes them uppercase (or any

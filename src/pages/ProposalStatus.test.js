@@ -110,14 +110,21 @@ describe('ProposalStatus', () => {
     );
   });
 
-  test('renders failed state with reason', async () => {
+  test('renders failed state with collateral_not_found reason (dispatcher code)', async () => {
+    // `collateral_not_found` is what the dispatcher actually writes
+    // when `getRawTransaction` fails past `timeoutMs` (see
+    // `proposalDispatcher.js`). The earlier stale code `timeout`
+    // would fall through to the generic "Submission failed" card
+    // with no extra guidance — a UX regression for every real
+    // failure. Keep the copy hook anchored to the live dispatcher
+    // contract.
     proposalService.getSubmission.mockResolvedValueOnce({
       id: 9,
       status: 'failed',
       name: 't',
       proposalHash: 'aa'.repeat(32),
-      failReason: 'timeout',
-      failDetail: 'watched 144 blocks',
+      failReason: 'collateral_not_found',
+      failDetail: 'Collateral tx bb... was not found after 72h.',
       paymentAddress: 'sys1q',
       paymentAmountSats: '1',
       paymentCount: 1,
@@ -128,7 +135,99 @@ describe('ProposalStatus', () => {
     await waitFor(() => {
       expect(screen.getByTestId('proposal-status-failed')).toBeInTheDocument();
     });
-    expect(screen.getByText(/did not reach 6 confirmations/i)).toBeInTheDocument();
+    // Copy anchored to the dispatcher reason: user should see
+    // explicit "not found ... start a fresh proposal" guidance.
+    expect(
+      screen.getByText(/collateral transaction ID you pasted was not found/i)
+    ).toBeInTheDocument();
+  });
+
+  test(
+    'renders dedicated rate-limit panel for Core "Object creation rate limit exceeded"',
+    async () => {
+      // Dispatcher writes `submit_rejected` with the verbatim Core
+      // detail. The frontend must classify that detail into the
+      // rate-limit bucket and render the dedicated panel — the
+      // generic "Submission failed" copy does not answer the
+      // natural user question ("did I do something wrong?").
+      proposalService.getSubmission.mockResolvedValueOnce({
+        id: 21,
+        status: 'failed',
+        name: 't',
+        proposalHash: 'aa'.repeat(32),
+        failReason: 'submit_rejected',
+        failDetail: 'Object creation rate limit exceeded',
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '1',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+      });
+      await renderAt(21);
+      await waitFor(() => {
+        const panel = screen.getByTestId('proposal-status-failed');
+        expect(panel).toHaveAttribute('data-core-kind', 'rate_limited');
+      });
+      expect(
+        screen.getByText(/Governance rate-limit reached for this cycle/i)
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/protocol-level safeguard/i)
+      ).toBeInTheDocument();
+      // Raw Core response collapsed into <details> so the panel
+      // leads with "why" instead of the raw RPC string.
+      expect(screen.getByText(/Raw Core response/i)).toBeInTheDocument();
+    }
+  );
+
+  test(
+    'renders generic failed card for structural submit_rejected (not rate-limited)',
+    async () => {
+      proposalService.getSubmission.mockResolvedValueOnce({
+        id: 22,
+        status: 'failed',
+        name: 't',
+        proposalHash: 'aa'.repeat(32),
+        failReason: 'submit_rejected',
+        failDetail: 'Governance object is not valid',
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '1',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+      });
+      await renderAt(22);
+      await waitFor(() => {
+        const panel = screen.getByTestId('proposal-status-failed');
+        expect(panel).toHaveAttribute('data-core-kind', 'structural');
+      });
+      expect(
+        screen.getByText(/Syscoin Core rejected the governance object/i)
+      ).toBeInTheDocument();
+    }
+  );
+
+  test('renders tailored copy for duplicate_governance_hash', async () => {
+    proposalService.getSubmission.mockResolvedValueOnce({
+      id: 23,
+      status: 'failed',
+      name: 't',
+      proposalHash: 'aa'.repeat(32),
+      failReason: 'duplicate_governance_hash',
+      failDetail: 'row 19 already claims this hash',
+      paymentAddress: 'sys1q',
+      paymentAmountSats: '1',
+      paymentCount: 1,
+      startEpoch: 1,
+      endEpoch: 2,
+    });
+    await renderAt(23);
+    await waitFor(() => {
+      expect(screen.getByTestId('proposal-status-failed')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Another submission on your account already claimed/i)
+    ).toBeInTheDocument();
   });
 
   test('surfaces load errors', async () => {
@@ -382,7 +481,7 @@ describe('ProposalStatus', () => {
       status: 'failed',
       name: 't',
       proposalHash: 'aa'.repeat(32),
-      failReason: 'core_rejected',
+      failReason: 'submit_rejected',
       paymentAddress: 'sys1q',
       paymentAmountSats: '1',
       paymentCount: 1,
