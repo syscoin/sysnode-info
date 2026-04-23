@@ -219,7 +219,14 @@ export default function NewProposal() {
     fetchNetworkStats()
       .then((stats) => {
         if (cancelled) return;
-        const anchor = nextSuperblockEpochSecFromStats(stats);
+        // `nowSec` is captured at response time, not at effect
+        // mount, so we reject anchors that are already in the past
+        // relative to the clock the user will also see in the
+        // Review schedule.
+        const anchor = nextSuperblockEpochSecFromStats(
+          stats,
+          Math.floor(Date.now() / 1000)
+        );
         if (!anchor) {
           setStatsError(new Error('missing_next_superblock_epoch'));
           setNextSuperblockSec(null);
@@ -666,7 +673,7 @@ export default function NewProposal() {
       let liveAnchor = nextSuperblockSec;
       try {
         const freshStats = await fetchNetworkStats();
-        const fresh = nextSuperblockEpochSecFromStats(freshStats);
+        const fresh = nextSuperblockEpochSecFromStats(freshStats, nowSec);
         if (fresh) liveAnchor = fresh;
       } catch (_e) {
         // Swallow; liveAnchor already reflects the cached hook value
@@ -1328,15 +1335,29 @@ function formatUtcDate(epochSec) {
   }
 }
 
-// Build the projected payment schedule for the Review step. We
-// step forward by `SUPERBLOCK_CYCLE_SEC` from the live next-
-// superblock anchor; `count` entries land on superblocks #1..#N.
-// The derived voting window is computed so Core pays every one of
-// them, so unlike the legacy approximator this never needs a
-// truncation warning — if we got here, the window fits N payments
-// by construction (see lib/governanceWindow.js).
-function buildProjectedSchedule({ nextSuperblockSec, paymentCount }) {
-  const anchor = Number(nextSuperblockSec);
+// Build the projected payment schedule for the Review step.
+//
+// The schedule is derived from the same `derivedWindow` the user
+// sees in the WindowPreview card (and that onPrepare submits on-
+// chain), not from the raw `nextSuperblockSec` state. This matters:
+// computeProposalWindow has an internal fallback to `now + cycle`
+// when the anchor is missing / stale, while a raw-anchor projection
+// would happily run off a stale timestamp. Sourcing both UI
+// elements from the same canonical window means the Review
+// schedule can never diverge from the submitted window, even if
+// state were to drift stale between renders.
+//
+// The anchor for the first payment is reconstructed as
+// `startEpoch + cycle/2`, mirroring computeProposalWindow's
+// `startEpoch = anchor - cycle/2` invariant; the loop then walks
+// forward by whole cycles for superblocks #1..#N. Unlike the
+// legacy approximator this never needs a truncation warning —
+// if derivedWindow is truthy the window fits N payments by
+// construction (see lib/governanceWindow.js).
+function buildProjectedSchedule({ derivedWindow, paymentCount }) {
+  if (!derivedWindow) return [];
+  const halfCycle = Math.floor(SUPERBLOCK_CYCLE_SEC / 2);
+  const anchor = Number(derivedWindow.startEpoch) + halfCycle;
   const count = Math.floor(Number(paymentCount));
   if (!Number.isFinite(anchor) || anchor <= 0) return [];
   if (!Number.isFinite(count) || count <= 0) return [];
@@ -1389,9 +1410,9 @@ function ReviewStep({
     form.paymentCount
   );
   const schedule =
-    paymentCountNum >= 2 && nextSuperblockSec
+    paymentCountNum >= 2 && derivedWindow
       ? buildProjectedSchedule({
-          nextSuperblockSec,
+          derivedWindow,
           paymentCount: paymentCountNum,
         })
       : [];

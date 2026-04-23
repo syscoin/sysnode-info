@@ -127,15 +127,38 @@ export function computeProposalWindow({
 // parse the human-readable `superblock_date` string — it's formatted
 // for display only and its shape can drift.
 //
-// Returns null when the field is missing / non-positive, which the
-// wizard surfaces as a "live-chain data unavailable" banner instead
-// of submitting with an unanchored window.
-export function nextSuperblockEpochSecFromStats(stats) {
+// `nowSec` is required and is compared against the extracted anchor:
+// any value at or before `nowSec` is treated the same as a missing
+// field (returns null). This matters because the backend's stats
+// feed can lag — if the real next superblock has just passed and
+// sysMain.js hasn't refreshed, `superblock_next_epoch_sec` will be
+// in the past. Without this guard the wizard would cache a stale
+// anchor (truthy, so the Prepare button stays enabled), and the
+// two schedule sources diverge:
+//
+//   * buildProjectedSchedule consumes nextSuperblockSec verbatim,
+//     so Review shows payouts starting in the past.
+//   * computeProposalWindow's internal fallback rewrites the anchor
+//     to `now + cycle`, so the window actually submitted on-chain
+//     is shifted by up to a full cycle from what the user reviewed.
+//
+// Rejecting stale values here forces refreshStats to surface a
+// "live-chain data unavailable" banner and keep the Prepare button
+// disabled until a fresh anchor arrives.
+export function nextSuperblockEpochSecFromStats(stats, nowSec) {
+  const now = Math.floor(Number(nowSec));
+  if (!Number.isFinite(now) || now <= 0) {
+    throw new Error(
+      'nextSuperblockEpochSecFromStats: nowSec must be a positive integer'
+    );
+  }
   if (!stats || typeof stats !== 'object') return null;
   const root = stats.stats && typeof stats.stats === 'object' ? stats.stats : stats;
   const sb = root.superblock_stats;
   if (!sb || typeof sb !== 'object') return null;
   const value = Number(sb.superblock_next_epoch_sec);
   if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor(value);
+  const floored = Math.floor(value);
+  if (floored <= now) return null;
+  return floored;
 }

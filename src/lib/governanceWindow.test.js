@@ -164,38 +164,87 @@ describe('computeProposalWindow', () => {
 });
 
 describe('nextSuperblockEpochSecFromStats', () => {
-  test('returns the numeric field when present', () => {
+  const NOW = 1_800_000_000;
+
+  test('returns the numeric field when strictly in the future', () => {
     expect(
-      nextSuperblockEpochSecFromStats({
-        stats: { superblock_stats: { superblock_next_epoch_sec: 1_800_000_000 } },
-      })
-    ).toBe(1_800_000_000);
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: NOW + 60 } } },
+        NOW
+      )
+    ).toBe(NOW + 60);
   });
 
   test('handles an un-wrapped payload (stats at root)', () => {
     expect(
-      nextSuperblockEpochSecFromStats({
-        superblock_stats: { superblock_next_epoch_sec: 1_700_000_000 },
-      })
-    ).toBe(1_700_000_000);
+      nextSuperblockEpochSecFromStats(
+        { superblock_stats: { superblock_next_epoch_sec: NOW + 3600 } },
+        NOW
+      )
+    ).toBe(NOW + 3600);
   });
 
   test('returns null for missing / non-positive / malformed inputs', () => {
-    expect(nextSuperblockEpochSecFromStats(null)).toBeNull();
-    expect(nextSuperblockEpochSecFromStats({})).toBeNull();
-    expect(nextSuperblockEpochSecFromStats({ stats: {} })).toBeNull();
+    expect(nextSuperblockEpochSecFromStats(null, NOW)).toBeNull();
+    expect(nextSuperblockEpochSecFromStats({}, NOW)).toBeNull();
+    expect(nextSuperblockEpochSecFromStats({ stats: {} }, NOW)).toBeNull();
     expect(
-      nextSuperblockEpochSecFromStats({ stats: { superblock_stats: {} } })
+      nextSuperblockEpochSecFromStats({ stats: { superblock_stats: {} } }, NOW)
     ).toBeNull();
     expect(
-      nextSuperblockEpochSecFromStats({
-        stats: { superblock_stats: { superblock_next_epoch_sec: 0 } },
-      })
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: 0 } } },
+        NOW
+      )
     ).toBeNull();
     expect(
-      nextSuperblockEpochSecFromStats({
-        stats: { superblock_stats: { superblock_next_epoch_sec: 'soon' } },
-      })
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: 'soon' } } },
+        NOW
+      )
     ).toBeNull();
+  });
+
+  // Codex PR20 P1: the backend's /mnStats feed can lag for a
+  // window between the real next superblock landing and
+  // sysMain.js refreshing its cache. If we were to accept that
+  // stale (past) timestamp as a valid anchor, the wizard would
+  // enable Prepare, render a Review schedule starting from a past
+  // date, and then silently submit a different window (the
+  // computeProposalWindow stale-anchor fallback). Regression
+  // tests: any anchor <= nowSec must be rejected the same way a
+  // missing field is.
+  test('rejects an anchor equal to nowSec as stale', () => {
+    expect(
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: NOW } } },
+        NOW
+      )
+    ).toBeNull();
+  });
+
+  test('rejects an anchor in the past as stale', () => {
+    expect(
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: NOW - 1 } } },
+        NOW
+      )
+    ).toBeNull();
+    expect(
+      nextSuperblockEpochSecFromStats(
+        { stats: { superblock_stats: { superblock_next_epoch_sec: NOW - 86400 } } },
+        NOW
+      )
+    ).toBeNull();
+  });
+
+  test('throws when nowSec is missing or invalid', () => {
+    const stats = {
+      stats: { superblock_stats: { superblock_next_epoch_sec: NOW + 60 } },
+    };
+    expect(() => nextSuperblockEpochSecFromStats(stats)).toThrow();
+    expect(() => nextSuperblockEpochSecFromStats(stats, 0)).toThrow();
+    expect(() => nextSuperblockEpochSecFromStats(stats, -1)).toThrow();
+    expect(() => nextSuperblockEpochSecFromStats(stats, 'now')).toThrow();
   });
 });
