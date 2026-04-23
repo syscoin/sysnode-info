@@ -18,6 +18,30 @@ jest.mock('../lib/crypto/kdf', () => ({
   deriveVaultKey: jest.fn(),
 }));
 
+// Mock the network-stats fetcher that the wizard uses to anchor its
+// derived voting window. Every test that reaches the Payment or
+// Review step needs a stable next-superblock epoch; we default to
+// 30 days in the future so the derived window falls roughly in the
+// same shape the wizard would produce on mainnet (~15-day fudge
+// before start, ~15-day fudge after the last payment). Individual
+// tests can still override via `fetchNetworkStats.mockResolvedValueOnce`.
+//
+// Factory helpers MUST start with `mock` or Jest refuses to reference
+// out-of-scope identifiers (hoisting guard against stale capture).
+jest.mock('../lib/api', () => ({
+  __esModule: true,
+  fetchNetworkStats: jest.fn(() =>
+    Promise.resolve({
+      stats: {
+        superblock_stats: {
+          superblock_next_epoch_sec:
+            Math.floor(Date.now() / 1000) + 30 * 86400,
+        },
+      },
+    })
+  ),
+}));
+
 jest.mock('../lib/proposalService', () => {
   // Keep the named export of HEX64_RE live so the wizard's own client
   // validation behaves as in production.
@@ -42,8 +66,24 @@ jest.mock('../lib/proposalService', () => {
 /* eslint-disable import/first */
 import NewProposal from './NewProposal';
 import { AuthProvider } from '../context/AuthContext';
+import { fetchNetworkStats } from '../lib/api';
 import { proposalService } from '../lib/proposalService';
 /* eslint-enable import/first */
+
+// Default network-stats resolver used by beforeEach to reinstate the
+// mock impl after jest.clearAllMocks wipes it. Kept as a function so
+// `Date.now()` is re-evaluated per call (tests that freeze time or
+// advance it still see a fresh anchor in the future).
+function defaultNetworkStatsResolver() {
+  return Promise.resolve({
+    stats: {
+      superblock_stats: {
+        superblock_next_epoch_sec:
+          Math.floor(Date.now() / 1000) + 30 * 86400,
+      },
+    },
+  });
+}
 
 function makeAuthService(user = { id: 42, email: 'alice@example.com' }) {
   return {
@@ -107,7 +147,6 @@ function validBasics() {
 }
 
 function validPayment({ count = '1' } = {}) {
-  const now = Math.floor(Date.now() / 1000);
   fireEvent.change(screen.getByTestId('wizard-field-address'), {
     target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
   });
@@ -117,17 +156,17 @@ function validPayment({ count = '1' } = {}) {
   fireEvent.change(screen.getByTestId('wizard-field-count'), {
     target: { value: count },
   });
-  fireEvent.change(screen.getByTestId('wizard-field-start'), {
-    target: { value: String(now + 3600) },
-  });
-  fireEvent.change(screen.getByTestId('wizard-field-end'), {
-    target: { value: String(now + 7200) },
-  });
+  // Voting window is now derived at /prepare time from the live
+  // next-superblock anchor (mocked above). No user-facing start/end
+  // inputs to fill in anymore.
 }
 
 describe('NewProposal wizard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Reinstate the network-stats resolver — clearAllMocks wipes
+    // the default impl set in the jest.mock factory.
+    fetchNetworkStats.mockImplementation(defaultNetworkStatsResolver);
     // Default to no pre-existing draft fetch.
     proposalService.getDraft.mockRejectedValue(
       Object.assign(new Error('not_found'), { code: 'not_found' })
@@ -242,11 +281,16 @@ describe('NewProposal wizard', () => {
       expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
 
       validPayment();
+      // Wait for the mocked next-superblock anchor to resolve —
+      // until it lands the Prepare button is disabled because we
+      // refuse to submit an unanchored voting window.
+      await screen.findByTestId('window-preview');
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
       expect(screen.getByTestId('review-name')).toHaveTextContent('my-grant');
 
       const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
       await act(async () => {
         fireEvent.click(prepareBtn);
       });
@@ -260,6 +304,12 @@ describe('NewProposal wizard', () => {
         paymentAmountSats: '100000000000',
         paymentCount: 1,
       });
+      // Epochs are derived at prepare time, never from user input.
+      // Sanity: start < end, end > now, span is roughly
+      // paymentCount * cycle.
+      expect(body.startEpoch).toBeGreaterThan(0);
+      expect(body.endEpoch).toBeGreaterThan(body.startEpoch);
+      expect(body.endEpoch).toBeGreaterThan(Math.floor(Date.now() / 1000));
 
       // Critical invariant: on successful prepare the wizard hands
       // off to the dedicated status page. The old in-wizard Submit
@@ -503,11 +553,17 @@ describe('NewProposal wizard', () => {
     // Walk the wizard to Review.
     fireEvent.click(screen.getByTestId('wizard-next'));
     expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
+    // Wait for the mocked next-superblock anchor before advancing
+    // — Prepare is gated on a live window and tapping it too early
+    // would no-op.
+    await screen.findByTestId('window-preview');
     fireEvent.click(screen.getByTestId('wizard-next'));
     expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
+    const prepareBtnA = screen.getByTestId('wizard-prepare');
+    await waitFor(() => expect(prepareBtnA).not.toBeDisabled());
     await act(async () => {
-      fireEvent.click(screen.getByTestId('wizard-prepare'));
+      fireEvent.click(prepareBtnA);
     });
 
     expect(proposalService.prepare).toHaveBeenCalledTimes(1);
@@ -556,11 +612,14 @@ describe('NewProposal wizard', () => {
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
       validPayment();
+      await screen.findByTestId('window-preview');
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
+      const prepareBtnB = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtnB).not.toBeDisabled());
       await act(async () => {
-        fireEvent.click(screen.getByTestId('wizard-prepare'));
+        fireEvent.click(prepareBtnB);
       });
 
       await waitFor(() => {
@@ -572,23 +631,25 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Review step surfaces an approximate payment schedule and total budget for paymentCount >= 2 (QA v3-ER03)',
+    'Review step surfaces the projected payment schedule + total budget for paymentCount >= 2',
     async () => {
-      // QA v3-ER03: when a proposal requests multiple monthly
-      // payments, the Review step must break down approximately
-      // WHEN each payment would be paid and what the total budget
-      // works out to. Shipping just "Number of payments: 3" left
-      // users to mentally multiply and to guess at superblock
-      // cadence. Added as a planning-grade estimate (~30d cadence)
-      // with a caveat.
+      // With the derived-window redesign the voting window is
+      // computed from duration alone, so the Review step can be
+      // positive about the schedule instead of warning about
+      // truncation: the window is always wide enough to fit every
+      // requested payment by construction (see
+      // lib/governanceWindow.js). Assert the schedule lists N rows,
+      // each carrying an index + a SYS amount, and that the total
+      // budget is rendered.
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
 
-      // Fill a window wide enough to fit 3 monthly payments:
-      // start now+1h, end now+120 days.
-      const now = Math.floor(Date.now() / 1000);
+      // Wait for the mocked next-SB anchor to land so the
+      // derived window renders.
+      await screen.findByTestId('window-preview');
+
       fireEvent.change(screen.getByTestId('wizard-field-address'), {
         target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
       });
@@ -597,123 +658,21 @@ describe('NewProposal wizard', () => {
       });
       fireEvent.change(screen.getByTestId('wizard-field-count'), {
         target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 120 * 86400) },
       });
       fireEvent.click(screen.getByTestId('wizard-next'));
 
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
       expect(screen.getByTestId('review-count')).toHaveTextContent('3');
-      // Total budget = 3 × 500 = 1,500 SYS (with locale-aware
-      // grouping separators, so we tolerate either a comma or a
-      // space as the thousands separator).
+      // Total budget = 3 × 500 = 1,500 SYS (locale-tolerant).
       expect(screen.getByTestId('review-total')).toHaveTextContent(
         /1[,\s]?500 SYS/
       );
       const rows = screen.getAllByTestId('review-schedule-row');
       expect(rows).toHaveLength(3);
-      // All three rows carry an index and a date. We don't assert
-      // the exact date strings (they depend on system clock) but
-      // they must be non-empty.
       for (const row of rows) {
         expect(row.textContent).toMatch(/#\d+/);
         expect(row.textContent).toMatch(/SYS/);
       }
-      // Truncation warning absent when every payment fits.
-      expect(screen.queryByTestId('review-schedule-trunc')).toBeNull();
-    }
-  );
-
-  test(
-    'Review step warns when the voting window cannot fit every requested payment',
-    async () => {
-      // If user sets paymentCount=3 but picks a 45-day window,
-      // only 1 of the 3 requested monthly superblocks will fall
-      // inside (the first payable superblock is one full cycle
-      // after start under worst-case alignment; see
-      // `buildApproximateSchedule`) and the remaining 2 payments
-      // will never be paid. Surface this explicitly — silently
-      // omitting rows from the schedule would let the user
-      // prepare a misconfigured proposal and burn their 150 SYS
-      // collateral for nothing.
-      await renderWizard();
-      await screen.findByTestId('wizard-panel-basics');
-      validBasics();
-      fireEvent.click(screen.getByTestId('wizard-next'));
-
-      const now = Math.floor(Date.now() / 1000);
-      fireEvent.change(screen.getByTestId('wizard-field-address'), {
-        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
-        target: { value: '500' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-count'), {
-        target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 45 * 86400) },
-      });
-      fireEvent.click(screen.getByTestId('wizard-next'));
-
-      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
-      const rows = screen.queryAllByTestId('review-schedule-row');
-      expect(rows.length).toBeLessThan(3);
-      expect(
-        screen.getByTestId('review-schedule-trunc')
-      ).toHaveTextContent(/of the 3/i);
-    }
-  );
-
-  test(
-    'Review step warns when the voting window cannot fit any payment at all (Codex PR9 R3)',
-    async () => {
-      // Regression guard for the Codex-flagged schedule alignment
-      // fix: under worst-case superblock alignment the first
-      // payable superblock is a full cycle AFTER startEpoch, so a
-      // multi-payment proposal with a window shorter than one
-      // cycle yields zero payable rows. The schedule panel must
-      // still render the truncation warning instead of being
-      // hidden — otherwise the user would think the schedule is
-      // fine when in reality no payment can land at all.
-      await renderWizard();
-      await screen.findByTestId('wizard-panel-basics');
-      validBasics();
-      fireEvent.click(screen.getByTestId('wizard-next'));
-
-      const now = Math.floor(Date.now() / 1000);
-      fireEvent.change(screen.getByTestId('wizard-field-address'), {
-        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
-        target: { value: '500' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-count'), {
-        target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 15 * 86400) },
-      });
-      fireEvent.click(screen.getByTestId('wizard-next'));
-
-      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
-      expect(screen.getByTestId('review-schedule')).toBeInTheDocument();
-      expect(
-        screen.queryAllByTestId('review-schedule-row')
-      ).toHaveLength(0);
-      expect(
-        screen.getByTestId('review-schedule-trunc')
-      ).toHaveTextContent(/too short to land any/i);
     }
   );
 

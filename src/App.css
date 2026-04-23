@@ -4031,8 +4031,31 @@
   font-weight: 700;
 }
 
-.proposal-wizard__help--warn {
-  color: #b45309;
+.proposal-wizard__window-preview {
+  border: 1px solid var(--panel-outline);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--panel-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proposal-wizard__window-preview > strong {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.proposal-wizard__window-preview p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.proposal-wizard__window-preview--error {
+  background: rgba(229, 107, 85, 0.08);
+  border-color: rgba(229, 107, 85, 0.35);
 }
 
 .proposal-wizard__schedule {

@@ -92,13 +92,16 @@ describe('fromDraft', () => {
       paymentAddress: 'sys1qabc',
       paymentAmountSats: '150000000', // 1.5 SYS
       paymentCount: 12,
+      // Legacy draft epochs — intentionally dropped by fromDraft since
+      // the wizard re-derives them at /prepare time from a live
+      // next-superblock anchor. Asserted below.
       startEpoch: 1800000000,
       endEpoch: 1802592000,
     });
     expect(form.paymentAmount).toBe('1.5');
     expect(form.paymentCount).toBe('12');
-    expect(form.startEpoch).toBe('1800000000');
-    expect(form.endEpoch).toBe('1802592000');
+    expect(form).not.toHaveProperty('startEpoch');
+    expect(form).not.toHaveProperty('endEpoch');
   });
 
   test('uses explicit paymentAmount string when backend already formatted it', () => {
@@ -155,73 +158,34 @@ describe('validatePayment', () => {
     paymentAddress: 'sys1qabcdefghij1234567890',
     paymentAmount: '150',
     paymentCount: '1',
-    startEpoch: '1900000000',
-    endEpoch: '1902592000',
   };
 
   test('happy path', () => {
-    expect(validatePayment(base, { nowSec: 1800000000 })).toEqual({});
+    expect(validatePayment(base)).toEqual({});
   });
 
   test('flags non-address payment string', () => {
     expect(
-      validatePayment({ ...base, paymentAddress: 'not-an-address' }, { nowSec: 1 })
+      validatePayment({ ...base, paymentAddress: 'not-an-address' })
     ).toHaveProperty('paymentAddress');
   });
 
   test('flags zero / negative / malformed amounts', () => {
-    expect(validatePayment({ ...base, paymentAmount: '0' }, { nowSec: 1 }))
+    expect(validatePayment({ ...base, paymentAmount: '0' }))
       .toMatchObject({ paymentAmount: expect.stringMatching(/greater than zero/i) });
-    expect(validatePayment({ ...base, paymentAmount: '-5' }, { nowSec: 1 }))
+    expect(validatePayment({ ...base, paymentAmount: '-5' }))
       .toHaveProperty('paymentAmount');
-    expect(validatePayment({ ...base, paymentAmount: 'foo' }, { nowSec: 1 }))
+    expect(validatePayment({ ...base, paymentAmount: 'foo' }))
       .toHaveProperty('paymentAmount');
   });
 
-  test('flags payment count outside [1, MAX]', () => {
-    expect(validatePayment({ ...base, paymentCount: '0' }, { nowSec: 1 }))
+  test('flags duration (paymentCount) outside [1, MAX]', () => {
+    expect(validatePayment({ ...base, paymentCount: '0' }))
       .toHaveProperty('paymentCount');
-    expect(validatePayment({ ...base, paymentCount: String(MAX_PAYMENT_COUNT + 1) }, { nowSec: 1 }))
+    expect(validatePayment({ ...base, paymentCount: String(MAX_PAYMENT_COUNT + 1) }))
       .toHaveProperty('paymentCount');
-    expect(validatePayment({ ...base, paymentCount: '1.5' }, { nowSec: 1 }))
+    expect(validatePayment({ ...base, paymentCount: '1.5' }))
       .toHaveProperty('paymentCount');
-  });
-
-  test('flags missing epochs and end <= start', () => {
-    expect(validatePayment({ ...base, startEpoch: '', endEpoch: '' }, { nowSec: 1 }))
-      .toMatchObject({
-        startEpoch: expect.any(String),
-        endEpoch: expect.any(String),
-      });
-    expect(
-      validatePayment(
-        { ...base, startEpoch: '1800000000', endEpoch: '1800000000' },
-        { nowSec: 1 }
-      )
-    ).toHaveProperty('endEpoch');
-    expect(
-      validatePayment(
-        { ...base, startEpoch: '1800000000', endEpoch: '1700000000' },
-        { nowSec: 1 }
-      )
-    ).toHaveProperty('endEpoch');
-  });
-
-  test('flags start in the past (beyond a 60s grace)', () => {
-    const nowSec = 1_800_000_000;
-    expect(
-      validatePayment(
-        { ...base, startEpoch: String(nowSec - 3600), endEpoch: String(nowSec + 3600) },
-        { nowSec }
-      )
-    ).toHaveProperty('startEpoch');
-    // Within grace → ok
-    expect(
-      validatePayment(
-        { ...base, startEpoch: String(nowSec - 30), endEpoch: String(nowSec + 3600) },
-        { nowSec }
-      )
-    ).not.toHaveProperty('startEpoch');
   });
 });
 
@@ -232,8 +196,6 @@ describe('estimatePayloadBytes', () => {
       url: 'https://syscoin.org/proposals/2026-01/fund-docs.md',
       paymentAddress: 'sys1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
       paymentAmount: '150',
-      startEpoch: '1900000000',
-      endEpoch: '1902592000',
     });
     expect(bytes).toBeLessThan(512);
     expect(bytes).toBeGreaterThan(100);
@@ -245,16 +207,12 @@ describe('estimatePayloadBytes', () => {
       url: 'https://a.test',
       paymentAddress: 'sys1abc',
       paymentAmount: '1',
-      startEpoch: '1',
-      endEpoch: '2',
     });
     const large = estimatePayloadBytes({
       name: 'x',
       url: 'https://a.test/' + 'a'.repeat(200),
       paymentAddress: 'sys1abc',
       paymentAmount: '1',
-      startEpoch: '1',
-      endEpoch: '2',
     });
     expect(large).toBeGreaterThan(small + 150);
   });
@@ -274,37 +232,30 @@ describe('estimatePayloadBytes', () => {
         url: 'https://syscoin.org/p/huge',
         paymentAddress: 'sys1qexample',
         paymentAmount: amountDecimal,
-        startEpoch: '1900000000',
-        endEpoch: '1902592000',
       });
-      // Full decimal (22 chars) is noticeably larger than sci-form
-      // "1.2345678901231234e+21" (22 chars — similar) so we also
-      // assert on a smaller precision case that clearly diverges:
-      // a huge integer coerces to "1.23456789012e+21"-ish whereas
-      // the real decimal "1234567890123" keeps all 13 digits.
       const bytesSmallFrac = estimatePayloadBytes({
         name: 'huge-ask',
         url: 'https://syscoin.org/p/huge',
         paymentAddress: 'sys1qexample',
         paymentAmount: '1234567890123',
-        startEpoch: '1900000000',
-        endEpoch: '1902592000',
       });
       // Sanity bound: the fractional variant is at least as large
       // as the integer variant (more chars in payment_amount).
       expect(bytes).toBeGreaterThanOrEqual(bytesSmallFrac);
 
       // The critical invariant: the byte-count must reflect the
-      // FULL canonical decimal. We reconstruct what the backend's
-      // canonical emitter produces and compare via a crude
-      // string-inclusion check (the JSON stringify passes through
-      // the same text). Because we use TextEncoder for bytes, we
-      // validate the underlying JSON contains the literal string.
+      // FULL canonical decimal. We reconstruct what the estimator
+      // produces (constant 10-digit epoch placeholders; see
+      // proposalForm.estimatePayloadBytes) and compare via a
+      // TextEncoder byte count. Because the estimator's JSON
+      // contains the literal amount string, scientific notation
+      // must be absent.
+      const EPOCH_PLACEHOLDER = 1_900_000_000;
       const probe = JSON.stringify({
         type: 1,
         name: 'huge-ask',
-        start_epoch: 1900000000,
-        end_epoch: 1902592000,
+        start_epoch: EPOCH_PLACEHOLDER,
+        end_epoch: EPOCH_PLACEHOLDER,
         payment_address: 'sys1qexample',
         payment_amount: amountDecimal,
         url: 'https://syscoin.org/p/huge',
@@ -369,17 +320,15 @@ describe('draftBodyFromForm + prepareBodyFromForm', () => {
           url: '', // user cleared this
           paymentAddress: '', // and this
           paymentAmount: '1',
-          startEpoch: '',
-          endEpoch: '',
         },
         { forUpdate: true }
       );
       expect(body.name).toBe('still has name');
       expect(body.url).toBe('');
       expect(body.paymentAddress).toBe('');
-      // Epochs use explicit null (backend accepts null as clear;
-      // `Math.trunc(Number(''))` would be 0, which fails the
-      // start/end validators as a garbage value).
+      // Epochs are always cleared on update now — they are no longer
+      // user-editable and are re-derived at /prepare time from a live
+      // next-superblock anchor.
       expect(body.startEpoch).toBeNull();
       expect(body.endEpoch).toBeNull();
     }
@@ -442,5 +391,24 @@ describe('draftBodyFromForm + prepareBodyFromForm', () => {
     const body = prepareBodyFromForm(emptyForm(), { draftId: 0 });
     expect(body).not.toHaveProperty('draftId');
     expect(body).not.toHaveProperty('consumeDraft');
+  });
+
+  test('prepareBodyFromForm injects the derived window when provided', () => {
+    const body = prepareBodyFromForm(
+      { ...emptyForm(), name: 'x' },
+      { window: { startEpoch: 1900000000, endEpoch: 1902628000 } }
+    );
+    expect(body.startEpoch).toBe(1900000000);
+    expect(body.endEpoch).toBe(1902628000);
+  });
+
+  test('prepareBodyFromForm omits epochs when no window is provided', () => {
+    // Callers are expected to always supply `window` for the wizard
+    // flow; the backend will reject /prepare without epochs. Keeping
+    // the helper lenient here so tests can probe the bare body shape
+    // without hand-rolling every field.
+    const body = prepareBodyFromForm({ ...emptyForm(), name: 'x' });
+    expect(body).not.toHaveProperty('startEpoch');
+    expect(body).not.toHaveProperty('endEpoch');
   });
 });
