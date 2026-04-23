@@ -56,16 +56,16 @@ const DESCRIPTORS = Object.freeze({
   already_voted: {
     short: 'Already submitted',
     long:
-      'This masternode already voted on this proposal. No change was ' +
+      'This sentry node already voted on this proposal. No change was ' +
       'made — the on-chain record still reflects your prior vote.',
     severity: SEVERITY.INFO,
   },
 
   // -------------------------------------------------- warn ("actionable but not broken")
   mn_not_found: {
-    short: 'Masternode no longer active',
+    short: 'Sentry node no longer active',
     long:
-      'This masternode is no longer active on-chain (deregistered or ' +
+      'This sentry node is no longer active on-chain (deregistered or ' +
       'collateral moved). Update the voting key associations in ' +
       'Account to remove stale entries.',
     severity: SEVERITY.WARN,
@@ -79,7 +79,7 @@ const DESCRIPTORS = Object.freeze({
     short: 'Signature rejected',
     long:
       'The network rejected the signature — the voting key in your ' +
-      'vault does not match the voting address this masternode ' +
+      'vault does not match the voting address this sentry node ' +
       'expects. Re-import the correct voting key on the Account page.',
     severity: SEVERITY.WARN,
     cta: {
@@ -98,7 +98,7 @@ const DESCRIPTORS = Object.freeze({
   vote_too_often: {
     short: 'Vote in cooldown',
     long:
-      'The network recently accepted a vote from this masternode on ' +
+      'The network recently accepted a vote from this sentry node on ' +
       'this proposal and is enforcing a per-MN cooldown. Use Retry ' +
       "failed once the cooldown clears — the server won't relay " +
       'duplicates, so clicking again is safe.',
@@ -194,7 +194,7 @@ const DESCRIPTORS = Object.freeze({
     short: 'Signing failed',
     long:
       "We couldn't sign this vote with the key on file. Verify the " +
-      'voting key in Account matches what this masternode expects.',
+      'voting key in Account matches what this sentry node expects.',
     severity: SEVERITY.ERROR,
     cta: { label: 'Review voting keys', href: '/account', kind: 'link' },
   },

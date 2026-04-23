@@ -51,11 +51,20 @@ function makeOwnedHook({
   isReady = true,
   isLoading = false,
   isVaultEmpty = false,
+  isVaultLocked = false,
   owned = [],
   error = null,
   refresh = jest.fn(),
 } = {}) {
-  return { isReady, isLoading, isVaultEmpty, owned, error, refresh };
+  return {
+    isReady,
+    isLoading,
+    isVaultEmpty,
+    isVaultLocked,
+    owned,
+    error,
+    refresh,
+  };
 }
 
 describe('useGovernanceReceipts', () => {
@@ -162,6 +171,45 @@ describe('useGovernanceReceipts', () => {
     render(<Probe service={service} capture={(s) => (snapshot = s)} />);
     await waitFor(() => expect(snapshot).toBeDefined());
     expect(snapshot.ownedCount).toBe(0);
+  });
+
+  test('surfaces isVaultLocked=true when the vault is locked so the ops-hero can render an unlock CTA instead of a perpetual skeleton', async () => {
+    // Regression: useOwnedMasternodes transitions to VAULT_LOCKED
+    // after every page refresh (the vault master key lives only in
+    // memory, so a reload always lands the user on LOCKED). Without
+    // a dedicated signal, ownedCount stayed null and
+    // GovernanceOpsHero sat on "Loading your personalised summary…"
+    // forever with no prompt to unlock. Expose the locked state so
+    // the hero can swap the skeleton for an inline unlock form.
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(
+      makeOwnedHook({
+        isReady: false,
+        isLoading: false,
+        isVaultLocked: true,
+        owned: [],
+      })
+    );
+    const service = makeService({ summary: [] });
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+    await waitFor(() => expect(snapshot).toBeDefined());
+    expect(snapshot.isVaultLocked).toBe(true);
+    // ownedCount semantics are preserved — null so cohort chips and
+    // ops stats still treat the denominator as unknown.
+    expect(snapshot.ownedCount).toBeNull();
+  });
+
+  test('isVaultLocked is false in the ordinary ready path', async () => {
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(
+      makeOwnedHook({ owned: [{ keyId: 'k1' }] })
+    );
+    const service = makeService({ summary: [] });
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+    await waitFor(() => expect(snapshot).toBeDefined());
+    expect(snapshot.isVaultLocked).toBe(false);
   });
 
   test('enabled=false keeps the hook dormant even when authenticated', async () => {

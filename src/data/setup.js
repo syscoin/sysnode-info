@@ -59,7 +59,7 @@ export const PROVIDERS = [
     eyebrow: 'Managed Host',
     title: 'NodeHub',
     copy:
-      'NodeHub positions itself as infrastructure for masternodes and validators, with an account-based platform and API-driven workflows. It is worth evaluating if you prefer a hosted platform model over running your own server.',
+      'NodeHub positions itself as infrastructure for sentry nodes and validators, with an account-based platform and API-driven workflows. It is worth evaluating if you prefer a hosted platform model over running your own server.',
     bullets: [
       'Verify current Syscoin availability, pricing, and onboarding steps directly with NodeHub before deploying.',
       'Best treated as a provider to compare alongside Allnodes and self-hosting, rather than as the default path.',

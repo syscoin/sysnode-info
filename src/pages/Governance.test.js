@@ -352,7 +352,7 @@ describe('Governance page — cohort chips', () => {
     const chip = screen.getByTestId('proposal-row-cohort');
     expect(chip).toHaveTextContent(/not voted/i);
     expect(chip.getAttribute('data-cohort-kind')).toBe('not-voted');
-    expect(chip.getAttribute('title')).toMatch(/4 masternodes/);
+    expect(chip.getAttribute('title')).toMatch(/4 sentry nodes/);
   });
 
   test('authenticated user without a known owned count sees no chip on un-voted proposals', () => {
