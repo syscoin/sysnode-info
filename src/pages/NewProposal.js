@@ -18,6 +18,7 @@ import { fetchNetworkStats } from '../lib/api';
 import {
   SUPERBLOCK_CYCLE_SEC,
   computeProposalWindow,
+  isTightVotingWindow,
   nextSuperblockEpochSecFromStats,
 } from '../lib/governanceWindow';
 import { proposalService } from '../lib/proposalService';
@@ -1220,6 +1221,11 @@ function PaymentStep({
         </div>
       </div>
 
+      <TightVotingWindowNotice
+        nextSuperblockSec={nextSuperblockSec}
+        paymentCount={form.paymentCount}
+      />
+
       <WindowPreview
         derivedWindow={derivedWindow}
         nextSuperblockSec={nextSuperblockSec}
@@ -1229,6 +1235,103 @@ function PaymentStep({
       />
 
       <PayloadSizeMeter bytes={payloadBytes} />
+    </div>
+  );
+}
+
+// Compact "Xd Yh Zm" formatter for how-long-until-next-superblock
+// copy in the tight-voting-window notice. Sub-minute granularity
+// would imply precision we don't have (the backend's anchor is
+// itself a projection of `(nNextSuperblock - nHeight) * 150s`),
+// so we stop at whole minutes. Null guard returns an empty string
+// so the caller can concatenate safely.
+function humanizeDurationShort(totalSec) {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return '';
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (days === 0 && mins > 0) parts.push(`${mins}m`);
+  if (parts.length === 0) parts.push('< 1m');
+  return parts.join(' ');
+}
+
+// Prominent banner shown on Payment + Review whenever the next
+// superblock is inside the wizard's warning buffer
+// (SUPERBLOCK_VOTE_DEADLINE_WARN_SEC, currently 4 days).
+//
+// Why it matters: Core forms the superblock payment-list
+// candidate in the last ~3 days before the superblock
+// (`nSuperblockMaturityWindow` = 1728 blocks). Each masternode
+// independently picks a candidate, votes YES-FUNDING on it,
+// and is then locked out of voting YES on any other trigger for
+// this cycle (governance.cpp:727 asserts this). So a proposal
+// submitted inside that 3-day window is racing masternode
+// commits, and any MN that has already committed cannot
+// retroactively include it. Our window intentionally excludes
+// SB_{N+1} to prevent silent over-payment, so missing SB_1
+// means the proposal pays out N-1 months instead of N.
+//
+// We fire the warning a day earlier than Core's 3-day maturity
+// threshold to give MN operators at least ~24h of headroom
+// between proposal submission and the earliest MN commit
+// (covers collateral confirmation, relay, operator review,
+// and vote propagation).
+//
+// Non-blocking by design: Prepare stays enabled. Some proposers
+// are fine with N-1 (e.g. emergency funding), and we don't want
+// to override their intent — we just make sure they see the
+// trade-off before submitting.
+function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!isTightVotingWindow(nowSec, nextSuperblockSec)) return null;
+  const secondsToSb = nextSuperblockSec - nowSec;
+  const n = Math.floor(Number(paymentCount));
+  const hasValidCount = Number.isInteger(n) && n >= 1;
+  // If the user only asked for 1 month, there's nothing to
+  // demote to (N-1 = 0), so the honest message is just "will
+  // likely miss that superblock".
+  const willLoseOnePayment = hasValidCount && n >= 2;
+  return (
+    <div
+      className="proposal-wizard__tight-warning"
+      role="alert"
+      data-testid="tight-voting-window-warning"
+    >
+      <strong className="proposal-wizard__tight-warning-title">
+        Tight voting window — masternodes may not have time to vote
+      </strong>
+      <p>
+        The next superblock is in{' '}
+        <strong>{humanizeDurationShort(secondsToSb)}</strong>. Syscoin
+        Core forms the superblock payment list during the last{' '}
+        ~3&nbsp;days before each superblock, and once a masternode
+        has voted on that payment list it cannot change its vote
+        for this cycle. Submitting now means your proposal{' '}
+        <strong>will likely miss that superblock</strong>
+        {willLoseOnePayment ? (
+          <>
+            {' '}
+            and pay out{' '}
+            <strong data-testid="tight-voting-window-warning-paid">
+              {n - 1} month{n - 1 === 1 ? '' : 's'}
+            </strong>{' '}
+            instead of <strong>{n}</strong>
+          </>
+        ) : null}
+        .
+      </p>
+      <p>
+        If you need the full duration you requested, consider
+        waiting for the next superblock cycle (~30&nbsp;days) so
+        masternodes have time to see and vote on the proposal
+        before the next payment list locks in. You can also
+        proceed anyway — Prepare is still enabled — if you've
+        coordinated with operators or are OK with one fewer
+        payment.
+      </p>
     </div>
   );
 }
@@ -1449,6 +1552,11 @@ function ReviewStep({
           </>
         ) : null}
       </dl>
+
+      <TightVotingWindowNotice
+        nextSuperblockSec={nextSuperblockSec}
+        paymentCount={form.paymentCount}
+      />
 
       <WindowPreview
         derivedWindow={derivedWindow}

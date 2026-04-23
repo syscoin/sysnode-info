@@ -677,6 +677,118 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'tight-voting-window notice hidden when the next superblock is comfortably far',
+    async () => {
+      // Default mock returns an anchor 30 days out — outside the
+      // 4-day warning threshold. Warning must stay hidden on both
+      // Payment and Review.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      // Payment step loaded, anchor resolved.
+      await screen.findByTestId('window-preview');
+      expect(
+        screen.queryByTestId('tight-voting-window-warning')
+      ).toBeNull();
+
+      validPayment({ count: '3' });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      // Review step — same expectation.
+      expect(
+        screen.queryByTestId('tight-voting-window-warning')
+      ).toBeNull();
+    }
+  );
+
+  test(
+    'tight-voting-window notice fires on both Payment and Review when the next superblock is within 4 days',
+    async () => {
+      // Override the default 30-day mock: put the next superblock
+      // only 2 days out. This is inside Core's 3-day maturity
+      // window + the wizard's extra 1-day headroom — masternodes
+      // likely won't have time to finish voting, so the proposal
+      // would probably miss that superblock and pay out N-1
+      // months instead of N. The warning must fire on BOTH steps
+      // so the user doesn't skip past it.
+      fetchNetworkStats.mockImplementation(() =>
+        Promise.resolve({
+          stats: {
+            superblock_stats: {
+              superblock_next_epoch_sec:
+                Math.floor(Date.now() / 1000) + 2 * 86400,
+            },
+          },
+        })
+      );
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      // Payment step loaded, anchor resolved.
+      await screen.findByTestId('window-preview');
+      const paymentWarn = screen.getByTestId('tight-voting-window-warning');
+      expect(paymentWarn).toBeInTheDocument();
+      expect(paymentWarn).toHaveAttribute('role', 'alert');
+      expect(paymentWarn.textContent).toMatch(/next superblock/i);
+      expect(paymentWarn.textContent).toMatch(/likely miss/i);
+
+      // Fill duration=6 so the notice can quote "5 instead of 6".
+      validPayment({ count: '6' });
+      const paidChip = screen.getByTestId(
+        'tight-voting-window-warning-paid'
+      );
+      expect(paidChip.textContent).toBe('5 months');
+
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      const reviewWarn = screen.getByTestId('tight-voting-window-warning');
+      expect(reviewWarn).toBeInTheDocument();
+      // Prepare stays enabled — notice is informational, not a blocker.
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+    }
+  );
+
+  test(
+    'tight-voting-window notice omits the "N-1 months" clause for 1-month proposals',
+    async () => {
+      // Edge case: user asked for 1 month. "Will pay 0 months
+      // instead of 1" is unhelpful — the honest message is just
+      // "will likely miss that superblock" without the demotion
+      // clause.
+      fetchNetworkStats.mockImplementation(() =>
+        Promise.resolve({
+          stats: {
+            superblock_stats: {
+              superblock_next_epoch_sec:
+                Math.floor(Date.now() / 1000) + 2 * 86400,
+            },
+          },
+        })
+      );
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment({ count: '1' });
+
+      const warn = screen.getByTestId('tight-voting-window-warning');
+      expect(warn).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('tight-voting-window-warning-paid')
+      ).toBeNull();
+      expect(warn.textContent).toMatch(/likely miss/i);
+    }
+  );
+
+  test(
     'Review step hides the schedule block for single-payment proposals',
     async () => {
       // paymentCount=1 is the default and most common case.

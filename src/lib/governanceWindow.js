@@ -49,6 +49,53 @@ export const SUPERBLOCK_CYCLE_SEC = 17520 * 150;
 // directly.
 export const SUPERBLOCK_FUDGE_SEC = 2 * 60 * 60;
 
+// Core's pre-superblock maturity window during which masternodes
+// build the payment-list candidate and lock in their YES-FUNDING
+// trigger vote. On mainnet this is 1728 blocks at ~2.5 min/block,
+// i.e. ~3 days (see kernel/chainparams.cpp:154 and
+// governance.cpp:569).
+//
+// The important property: once a masternode has voted YES-FUNDING
+// on a trigger during this window it cannot vote YES on another
+// trigger for the same cycle (governance.cpp:727 hard-asserts
+// this). So the effective vote cutoff for a new proposal to be
+// included in the next superblock is not a cliff — it's a
+// gradient spread across the ~3-day window as individual
+// masternodes commit block-by-block inside `UpdatedBlockTip ->
+// CreateSuperblockCandidate -> VoteGovernanceTriggers`.
+//
+// Any proposal that has not accumulated quorum YES votes before
+// a supermajority of masternodes have committed will miss the
+// upcoming superblock and pay out N-1 months instead of N (since
+// our window intentionally excludes SB_{N+1}).
+export const SUPERBLOCK_MATURITY_WINDOW_SEC = 1728 * 150;
+
+// Wizard warning threshold — slightly wider than Core's maturity
+// window to give masternodes at least a day of headroom between
+// proposal submission and the earliest MN commit. That headroom
+// covers collateral confirmation (~15 min for 6 blocks), gobject
+// relay, operator review, and vote propagation. Proposals
+// submitted inside this 4-day window will likely miss the next
+// superblock and pay out N-1 months instead of N, so the wizard
+// surfaces a prominent notice.
+export const SUPERBLOCK_VOTE_DEADLINE_WARN_SEC = 4 * 24 * 60 * 60;
+
+// Returns true when the next superblock is close enough that
+// masternodes are unlikely to have finished voting + committing
+// before the trigger locks in. Caller supplies the wall clock
+// (nowSec) and the live next-superblock anchor so this stays
+// pure + deterministic — same contract as the other helpers here.
+// A null / zero / stale anchor returns false (the wizard already
+// refuses to submit in that state via the missing-stats banner;
+// overlaying a tight-window warning on top would be noise).
+export function isTightVotingWindow(nowSec, nextSuperblockSec) {
+  const now = Math.floor(Number(nowSec));
+  const nextSb = Math.floor(Number(nextSuperblockSec));
+  if (!Number.isFinite(now) || now <= 0) return false;
+  if (!Number.isFinite(nextSb) || nextSb <= now) return false;
+  return nextSb - now < SUPERBLOCK_VOTE_DEADLINE_WARN_SEC;
+}
+
 // Build the window for a proposal that should pay out for
 // `durationMonths` consecutive superblocks starting at the next
 // superblock after `nowSec`.

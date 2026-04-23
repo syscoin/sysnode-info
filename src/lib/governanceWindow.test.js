@@ -1,7 +1,10 @@
 import {
   SUPERBLOCK_CYCLE_SEC,
   SUPERBLOCK_FUDGE_SEC,
+  SUPERBLOCK_MATURITY_WINDOW_SEC,
+  SUPERBLOCK_VOTE_DEADLINE_WARN_SEC,
   computeProposalWindow,
+  isTightVotingWindow,
   nextSuperblockEpochSecFromStats,
 } from './governanceWindow';
 import { getProposalDurationMonths } from './formatters';
@@ -14,6 +17,58 @@ describe('SUPERBLOCK_CYCLE_SEC', () => {
   });
   test('SUPERBLOCK_FUDGE_SEC is 2 hours, matching GOVERNANCE_FUDGE_WINDOW', () => {
     expect(SUPERBLOCK_FUDGE_SEC).toBe(2 * 3600);
+  });
+  test('SUPERBLOCK_MATURITY_WINDOW_SEC matches Core (1728 blocks * 150s)', () => {
+    expect(SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(1728 * 150);
+    // Sanity: ~3 days.
+    expect(SUPERBLOCK_MATURITY_WINDOW_SEC / 86400).toBeCloseTo(3.0, 1);
+  });
+  test('SUPERBLOCK_VOTE_DEADLINE_WARN_SEC is 4 days (1 day wider than Core maturity)', () => {
+    expect(SUPERBLOCK_VOTE_DEADLINE_WARN_SEC).toBe(4 * 86400);
+    expect(SUPERBLOCK_VOTE_DEADLINE_WARN_SEC).toBeGreaterThan(
+      SUPERBLOCK_MATURITY_WINDOW_SEC
+    );
+  });
+});
+
+describe('isTightVotingWindow', () => {
+  const NOW = 1_800_000_000;
+
+  test('false when anchor is comfortably in the future (> 4 days)', () => {
+    expect(isTightVotingWindow(NOW, NOW + 5 * 86400)).toBe(false);
+    expect(isTightVotingWindow(NOW, NOW + 7 * 86400)).toBe(false);
+    expect(isTightVotingWindow(NOW, NOW + SUPERBLOCK_CYCLE_SEC)).toBe(false);
+  });
+
+  test('false at the 4-day boundary (strict less-than)', () => {
+    // Exactly at the threshold: not tight (avoids flapping on
+    // integer rounding the moment we cross the mark).
+    expect(isTightVotingWindow(NOW, NOW + 4 * 86400)).toBe(false);
+  });
+
+  test('true when anchor is inside the 4-day window', () => {
+    expect(isTightVotingWindow(NOW, NOW + 4 * 86400 - 1)).toBe(true);
+    expect(isTightVotingWindow(NOW, NOW + 3 * 86400)).toBe(true);
+    expect(isTightVotingWindow(NOW, NOW + 3600)).toBe(true);
+    expect(isTightVotingWindow(NOW, NOW + 60)).toBe(true);
+  });
+
+  test('false when anchor is missing, stale, or invalid', () => {
+    expect(isTightVotingWindow(NOW, NOW)).toBe(false); // equal to now: stale
+    expect(isTightVotingWindow(NOW, NOW - 1)).toBe(false); // past: stale
+    expect(isTightVotingWindow(NOW, 0)).toBe(false);
+    expect(isTightVotingWindow(NOW, null)).toBe(false);
+    expect(isTightVotingWindow(NOW, undefined)).toBe(false);
+    expect(isTightVotingWindow(NOW, 'soon')).toBe(false);
+  });
+
+  test('false when nowSec is invalid (fail-closed)', () => {
+    // Defensive: never claim "tight" on a bogus clock — the
+    // wizard would render a scary warning for no reason.
+    expect(isTightVotingWindow(0, NOW + 60)).toBe(false);
+    expect(isTightVotingWindow(-1, NOW + 60)).toBe(false);
+    expect(isTightVotingWindow(null, NOW + 60)).toBe(false);
+    expect(isTightVotingWindow('now', NOW + 60)).toBe(false);
   });
 });
 
