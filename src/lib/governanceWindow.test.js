@@ -10,7 +10,7 @@ import {
 import { getProposalDurationMonths } from './formatters';
 
 describe('SUPERBLOCK_CYCLE_SEC', () => {
-  test('matches Core consensus (17520 blocks * 150s)', () => {
+  test('matches Core consensus (17520 blocks * 150s) on the default (mainnet) build', () => {
     expect(SUPERBLOCK_CYCLE_SEC).toBe(17520 * 150);
     // Sanity: roughly 30.4 days.
     expect(SUPERBLOCK_CYCLE_SEC / 86400).toBeCloseTo(30.4166, 3);
@@ -18,7 +18,7 @@ describe('SUPERBLOCK_CYCLE_SEC', () => {
   test('SUPERBLOCK_FUDGE_SEC is 2 hours, matching GOVERNANCE_FUDGE_WINDOW', () => {
     expect(SUPERBLOCK_FUDGE_SEC).toBe(2 * 3600);
   });
-  test('SUPERBLOCK_MATURITY_WINDOW_SEC matches Core (1728 blocks * 150s)', () => {
+  test('SUPERBLOCK_MATURITY_WINDOW_SEC matches Core (1728 blocks * 150s) on mainnet', () => {
     expect(SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(1728 * 150);
     // Sanity: ~3 days.
     expect(SUPERBLOCK_MATURITY_WINDOW_SEC / 86400).toBeCloseTo(3.0, 1);
@@ -29,6 +29,91 @@ describe('SUPERBLOCK_CYCLE_SEC', () => {
       SUPERBLOCK_MATURITY_WINDOW_SEC
     );
   });
+});
+
+// Codex PR20 round 3 P1: ensure the window constants track the
+// per-network consensus params, not a hardcoded mainnet value.
+// Build a testnet/regtest copy of the module with REACT_APP_NETWORK
+// set and verify both cycle + maturity come from the right network.
+describe('per-network consensus params (Codex PR20 round 3 P1)', () => {
+  // jest.isolateModules lets us re-import governanceWindow.js with
+  // a different process.env.REACT_APP_NETWORK, which networkParams
+  // reads at module load. We restore the original value after each
+  // case so the outer describe's mainnet expectations continue to
+  // hold.
+  const originalNetwork = process.env.REACT_APP_NETWORK;
+  afterEach(() => {
+    if (originalNetwork === undefined) {
+      delete process.env.REACT_APP_NETWORK;
+    } else {
+      process.env.REACT_APP_NETWORK = originalNetwork;
+    }
+  });
+
+  function requireWithNetwork(value) {
+    if (value === undefined) {
+      delete process.env.REACT_APP_NETWORK;
+    } else {
+      process.env.REACT_APP_NETWORK = value;
+    }
+    let mod;
+    jest.isolateModules(() => {
+      // eslint-disable-next-line global-require
+      mod = require('./governanceWindow');
+    });
+    return mod;
+  }
+
+  test('testnet: cycle = 60 blocks, maturity = 20 blocks (Core chainparams.cpp:314)', () => {
+    const mod = requireWithNetwork('testnet');
+    expect(mod.SUPERBLOCK_CYCLE_SEC).toBe(60 * 150);
+    expect(mod.SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(20 * 150);
+    // Sanity: testnet SB cadence is 2.5 hours, not 30 days.
+    expect(mod.SUPERBLOCK_CYCLE_SEC).toBe(9000);
+  });
+
+  test('regtest: cycle = 10 blocks, maturity = 5 blocks (Core chainparams.cpp:570)', () => {
+    const mod = requireWithNetwork('regtest');
+    expect(mod.SUPERBLOCK_CYCLE_SEC).toBe(10 * 150);
+    expect(mod.SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(5 * 150);
+    expect(mod.SUPERBLOCK_CYCLE_SEC).toBe(1500);
+  });
+
+  test('explicit mainnet matches the default', () => {
+    const explicit = requireWithNetwork('mainnet');
+    const implicit = requireWithNetwork(undefined);
+    expect(explicit.SUPERBLOCK_CYCLE_SEC).toBe(implicit.SUPERBLOCK_CYCLE_SEC);
+    expect(explicit.SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(
+      implicit.SUPERBLOCK_MATURITY_WINDOW_SEC
+    );
+  });
+
+  test('unknown label falls back to mainnet so typos cannot produce 0-filled windows', () => {
+    const mod = requireWithNetwork('not-a-real-network');
+    expect(mod.SUPERBLOCK_CYCLE_SEC).toBe(17520 * 150);
+    expect(mod.SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(1728 * 150);
+  });
+
+  test.each(['testnet', 'regtest'])(
+    '%s: computeProposalWindow span is exactly N * cycle for the active network',
+    (netId) => {
+      const mod = requireWithNetwork(netId);
+      const NOW = 1_800_000_000;
+      for (const N of [1, 2, 6, 12]) {
+        const anchor = NOW + mod.SUPERBLOCK_CYCLE_SEC + 60; // comfortably future
+        const { startEpoch, endEpoch } = mod.computeProposalWindow({
+          durationMonths: N,
+          nowSec: NOW,
+          nextSuperblockSec: anchor,
+        });
+        // The full-month invariant (end - start = N*cycle) that
+        // mainnet tests rely on must also hold on test/reg nets —
+        // if it didn't, getProposalDurationMonths would display
+        // the wrong label on non-mainnet deployments.
+        expect(endEpoch - startEpoch).toBe(N * mod.SUPERBLOCK_CYCLE_SEC);
+      }
+    }
+  );
 });
 
 describe('isTightVotingWindow', () => {

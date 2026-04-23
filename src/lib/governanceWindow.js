@@ -36,11 +36,20 @@
 // therefore prunes cleanly at end_epoch + ~10 min with no extra month
 // allocation.
 
-// 17520 blocks * 150s/block = 2_628_000s ≈ 30.4166 days, the mainnet
-// superblock cadence. Kept in-sync with
-// Params().GetConsensus().nSuperblockCycle * PowTargetSpacing; any
-// change in Core must be mirrored here.
-export const SUPERBLOCK_CYCLE_SEC = 17520 * 150;
+// Syscoin's superblock cadence in wall-clock seconds for the
+// active network. The value is nSuperblockCycle (blocks) *
+// nPowTargetSpacing (sec/block) as configured in Core's
+// kernel/chainparams.cpp; mainnet values are 17520 * 150 ≈ 30.4
+// days, but testnet uses 60 blocks and regtest uses 10, so this
+// MUST NOT be hardcoded to a single network's values — doing so
+// made "1 month" on a testnet build span ~290 real superblocks
+// instead of one. The active network is resolved at build time
+// from REACT_APP_NETWORK (see lib/networkParams.js). Codex PR20
+// round 3 P1.
+import { getNetworkParams } from './networkParams';
+const NETWORK = getNetworkParams();
+export const SUPERBLOCK_CYCLE_SEC =
+  NETWORK.superblockCycleBlocks * NETWORK.targetBlockTimeSec;
 
 // Core's fudge tolerance (governanceobject.h GOVERNANCE_FUDGE_WINDOW).
 // Included here for tests and sanity asserts; the wizard's safety
@@ -53,7 +62,9 @@ export const SUPERBLOCK_FUDGE_SEC = 2 * 60 * 60;
 // build the payment-list candidate and lock in their YES-FUNDING
 // trigger vote. On mainnet this is 1728 blocks at ~2.5 min/block,
 // i.e. ~3 days (see kernel/chainparams.cpp:154 and
-// governance.cpp:569).
+// governance.cpp:569); testnet uses 20 blocks, regtest uses 5.
+// Value is taken from the active network's params — see
+// lib/networkParams.js.
 //
 // The important property: once a masternode has voted YES-FUNDING
 // on a trigger during this window it cannot vote YES on another
@@ -68,7 +79,8 @@ export const SUPERBLOCK_FUDGE_SEC = 2 * 60 * 60;
 // a supermajority of masternodes have committed will miss the
 // upcoming superblock and pay out N-1 months instead of N (since
 // our window intentionally excludes SB_{N+1}).
-export const SUPERBLOCK_MATURITY_WINDOW_SEC = 1728 * 150;
+export const SUPERBLOCK_MATURITY_WINDOW_SEC =
+  NETWORK.superblockMaturityWindowBlocks * NETWORK.targetBlockTimeSec;
 
 // Wizard warning threshold — slightly wider than Core's maturity
 // window to give masternodes at least a day of headroom between
