@@ -2054,14 +2054,28 @@ export default function ProposalVoteModal({
                     </h3>
                     <button
                       type="button"
-                      className="auth-linklike"
+                      className="vote-modal__group-toggle"
                       onClick={() =>
                         setShowAlreadyVoted((prev) => !prev)
                       }
                       data-testid="vote-modal-toggle-already-voted"
                       aria-expanded={showAlreadyVoted ? 'true' : 'false'}
+                      aria-label={
+                        showAlreadyVoted
+                          ? 'Collapse already-voted sentry nodes'
+                          : 'Expand already-voted sentry nodes'
+                      }
                     >
-                      {showAlreadyVoted ? 'Hide' : 'Show'}
+                      {/* Chevron matches ProposalsCreatedPanel's
+                          grouped/counted-list disclosure (the
+                          closest sibling pattern in the codebase).
+                          The whole button is hit-target, including
+                          whitespace around the glyph; the glyph is
+                          aria-hidden so SR users get the proper
+                          "Expand/Collapse…" label above. */}
+                      <span aria-hidden="true">
+                        {showAlreadyVoted ? '▾' : '▸'}
+                      </span>
                     </button>
                   </header>
                   {/* Always render the list so its checkboxes keep

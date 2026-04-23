@@ -2333,6 +2333,46 @@
   gap: 4px;
 }
 
+/* The "Already voted" section toggles its list via the HTML
+   `hidden` attribute (see the chevron button in
+   ProposalVoteModal.js). The user-agent stylesheet applies
+   `display: none` to `[hidden]`, but that rule has lower
+   specificity than `.vote-modal__group-list { display: grid }`
+   above, so without this override the attribute becomes a no-op
+   and the list stays visible regardless of showAlreadyVoted
+   state. Restoring `display: none` at matching specificity puts
+   the toggle back in control. */
+.vote-modal__group-list[hidden] {
+  display: none;
+}
+
+/* Chevron disclosure button for the "Already voted" group —
+   matches the grouped/counted-list pattern used by
+   `.proposals-created__toggle` so disclosure affordances stay
+   consistent across the app. Kept module-local rather than
+   reaching for the proposals-created class so the modal's styles
+   don't couple to an unrelated component's CSS surface. */
+.vote-modal__group-toggle {
+  background: none;
+  border: 0;
+  padding: 2px 6px;
+  margin: 0;
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.vote-modal__group-toggle:hover,
+.vote-modal__group-toggle:focus-visible {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  outline: none;
+}
+
 /* CONFIRM_CHANGE body — a guard-rail step before we overwrite a
    confirmed on-chain vote. Distinct from the picker so there's no
    mistake about which checkboxes the user is confirming. */
