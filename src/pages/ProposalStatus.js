@@ -472,6 +472,18 @@ export default function ProposalStatus() {
   // with the wrong txid, one "Submit" click away from an
   // accidental cross-row attach attempt. Clearing all of them is
   // the only safe default on route-id change.
+  //
+  // Codex PR13 round 1 P2: also reset `cloningDraft`. The
+  // "Edit details and start over" handler sets cloningDraft=true
+  // and only flips it back in its own finally. If the user kicks
+  // off Start-over on A and navigates to B before the request
+  // completes, B would inherit cloningDraft=true and the failed-
+  // panel actions would stay disabled / the CTA would stay stuck
+  // on "Opening wizard…" until the old request settles (or
+  // indefinitely on a hung request). Same cross-submission state
+  // leakage the other resets here exist to prevent. The stale
+  // response is dropped inside onStartOver via the latestReqIdRef
+  // token below.
   useEffect(() => {
     setSubmission(null);
     setError(null);
@@ -481,6 +493,7 @@ export default function ProposalStatus() {
     setTxidInput('');
     setCopiedKey(null);
     setCloneError(null);
+    setCloningDraft(false);
   }, [id]);
 
   useEffect(() => {
@@ -636,22 +649,38 @@ export default function ProposalStatus() {
     ) {
       return;
     }
+    // Capture the submission id at call time so we can detect the
+    // user navigating to a different submission while the clone
+    // request is in flight. latestReqIdRef is updated on every
+    // render (see declaration above) so comparing against it on
+    // resolution tells us whether this response is still for the
+    // submission the user is looking at. A stale response would
+    // otherwise (a) push the user into a wizard draft cloned from
+    // A even though they're now on B, or (b) surface an error
+    // banner against A on B's panel. Both are cross-submission
+    // state leakage, matching the id-reset effect above.
+    // (Codex PR13 round 1 P2.)
+    const reqId = submission.id;
     setCloneError(null);
     setCloningDraft(true);
     try {
-      const draft = await proposalService.cloneSubmissionToDraft(
-        submission.id
-      );
+      const draft = await proposalService.cloneSubmissionToDraft(reqId);
       if (!mountedRef.current) return;
+      if (reqId !== latestReqIdRef.current) return;
       // Navigate to the wizard with the new draft preloaded. The
       // wizard reads `?draft=<id>` and hydrates form state from
       // that draft — same path used by the drafts list.
       history.push(`/governance/new?draft=${draft.id}`);
     } catch (err) {
       if (!mountedRef.current) return;
+      if (reqId !== latestReqIdRef.current) return;
       setCloneError(err);
     } finally {
-      if (mountedRef.current) setCloningDraft(false);
+      // Only the live-id path owns the cloningDraft spinner. The
+      // id-reset effect already cleared it for stale-id navigations.
+      if (mountedRef.current && reqId === latestReqIdRef.current) {
+        setCloningDraft(false);
+      }
     }
   }
 

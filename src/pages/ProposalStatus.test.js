@@ -18,6 +18,7 @@ jest.mock('../lib/proposalService', () => {
       getSubmission: jest.fn(),
       deleteSubmission: jest.fn(),
       attachCollateral: jest.fn(),
+      cloneSubmissionToDraft: jest.fn(),
     },
   };
 });
@@ -1086,6 +1087,143 @@ describe('ProposalStatus', () => {
       expect(
         screen.getByTestId('proposal-status-txid-input').value
       ).toBe('');
+      confirmSpy.mockRestore();
+    }
+  );
+
+  test(
+    'clone-to-draft in flight on #A then navigate to #B: cloningDraft does not leak, stale response is dropped (Codex PR13 round 1 P2)',
+    async () => {
+      // Regression: the "Edit details and start over" handler sets
+      // cloningDraft=true and only flips it back in its own finally.
+      // If the user clicks Start-over on a failed submission #A and
+      // navigates to #B before the clone request completes, #B
+      // would otherwise inherit cloningDraft=true — failed-panel
+      // actions disabled, CTA stuck on "Opening wizard…" — until
+      // the old request settles (or indefinitely on a hung
+      // request). The fix: (a) id-reset effect clears cloningDraft,
+      // and (b) onStartOver captures reqId at call time and drops
+      // the response if the user navigated elsewhere, matching the
+      // existing latestReqIdRef pattern used for getSubmission.
+      const failedA = {
+        id: 100,
+        status: 'failed',
+        name: 'first',
+        proposalHash: 'aa'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '100000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+        failReason: 'submit_rejected',
+        failDetail: 'Invalid parent hash',
+      };
+      const failedB = {
+        id: 200,
+        status: 'failed',
+        name: 'second',
+        proposalHash: 'bb'.repeat(32),
+        paymentAddress: 'sys1q',
+        paymentAmountSats: '200000000000',
+        paymentCount: 1,
+        startEpoch: 1,
+        endEpoch: 2,
+        failReason: 'submit_rejected',
+        failDetail: 'Invalid parent hash',
+      };
+      proposalService.getSubmission.mockImplementation(async (reqId) => {
+        if (reqId === 100) return failedA;
+        if (reqId === 200) return failedB;
+        throw Object.assign(new Error('nope'), { code: 'not_found' });
+      });
+
+      // Deferred clone promise so we can step through the
+      // in-flight window explicitly.
+      let resolveClone;
+      proposalService.cloneSubmissionToDraft.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveClone = resolve;
+          })
+      );
+
+      // Use a shared memory history so we can push a new route
+      // WITHOUT unmounting the ProposalStatus tree. MemoryRouter
+      // with key={path} (the pattern used elsewhere in this file)
+      // would tear down the subtree on navigation — masking the
+      // cross-id state-leakage the fix is specifically guarding
+      // against. This test needs id to change under the same
+      // mounted component instance, which is how the bug actually
+      // reproduces in the browser.
+      const { createMemoryHistory } = require('history');
+      const { Router } = require('react-router-dom');
+      const history = createMemoryHistory({
+        initialEntries: ['/governance/proposal/100'],
+      });
+
+      await act(async () => {
+        render(
+          <Router history={history}>
+            <AuthProvider authService={makeAuthService()}>
+              <Route
+                path="/governance/proposal/:id"
+                component={ProposalStatus}
+              />
+            </AuthProvider>
+          </Router>
+        );
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('proposal-status-failed')
+        ).toBeInTheDocument();
+      });
+
+      // Kick off "Edit details and start over" on #A. confirm()
+      // stubbed to accept. cloningDraft flips true — CTA should
+      // read "Opening wizard…".
+      const confirmSpy = jest
+        .spyOn(window, 'confirm')
+        .mockReturnValue(true);
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('proposal-status-start-over'));
+      });
+      expect(
+        screen.getByTestId('proposal-status-start-over')
+      ).toHaveTextContent(/Opening wizard…/i);
+
+      // Navigate to #B while the clone request is still in flight.
+      // Same mounted ProposalStatus instance, new route param.
+      await act(async () => {
+        history.push('/governance/proposal/200');
+      });
+      await waitFor(() => {
+        expect(screen.getByText(/second/)).toBeInTheDocument();
+      });
+      // cloningDraft must have been reset by the id change: #B's
+      // CTA is NOT stuck on "Opening wizard…".
+      expect(
+        screen.getByTestId('proposal-status-start-over')
+      ).toHaveTextContent(/Edit details and start over/i);
+
+      // Now resolve the stale clone-from-#A request. It must be
+      // dropped on the floor — no navigation (stays on /proposal/200),
+      // no error banner surfaces on #B, and #B's CTA stays in its
+      // ready state.
+      await act(async () => {
+        resolveClone({ id: 9001 });
+      });
+      expect(history.location.pathname).toBe('/governance/proposal/200');
+      expect(
+        screen.getByTestId('proposal-status-failed')
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('proposal-status-clone-error')
+      ).toBeNull();
+      expect(
+        screen.getByTestId('proposal-status-start-over')
+      ).toHaveTextContent(/Edit details and start over/i);
+
       confirmSpy.mockRestore();
     }
   );
