@@ -173,6 +173,54 @@ describe('GovernanceActivity', () => {
     });
   });
 
+  test('preserves the last-good receipts when a background poll fails — transient blips must not collapse a populated activity card back to an empty/error state', async () => {
+    // Regression guard for a user-visible issue introduced the
+    // moment background polling landed here: with the prior catch
+    // branch resetting `receipts` to [], every 30s network hiccup
+    // would flash the activity card from "Last 3 votes" back to
+    // the empty/error panel until the next successful poll. We
+    // now keep the last snapshot and surface only the error code.
+    jest.useFakeTimers();
+    try {
+      const hash = 'a'.repeat(64);
+      const good = baseReceipt({ proposalHash: hash });
+      const err = Object.assign(new Error('blip'), { code: 'network_error' });
+      const svc = makeService({
+        fetchRecentReceipts: jest
+          .fn()
+          .mockResolvedValueOnce({ receipts: [good] })
+          .mockRejectedValueOnce(err),
+      });
+      render(
+        <GovernanceActivity
+          governanceService={svc}
+          proposalsByHash={new Map([[hash, { Key: hash, title: 'X' }]])}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('gov-activity')).toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('gov-activity-item')).toHaveLength(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(2);
+
+      // After the failed background poll the list must still be
+      // on-screen — NOT the error panel, NOT the empty panel.
+      expect(screen.getByTestId('gov-activity')).toBeInTheDocument();
+      expect(screen.getAllByTestId('gov-activity-item')).toHaveLength(1);
+      expect(screen.queryByTestId('gov-activity-error')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('gov-activity-empty')).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('shows an error state with a retry button on failure', async () => {
     const fail = Object.assign(new Error('network_error'), {
       code: 'network_error',

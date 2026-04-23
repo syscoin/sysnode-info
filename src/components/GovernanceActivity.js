@@ -179,11 +179,26 @@ export default function GovernanceActivity({
       });
     } catch (err) {
       if (!mountedRef.current || genRef.current !== myGen) return;
-      setState({
+      // Preserve the last successful receipts array on error. The
+      // initial-load case starts with an empty array (useState
+      // default) so a first-time failure still resolves to the
+      // error branch in render (error + receipts.length === 0).
+      // But once we have data, a transient /gov/receipts/recent
+      // blip during the background poll must NOT collapse a
+      // populated activity card back to the empty/error state —
+      // that would repeatedly wipe a known-good view every 30s
+      // of network hiccups, which is the opposite of the auto-
+      // refresh UX goal. Same rationale as the summary hook's
+      // error branch in useGovernanceReceipts. The render path
+      // falls through to the list whenever receipts.length > 0,
+      // silently swallowing the error for users with cached data;
+      // a user on a truly broken backend still sees the error
+      // banner because their receipts array never populated.
+      setState((prev) => ({
         loading: false,
         error: (err && err.code) || 'activity_failed',
-        receipts: [],
-      });
+        receipts: prev.receipts,
+      }));
     }
   }, [governanceService, limit]);
 
