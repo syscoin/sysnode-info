@@ -265,7 +265,17 @@ export function computeProposalWindow({
   const padding = Math.min(desiredPadding, maxPadding);
   const startEpoch = anchor - padding;
   const endEpoch = anchor + (n - 1) * SUPERBLOCK_CYCLE_SEC + padding;
-  return { startEpoch, endEpoch };
+  // Return `anchor` (the SB_1 epoch used in the math) alongside
+  // the window boundaries so downstream schedule rendering never
+  // has to reconstruct it from `startEpoch + cycle/2`. On networks
+  // where padding is clamped below cycle/2 (testnet: padding
+  // 1740s vs cycle/2 4500s), the naive reconstruction shifts
+  // every projected payout forward by `cycle/2 - padding` and
+  // pushes row #N past `endEpoch`, producing a Review-vs-Prepare
+  // divergence (Codex PR20 round 7 P2). Keep `padding` in the
+  // payload too so consumers that genuinely need the boundary-to-
+  // anchor distance can read it directly.
+  return { startEpoch, endEpoch, anchor, padding };
 }
 
 // Extract the next-superblock epoch (seconds) from the /mnStats

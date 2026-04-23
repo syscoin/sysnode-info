@@ -1619,17 +1619,26 @@ function formatUtcDate(epochSec) {
 // schedule can never diverge from the submitted window, even if
 // state were to drift stale between renders.
 //
-// The anchor for the first payment is reconstructed as
-// `startEpoch + cycle/2`, mirroring computeProposalWindow's
-// `startEpoch = anchor - cycle/2` invariant; the loop then walks
-// forward by whole cycles for superblocks #1..#N. Unlike the
-// legacy approximator this never needs a truncation warning —
-// if derivedWindow is truthy the window fits N payments by
-// construction (see lib/governanceWindow.js).
+// The anchor for the first payment comes directly from
+// computeProposalWindow's returned `anchor` field — the same
+// value it uses to place `startEpoch = anchor - padding`. The
+// loop then walks forward by whole cycles for superblocks #1..#N.
+// Unlike the legacy approximator this never needs a truncation
+// warning — if derivedWindow is truthy the window fits N payments
+// by construction (see lib/governanceWindow.js).
+//
+// We used to reconstruct the anchor as `startEpoch + cycle/2`,
+// which was correct on mainnet where padding IS cycle/2 but
+// broke on networks where computeProposalWindow clamps padding
+// below cycle/2 (testnet: padding 1740 s vs cycle/2 4500 s). The
+// reconstruction shifted every projected row forward by
+// `cycle/2 - padding`, pushing row #N past `endEpoch` and making
+// the Review schedule disagree with the window actually sent to
+// `/prepare`. Reading `derivedWindow.anchor` directly keeps the
+// two in lockstep regardless of network (Codex PR20 round 7 P2).
 function buildProjectedSchedule({ derivedWindow, paymentCount }) {
   if (!derivedWindow) return [];
-  const halfCycle = Math.floor(SUPERBLOCK_CYCLE_SEC / 2);
-  const anchor = Number(derivedWindow.startEpoch) + halfCycle;
+  const anchor = Number(derivedWindow.anchor);
   const count = Math.floor(Number(paymentCount));
   if (!Number.isFinite(anchor) || anchor <= 0) return [];
   if (!Number.isFinite(count) || count <= 0) return [];

@@ -187,13 +187,23 @@ describe('per-network consensus params (Codex PR20 round 3 P1)', () => {
       const NOW = 1_800_000_000;
       for (const N of [1, 2, 6, 12]) {
         const anchor = NOW + mod.SUPERBLOCK_CYCLE_SEC + 60;
-        const { startEpoch, endEpoch } = mod.computeProposalWindow({
+        const win = mod.computeProposalWindow({
           durationMonths: N,
           nowSec: NOW,
           nextSuperblockSec: anchor,
         });
+        const { startEpoch, endEpoch } = win;
         const windowStart = startEpoch - mod.SUPERBLOCK_FUDGE_SEC;
         const windowEnd = endEpoch + mod.SUPERBLOCK_FUDGE_SEC;
+        // anchor + clamped padding are surfaced on the return
+        // value so the schedule renderer can position rows
+        // without guessing (Codex PR20 round 7 P2).
+        expect(win.anchor).toBe(anchor);
+        expect(win.padding).toBe(
+          mod.SUPERBLOCK_CYCLE_SEC -
+            mod.SUPERBLOCK_FUDGE_SEC -
+            mod.SUPERBLOCK_FUDGE_SAFETY_SEC
+        );
         // Requested SB 1..N are payable.
         for (let i = 1; i <= N; i += 1) {
           const sb = anchor + (i - 1) * mod.SUPERBLOCK_CYCLE_SEC;
@@ -207,6 +217,16 @@ describe('per-network consensus params (Codex PR20 round 3 P1)', () => {
         expect(sbNext - windowEnd).toBeGreaterThanOrEqual(
           mod.SUPERBLOCK_FUDGE_SAFETY_SEC
         );
+        // Critical: every projected row must land at or before
+        // `endEpoch` (not just windowEnd). Previously the Review
+        // schedule reconstructed row positions as
+        // `startEpoch + cycle/2 + i*cycle` which pushed row N
+        // past `endEpoch` on testnet — the regression Codex round
+        // 7 P2 flagged. With `anchor` surfaced directly, the last
+        // row sits exactly at `anchor + (N-1)*cycle` which is
+        // `endEpoch - padding`, always <= endEpoch.
+        const lastRow = win.anchor + (N - 1) * mod.SUPERBLOCK_CYCLE_SEC;
+        expect(lastRow).toBeLessThanOrEqual(endEpoch);
       }
     }
   );
@@ -300,6 +320,8 @@ describe('computeProposalWindow', () => {
     const a = computeProposalWindow({ durationMonths: 1, nowSec: NOW });
     expect(a.startEpoch).toBe(NOW + half);
     expect(a.endEpoch).toBe(NOW + SUPERBLOCK_CYCLE_SEC + half);
+    expect(a.anchor).toBe(NOW + SUPERBLOCK_CYCLE_SEC);
+    expect(a.padding).toBe(half);
 
     const b = computeProposalWindow({
       durationMonths: 1,
@@ -308,6 +330,34 @@ describe('computeProposalWindow', () => {
     });
     expect(b).toEqual(a);
   });
+
+  test(
+    'returns the computed anchor and padding so schedule rendering can read them directly (Codex round 6 P2)',
+    () => {
+      // Regression guard for Codex PR20 round 6 P2: the Review
+      // schedule used to reconstruct the SB_1 anchor as
+      // `startEpoch + cycle/2`, but on networks where padding is
+      // clamped below cycle/2 that reconstruction drifts every
+      // row forward. Surfacing `anchor` + `padding` directly on
+      // the return value keeps the projected schedule in lockstep
+      // with the window actually submitted to /prepare.
+      const anchor = NOW + 10 * 86400;
+      const w = computeProposalWindow({
+        durationMonths: 6,
+        nowSec: NOW,
+        nextSuperblockSec: anchor,
+      });
+      expect(w.anchor).toBe(anchor);
+      expect(w.padding).toBe(Math.floor(SUPERBLOCK_CYCLE_SEC / 2));
+      // SB_i lands at anchor + (i-1)*cycle and all rows land
+      // inside [startEpoch, endEpoch] by construction.
+      for (let i = 1; i <= 6; i += 1) {
+        const sb = w.anchor + (i - 1) * SUPERBLOCK_CYCLE_SEC;
+        expect(sb).toBeGreaterThanOrEqual(w.startEpoch);
+        expect(sb).toBeLessThanOrEqual(w.endEpoch);
+      }
+    }
+  );
 
   test.each([1, 2, 3, 6, 12, 24, 60])(
     'N=%i: first N superblocks are inside the window, N+1 is excluded',
