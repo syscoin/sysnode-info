@@ -18,6 +18,30 @@ jest.mock('../lib/crypto/kdf', () => ({
   deriveVaultKey: jest.fn(),
 }));
 
+// Mock the network-stats fetcher that the wizard uses to anchor its
+// derived voting window. Every test that reaches the Payment or
+// Review step needs a stable next-superblock epoch; we default to
+// 30 days in the future so the derived window falls roughly in the
+// same shape the wizard would produce on mainnet (~15-day fudge
+// before start, ~15-day fudge after the last payment). Individual
+// tests can still override via `fetchNetworkStats.mockResolvedValueOnce`.
+//
+// Factory helpers MUST start with `mock` or Jest refuses to reference
+// out-of-scope identifiers (hoisting guard against stale capture).
+jest.mock('../lib/api', () => ({
+  __esModule: true,
+  fetchNetworkStats: jest.fn(() =>
+    Promise.resolve({
+      stats: {
+        superblock_stats: {
+          superblock_next_epoch_sec:
+            Math.floor(Date.now() / 1000) + 30 * 86400,
+        },
+      },
+    })
+  ),
+}));
+
 jest.mock('../lib/proposalService', () => {
   // Keep the named export of HEX64_RE live so the wizard's own client
   // validation behaves as in production.
@@ -42,8 +66,28 @@ jest.mock('../lib/proposalService', () => {
 /* eslint-disable import/first */
 import NewProposal from './NewProposal';
 import { AuthProvider } from '../context/AuthContext';
+import { fetchNetworkStats } from '../lib/api';
 import { proposalService } from '../lib/proposalService';
 /* eslint-enable import/first */
+
+// Stable next-superblock anchor captured fresh per-test in beforeEach
+// (see below). The wizard now fetches /mnStats BOTH on mount AND at
+// Prepare time and compares the two — if they differ it assumes the
+// chain advanced a cycle while the wizard was open and forces a
+// re-review instead of submitting. A mock that recomputes
+// `Date.now() + 30 days` on every call would cross the whole-second
+// boundary between mount and prepare and spuriously trigger the
+// drift branch, so we freeze a single value per test.
+let currentStableNextSb = 0;
+function defaultNetworkStatsResolver() {
+  return Promise.resolve({
+    stats: {
+      superblock_stats: {
+        superblock_next_epoch_sec: currentStableNextSb,
+      },
+    },
+  });
+}
 
 function makeAuthService(user = { id: 42, email: 'alice@example.com' }) {
   return {
@@ -107,7 +151,6 @@ function validBasics() {
 }
 
 function validPayment({ count = '1' } = {}) {
-  const now = Math.floor(Date.now() / 1000);
   fireEvent.change(screen.getByTestId('wizard-field-address'), {
     target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
   });
@@ -117,17 +160,20 @@ function validPayment({ count = '1' } = {}) {
   fireEvent.change(screen.getByTestId('wizard-field-count'), {
     target: { value: count },
   });
-  fireEvent.change(screen.getByTestId('wizard-field-start'), {
-    target: { value: String(now + 3600) },
-  });
-  fireEvent.change(screen.getByTestId('wizard-field-end'), {
-    target: { value: String(now + 7200) },
-  });
+  // Voting window is now derived at /prepare time from the live
+  // next-superblock anchor (mocked above). No user-facing start/end
+  // inputs to fill in anymore.
 }
 
 describe('NewProposal wizard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Snapshot a stable next-SB anchor at test start so both the
+    // mount-time and prepare-time fetchNetworkStats calls return
+    // the same value (same rationale as in production: /mnStats
+    // reports the same pre-computed SB epoch across rapid calls).
+    currentStableNextSb = Math.floor(Date.now() / 1000) + 30 * 86400;
+    fetchNetworkStats.mockImplementation(defaultNetworkStatsResolver);
     // Default to no pre-existing draft fetch.
     proposalService.getDraft.mockRejectedValue(
       Object.assign(new Error('not_found'), { code: 'not_found' })
@@ -242,11 +288,16 @@ describe('NewProposal wizard', () => {
       expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
 
       validPayment();
+      // Wait for the mocked next-superblock anchor to resolve —
+      // until it lands the Prepare button is disabled because we
+      // refuse to submit an unanchored voting window.
+      await screen.findByTestId('window-preview');
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
       expect(screen.getByTestId('review-name')).toHaveTextContent('my-grant');
 
       const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
       await act(async () => {
         fireEvent.click(prepareBtn);
       });
@@ -260,6 +311,12 @@ describe('NewProposal wizard', () => {
         paymentAmountSats: '100000000000',
         paymentCount: 1,
       });
+      // Epochs are derived at prepare time, never from user input.
+      // Sanity: start < end, end > now, span is roughly
+      // paymentCount * cycle.
+      expect(body.startEpoch).toBeGreaterThan(0);
+      expect(body.endEpoch).toBeGreaterThan(body.startEpoch);
+      expect(body.endEpoch).toBeGreaterThan(Math.floor(Date.now() / 1000));
 
       // Critical invariant: on successful prepare the wizard hands
       // off to the dedicated status page. The old in-wizard Submit
@@ -503,11 +560,17 @@ describe('NewProposal wizard', () => {
     // Walk the wizard to Review.
     fireEvent.click(screen.getByTestId('wizard-next'));
     expect(screen.getByTestId('wizard-panel-payment')).toBeInTheDocument();
+    // Wait for the mocked next-superblock anchor before advancing
+    // — Prepare is gated on a live window and tapping it too early
+    // would no-op.
+    await screen.findByTestId('window-preview');
     fireEvent.click(screen.getByTestId('wizard-next'));
     expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
+    const prepareBtnA = screen.getByTestId('wizard-prepare');
+    await waitFor(() => expect(prepareBtnA).not.toBeDisabled());
     await act(async () => {
-      fireEvent.click(screen.getByTestId('wizard-prepare'));
+      fireEvent.click(prepareBtnA);
     });
 
     expect(proposalService.prepare).toHaveBeenCalledTimes(1);
@@ -556,11 +619,14 @@ describe('NewProposal wizard', () => {
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
       validPayment();
+      await screen.findByTestId('window-preview');
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
+      const prepareBtnB = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtnB).not.toBeDisabled());
       await act(async () => {
-        fireEvent.click(screen.getByTestId('wizard-prepare'));
+        fireEvent.click(prepareBtnB);
       });
 
       await waitFor(() => {
@@ -572,23 +638,25 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Review step surfaces an approximate payment schedule and total budget for paymentCount >= 2 (QA v3-ER03)',
+    'Review step surfaces the projected payment schedule + total budget for paymentCount >= 2',
     async () => {
-      // QA v3-ER03: when a proposal requests multiple monthly
-      // payments, the Review step must break down approximately
-      // WHEN each payment would be paid and what the total budget
-      // works out to. Shipping just "Number of payments: 3" left
-      // users to mentally multiply and to guess at superblock
-      // cadence. Added as a planning-grade estimate (~30d cadence)
-      // with a caveat.
+      // With the derived-window redesign the voting window is
+      // computed from duration alone, so the Review step can be
+      // positive about the schedule instead of warning about
+      // truncation: the window is always wide enough to fit every
+      // requested payment by construction (see
+      // lib/governanceWindow.js). Assert the schedule lists N rows,
+      // each carrying an index + a SYS amount, and that the total
+      // budget is rendered.
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
 
-      // Fill a window wide enough to fit 3 monthly payments:
-      // start now+1h, end now+120 days.
-      const now = Math.floor(Date.now() / 1000);
+      // Wait for the mocked next-SB anchor to land so the
+      // derived window renders.
+      await screen.findByTestId('window-preview');
+
       fireEvent.change(screen.getByTestId('wizard-field-address'), {
         target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
       });
@@ -597,123 +665,436 @@ describe('NewProposal wizard', () => {
       });
       fireEvent.change(screen.getByTestId('wizard-field-count'), {
         target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 120 * 86400) },
       });
       fireEvent.click(screen.getByTestId('wizard-next'));
 
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
       expect(screen.getByTestId('review-count')).toHaveTextContent('3');
-      // Total budget = 3 × 500 = 1,500 SYS (with locale-aware
-      // grouping separators, so we tolerate either a comma or a
-      // space as the thousands separator).
+      // Total budget = 3 × 500 = 1,500 SYS (locale-tolerant).
       expect(screen.getByTestId('review-total')).toHaveTextContent(
         /1[,\s]?500 SYS/
       );
       const rows = screen.getAllByTestId('review-schedule-row');
       expect(rows).toHaveLength(3);
-      // All three rows carry an index and a date. We don't assert
-      // the exact date strings (they depend on system clock) but
-      // they must be non-empty.
       for (const row of rows) {
         expect(row.textContent).toMatch(/#\d+/);
         expect(row.textContent).toMatch(/SYS/);
       }
-      // Truncation warning absent when every payment fits.
-      expect(screen.queryByTestId('review-schedule-trunc')).toBeNull();
     }
   );
 
   test(
-    'Review step warns when the voting window cannot fit every requested payment',
+    'tight-voting-window notice hidden when the next superblock is comfortably far',
     async () => {
-      // If user sets paymentCount=3 but picks a 45-day window,
-      // only 1 of the 3 requested monthly superblocks will fall
-      // inside (the first payable superblock is one full cycle
-      // after start under worst-case alignment; see
-      // `buildApproximateSchedule`) and the remaining 2 payments
-      // will never be paid. Surface this explicitly — silently
-      // omitting rows from the schedule would let the user
-      // prepare a misconfigured proposal and burn their 150 SYS
-      // collateral for nothing.
+      // Default mock returns an anchor 30 days out — outside the
+      // 4-day warning threshold. Warning must stay hidden on both
+      // Payment and Review.
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
 
-      const now = Math.floor(Date.now() / 1000);
-      fireEvent.change(screen.getByTestId('wizard-field-address'), {
-        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
-        target: { value: '500' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-count'), {
-        target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 45 * 86400) },
-      });
-      fireEvent.click(screen.getByTestId('wizard-next'));
-
-      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
-      const rows = screen.queryAllByTestId('review-schedule-row');
-      expect(rows.length).toBeLessThan(3);
+      // Payment step loaded, anchor resolved.
+      await screen.findByTestId('window-preview');
       expect(
-        screen.getByTestId('review-schedule-trunc')
-      ).toHaveTextContent(/of the 3/i);
+        screen.queryByTestId('tight-voting-window-warning')
+      ).toBeNull();
+
+      validPayment({ count: '3' });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+      // Review step — same expectation.
+      expect(
+        screen.queryByTestId('tight-voting-window-warning')
+      ).toBeNull();
     }
   );
 
   test(
-    'Review step warns when the voting window cannot fit any payment at all (Codex PR9 R3)',
+    'tight-voting-window notice fires on both Payment and Review when the next superblock is within 4 days',
     async () => {
-      // Regression guard for the Codex-flagged schedule alignment
-      // fix: under worst-case superblock alignment the first
-      // payable superblock is a full cycle AFTER startEpoch, so a
-      // multi-payment proposal with a window shorter than one
-      // cycle yields zero payable rows. The schedule panel must
-      // still render the truncation warning instead of being
-      // hidden — otherwise the user would think the schedule is
-      // fine when in reality no payment can land at all.
+      // Override the default 30-day mock: put the next superblock
+      // only 2 days out. This is inside Core's 3-day maturity
+      // window + the wizard's extra 1-day headroom — masternodes
+      // likely won't have time to finish voting, so the proposal
+      // would probably miss that superblock and pay out N-1
+      // months instead of N. The warning must fire on BOTH steps
+      // so the user doesn't skip past it. Anchor stable across
+      // both fetchNetworkStats calls (mount + prepare) — see the
+      // comment above `currentStableNextSb`.
+      currentStableNextSb = Math.floor(Date.now() / 1000) + 2 * 86400;
+
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
       validBasics();
       fireEvent.click(screen.getByTestId('wizard-next'));
 
-      const now = Math.floor(Date.now() / 1000);
-      fireEvent.change(screen.getByTestId('wizard-field-address'), {
-        target: { value: 'sys1qexampleexampleexampleexampleexampleaaaa' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-amount'), {
-        target: { value: '500' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-count'), {
-        target: { value: '3' },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-start'), {
-        target: { value: String(now + 3600) },
-      });
-      fireEvent.change(screen.getByTestId('wizard-field-end'), {
-        target: { value: String(now + 15 * 86400) },
-      });
-      fireEvent.click(screen.getByTestId('wizard-next'));
+      // Payment step loaded, anchor resolved.
+      await screen.findByTestId('window-preview');
+      const paymentWarn = screen.getByTestId('tight-voting-window-warning');
+      expect(paymentWarn).toBeInTheDocument();
+      expect(paymentWarn).toHaveAttribute('role', 'alert');
+      expect(paymentWarn.textContent).toMatch(/next superblock/i);
+      expect(paymentWarn.textContent).toMatch(/likely miss/i);
 
+      // Fill duration=6 so the notice can quote "5 instead of 6".
+      validPayment({ count: '6' });
+      const paidChip = screen.getByTestId(
+        'tight-voting-window-warning-paid'
+      );
+      expect(paidChip.textContent).toBe('5 months');
+
+      fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
-      expect(screen.getByTestId('review-schedule')).toBeInTheDocument();
+      const reviewWarn = screen.getByTestId('tight-voting-window-warning');
+      expect(reviewWarn).toBeInTheDocument();
+      // Prepare stays enabled — notice is informational, not a blocker.
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+    }
+  );
+
+  test(
+    'tight-voting-window notice omits the "N-1 months" clause for 1-month proposals',
+    async () => {
+      // Edge case: user asked for 1 month. "Will pay 0 months
+      // instead of 1" is unhelpful — the honest message is just
+      // "will likely miss that superblock" without the demotion
+      // clause. Same stable-anchor pattern as above.
+      currentStableNextSb = Math.floor(Date.now() / 1000) + 2 * 86400;
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment({ count: '1' });
+
+      const warn = screen.getByTestId('tight-voting-window-warning');
+      expect(warn).toBeInTheDocument();
       expect(
-        screen.queryAllByTestId('review-schedule-row')
-      ).toHaveLength(0);
-      expect(
-        screen.getByTestId('review-schedule-trunc')
-      ).toHaveTextContent(/too short to land any/i);
+        screen.queryByTestId('tight-voting-window-warning-paid')
+      ).toBeNull();
+      expect(warn.textContent).toMatch(/likely miss/i);
+    }
+  );
+
+  test(
+    'Prepare fails closed when the pre-submit /mnStats refresh throws (Codex round 2 P2)',
+    async () => {
+      // The wizard refreshes the next-SB anchor right before
+      // submitting. If that fetch errors out, we must NOT fall
+      // through to the cached (possibly-now-stale) anchor or to
+      // computeProposalWindow's `now + cycle` fallback — either
+      // path could ship a window that diverges from the reviewed
+      // schedule and burn collateral. Fail closed: show the
+      // stats-unavailable banner, drop the cached anchor so
+      // Prepare stays disabled, and do NOT call prepare().
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Now break the /mnStats endpoint for the prepare-time
+      // refresh. The mount-time fetch already succeeded with the
+      // stable anchor from beforeEach.
+      fetchNetworkStats.mockRejectedValueOnce(
+        new Error('transient_network_failure')
+      );
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // prepare() must NOT have been called — we short-circuited.
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      // The inline error banner surfaces the retry guidance.
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /could not confirm live superblock timing/i.test(el.textContent)
+      );
+      expect(errBanner).toBeDefined();
+      // Cached anchor dropped → Prepare button goes back to
+      // disabled until refreshStats recovers.
+      await waitFor(() =>
+        expect(screen.getByTestId('wizard-prepare')).toBeDisabled()
+      );
+    }
+  );
+
+  test(
+    'Prepare fails closed when the pre-submit /mnStats refresh returns a stale (past) anchor',
+    async () => {
+      // Same fail-closed behaviour as the throw case: a lagging
+      // /mnStats feed that still returns a positive but past
+      // timestamp must not let us submit. The mount fetch used
+      // the stable future anchor from beforeEach; we corrupt only
+      // the prepare-time refresh.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      fetchNetworkStats.mockResolvedValueOnce({
+        stats: {
+          superblock_stats: {
+            superblock_next_epoch_sec: Math.floor(Date.now() / 1000) - 60,
+          },
+        },
+      });
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /could not confirm live superblock timing/i.test(el.textContent)
+      );
+      expect(errBanner).toBeDefined();
+    }
+  );
+
+  test(
+    'Prepare fails closed when /mnStats resolves across the SB boundary (anchor future at pre-await, past at post-await) (Codex round 3 P2)',
+    async () => {
+      // Codex PR20 round 3 P2: the previous implementation captured
+      // `nowSec = Math.floor(Date.now() / 1000)` BEFORE awaiting
+      // fetchNetworkStats() and reused it to validate the refreshed
+      // anchor. /mnStats is a real network RTT and can straddle
+      // wall-clock boundaries — including, at a SB transition, the
+      // actual superblock. In that case an anchor that was strictly
+      // future at pre-await time is already in the past by the time
+      // we use it, so passing the pre-await clock to
+      // nextSuperblockEpochSecFromStats would green-light a
+      // just-passed anchor and ship a window anchored to a SB that
+      // already happened (effective payouts shift N -> N-1).
+      //
+      // Simulate this by installing a Date.now() spy that advances
+      // time forward WHILE fetchNetworkStats is in flight. The
+      // anchor returned is +10s relative to the pre-await clock
+      // but the clock moves +20s during the await, so the same
+      // anchor is -10s relative to the post-await clock. The fix
+      // captures nowSec AFTER the await, so the anchor is rejected
+      // as stale and we fail closed with stats_unavailable.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      const baseNowMs = Date.now();
+      const baseNowSec = Math.floor(baseNowMs / 1000);
+
+      // Install the Date.now spy AFTER all prior setup has run on
+      // the real clock. The spy advances time on every read so that
+      // once the fetchNetworkStats mock resolver fires we've already
+      // moved past the anchor it's about to return.
+      let dateNowSpy;
+      try {
+        fetchNetworkStats.mockImplementationOnce(async () => {
+          // Bump the clock forward by 20s BEFORE resolving.
+          // Consumers of Date.now() after the await will see the
+          // advanced time; consumers before the await already
+          // captured the un-advanced time. Also pin every subsequent
+          // Date.now() read for the rest of the prepare call to
+          // this value so the assertion is deterministic.
+          dateNowSpy = jest
+            .spyOn(Date, 'now')
+            .mockReturnValue((baseNowSec + 20) * 1000);
+          return {
+            stats: {
+              superblock_stats: {
+                superblock_next_epoch_sec: baseNowSec + 10,
+              },
+            },
+          };
+        });
+
+        const prepareBtn = screen.getByTestId('wizard-prepare');
+        await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+        await act(async () => {
+          fireEvent.click(prepareBtn);
+        });
+
+        // prepare() must NOT have been called — the post-await
+        // clock read sees the anchor as already-past and fails
+        // closed. Without the fix, nextSuperblockEpochSecFromStats
+        // sees nowSec=baseNowSec and anchor=baseNowSec+10 → validates
+        // as live and the submission proceeds.
+        expect(proposalService.prepare).not.toHaveBeenCalled();
+        const alerts = screen.getAllByRole('alert');
+        const errBanner = alerts.find((el) =>
+          /could not confirm live superblock timing/i.test(el.textContent)
+        );
+        expect(errBanner).toBeDefined();
+      } finally {
+        if (dateNowSpy) dateNowSpy.mockRestore();
+      }
+    }
+  );
+
+  test(
+    'Prepare surfaces anchor_drift when the refreshed anchor differs from the cached one, and submits on the retry click',
+    async () => {
+      // Chain advanced a cycle while the wizard was open. The
+      // fresh anchor is valid, but the user reviewed a schedule
+      // built from the previous anchor. We must update state so
+      // the WindowPreview rerenders with the new schedule, then
+      // let the user commit by clicking Prepare again — this
+      // ensures they only ever burn collateral on a window they
+      // actually saw.
+      proposalService.prepare.mockResolvedValue({
+        submission: {
+          id: 77,
+          proposalHash: 'aa'.repeat(32),
+          parentHash: '0',
+          revision: 1,
+          timeUnix: 1700000000,
+          dataHex: 'deadbeef',
+          name: 'my-grant',
+          url: 'https://forum.syscoin.org/t/my-grant',
+          paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+          paymentAmountSats: '100000000000',
+          paymentCount: 1,
+          startEpoch: 1700000000,
+          endEpoch: 1701000000,
+        },
+        opReturnHex: 'aa'.repeat(32),
+        canonicalJson: '{}',
+        payloadBytes: 2,
+        collateralFeeSats: '15000000000',
+        requiredConfirmations: 6,
+      });
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Next /mnStats call returns a DIFFERENT future anchor (one
+      // superblock past the cached one). Subsequent calls return
+      // the same drifted value so the retry click sees a stable
+      // state.
+      const driftedAnchor = currentStableNextSb + 30 * 86400;
+      currentStableNextSb = driftedAnchor;
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // First click: detected drift, updated state, did NOT submit.
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /chain timing updated while this wizard was open/i.test(
+          el.textContent
+        )
+      );
+      expect(errBanner).toBeDefined();
+      // Prepare button is still enabled for the retry click
+      // (cached anchor was updated, not cleared).
+      expect(screen.getByTestId('wizard-prepare')).not.toBeDisabled();
+
+      // Second click: cached anchor now matches the refreshed
+      // one, so we proceed to prepare.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-prepare'));
+      });
+      expect(proposalService.prepare).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test(
+    'Prepare proceeds without anchor_drift when refreshed anchor differs only by estimate drift (sub-SB, Codex round 4 P1)',
+    async () => {
+      // sysMain.js on the backend recomputes
+      // `superblock_next_epoch_sec` every 20 s as `now +
+      // diffBlock * avgBlockTime`, so the value drifts by
+      // seconds between fetches without the next superblock
+      // actually rotating. The previous strict-equality check
+      // in onPrepare treated every such drift as a rotation
+      // and popped the "Chain timing updated" banner, which
+      // meant users could get stuck never reaching
+      // proposalService.prepare — clicking Prepare kept
+      // bouncing them back to re-review. Regression: a 60 s
+      // drift (well under the cycle/2 tolerance) must submit
+      // cleanly on the first click.
+      proposalService.prepare.mockResolvedValue({
+        submission: {
+          id: 88,
+          proposalHash: 'bb'.repeat(32),
+          parentHash: '0',
+          revision: 1,
+          timeUnix: 1700000000,
+          dataHex: 'deadbeef',
+          name: 'my-grant',
+          url: 'https://forum.syscoin.org/t/my-grant',
+          paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+          paymentAmountSats: '100000000000',
+          paymentCount: 1,
+          startEpoch: 1700000000,
+          endEpoch: 1701000000,
+        },
+        opReturnHex: 'bb'.repeat(32),
+        canonicalJson: '{}',
+        payloadBytes: 2,
+        collateralFeeSats: '15000000000',
+        requiredConfirmations: 6,
+      });
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Next /mnStats call returns a slightly drifted anchor
+      // (60 s forward). Well within the cycle/2 tolerance, so
+      // the wizard must treat it as "same SB, just a fresher
+      // estimate" and proceed to prepare.
+      currentStableNextSb += 60;
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // Submitted on the first click — no anchor_drift banner.
+      expect(proposalService.prepare).toHaveBeenCalledTimes(1);
+      const alerts = screen.queryAllByRole('alert');
+      const spuriousDrift = alerts.find((el) =>
+        /chain timing updated while this wizard was open/i.test(
+          el.textContent
+        )
+      );
+      expect(spuriousDrift).toBeUndefined();
     }
   );
 
@@ -732,6 +1113,49 @@ describe('NewProposal wizard', () => {
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
       expect(screen.queryByTestId('review-schedule')).toBeNull();
+    }
+  );
+
+  test(
+    'Review step suppresses the projected schedule when /mnStats anchor is unavailable (Codex round 5 P2)',
+    async () => {
+      // Regression: computeProposalWindow has an internal
+      // "stale anchor" fallback (anchor = now + cycle) so that
+      // the duration preview can still render something sensible
+      // while stats load. That fallback makes `derivedWindow`
+      // truthy even when `nextSuperblockSec` is null, which in
+      // turn made the Review step paint a convincing-looking
+      // projected payment schedule from entirely synthetic
+      // timestamps — alongside the "live chain data unavailable"
+      // WindowPreview banner that was (correctly) hiding the
+      // voting window itself. Post-fix: the schedule must stay
+      // in lockstep with WindowPreview and only render when we
+      // have a real live anchor.
+      //
+      // Setup: stub /mnStats to return a response that
+      // nextSuperblockEpochSecFromStats rejects (missing
+      // superblock_next_epoch_sec field). Wizard state lands at
+      // `nextSuperblockSec = null, statsError != null`. 3-month
+      // proposal so paymentCount >= 2 is satisfied — the only
+      // remaining gate on the schedule is the live-anchor check.
+      fetchNetworkStats.mockImplementation(() =>
+        Promise.resolve({ stats: { superblock_stats: {} } })
+      );
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      validPayment({ count: '3' });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Review must not fabricate a schedule when the anchor is
+      // gone. WindowPreview's error banner is the only source
+      // of truth about timing in this state.
+      expect(screen.queryByTestId('review-schedule')).toBeNull();
+      expect(screen.queryAllByTestId('review-schedule-row')).toHaveLength(0);
     }
   );
 
@@ -1391,6 +1815,76 @@ describe('NewProposal wizard', () => {
       // included with its original value (forUpdate emits populated
       // text fields as-is).
       expect(body.paymentAddress).toBe('sys1qresumed1234567890');
+    }
+  );
+
+  test(
+    'WindowPreview + Prepare flip to error when the cached next-SB anchor becomes stale while the wizard is open (Codex round 6 P2)',
+    async () => {
+      // Regression for the round-6 P2 ask: the live-anchor check
+      // used to be "nextSuperblockSec is finite and > 0", which
+      // meant a cached anchor whose timestamp had already passed
+      // was still treated as live. That let WindowPreview keep
+      // showing the stale SB date and Prepare stay enabled while
+      // computeProposalWindow had already switched to its
+      // stale-anchor fallback — a divergence between the displayed
+      // and prepare-able windows. Fix: derive isAnchorLive from a
+      // `> nowSec` comparison and force a periodic re-render so
+      // all gates flip in lockstep when the wall clock passes.
+      //
+      // We simulate time passing by (a) fetching a short-horizon
+      // anchor (6 s in the future) and then (b) advancing the fake
+      // clock past it and flushing the 30 s tick interval. The
+      // post-advance refresh mock returns the same stale value so
+      // refreshStats rejects it via nextSuperblockEpochSecFromStats
+      // and the Retry-in-error-banner path is exercised too.
+      jest.useFakeTimers({ doNotFake: ['performance'] });
+      try {
+        const baseNow = Date.now();
+        jest.setSystemTime(baseNow);
+        // Anchor 6 seconds in the future relative to mount. The
+        // wizard will accept this as a live anchor, but we'll
+        // advance wall-clock past it before Prepare.
+        currentStableNextSb = Math.floor(baseNow / 1000) + 6;
+
+        await renderWizard();
+        await screen.findByTestId('wizard-panel-basics');
+        validBasics();
+
+        // Run the pending microtask queue so the mount fetch
+        // resolves inside act().
+        await act(async () => {
+          jest.advanceTimersByTime(0);
+        });
+
+        fireEvent.click(screen.getByTestId('wizard-next'));
+        await screen.findByTestId('window-preview');
+        validPayment();
+        fireEvent.click(screen.getByTestId('wizard-next'));
+        await screen.findByTestId('wizard-panel-review');
+
+        // Prepare is currently enabled (live anchor, 6 s in future).
+        expect(screen.getByTestId('wizard-prepare')).not.toBeDisabled();
+
+        // Advance wall clock past the anchor. The 30 s render-tick
+        // interval plus React flushes pick up the change.
+        jest.setSystemTime(baseNow + 60_000);
+        await act(async () => {
+          jest.advanceTimersByTime(30_000);
+        });
+
+        // isAnchorLive flips false → Prepare is gated and the
+        // WindowPreview card swaps into its stats-unavailable
+        // branch. Both are driven by the same predicate, so they
+        // must flip together.
+        await waitFor(() =>
+          expect(screen.getByTestId('wizard-prepare')).toBeDisabled()
+        );
+        expect(screen.queryByTestId('window-preview')).toBeNull();
+        expect(screen.queryByTestId('review-schedule')).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
     }
   );
 });

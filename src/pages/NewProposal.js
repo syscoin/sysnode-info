@@ -14,6 +14,15 @@ import PayWithPaliPanel, {
 } from '../components/PayWithPaliPanel';
 import UnsavedChangesModal from '../components/UnsavedChangesModal';
 import { useAuth } from '../context/AuthContext';
+import { fetchNetworkStats } from '../lib/api';
+import {
+  SUPERBLOCK_CYCLE_SEC,
+  SUPERBLOCK_MATURITY_WINDOW_SEC,
+  anchorsAreSameSuperblock,
+  computeProposalWindow,
+  isTightVotingWindow,
+  nextSuperblockEpochSecFromStats,
+} from '../lib/governanceWindow';
 import { proposalService } from '../lib/proposalService';
 import {
   COLLATERAL_FEE_SATS,
@@ -148,6 +157,11 @@ function describePrepareError(err) {
       return 'Network hiccup. Check your connection and try again.';
     case 'http_error':
       return 'The server returned an error. Try again in a moment.';
+    case 'stats_unavailable':
+    case 'anchor_drift':
+      // Messages for these two are authored in onPrepare so they can
+      // quote the exact recovery action inline. Codex PR20 round 2 P2.
+      return err.message || 'Live superblock timing unavailable. Please retry.';
     default:
       return err.code || 'Unknown error.';
   }
@@ -195,6 +209,107 @@ export default function NewProposal() {
   // Track if user has clicked Save draft from toolbar (vs. modal) for
   // toast-like feedback.
   const [draftSavedAt, setDraftSavedAt] = useState(0);
+
+  // Live next-superblock anchor. We fetch the backend /mnStats feed
+  // on mount and extract `superblock_stats.superblock_next_epoch_sec`
+  // so that `computeProposalWindow` can align the derived start/end
+  // epochs to the real chain. Loading / error states gate the
+  // "Prepare proposal" button — submitting without a live anchor
+  // risks a window that doesn't cover the first superblock or
+  // accidentally fits an extra one.
+  const [nextSuperblockSec, setNextSuperblockSec] = useState(null);
+  const [statsError, setStatsError] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+  // Monotonic counter tracking the "latest issued /mnStats request".
+  // Each refreshStats invocation takes a snapshot of its own id and
+  // only mutates anchor state if that id is still current when the
+  // response resolves. Prevents out-of-order responses from clobbering
+  // fresher state: e.g. the mount fetch can finish after a manual
+  // Retry click, and without a guard its (potentially stale) response
+  // would overwrite the Retry's successful anchor and re-disable
+  // Prepare. useRef instead of state because we want synchronous
+  // sequencing without triggering re-renders (Codex PR20 round 5 P2).
+  const statsReqIdRef = useRef(0);
+  const refreshStats = useCallback(() => {
+    const reqId = ++statsReqIdRef.current;
+    setStatsLoading(true);
+    setStatsError(null);
+    const isCurrent = () => reqId === statsReqIdRef.current;
+    fetchNetworkStats()
+      .then((stats) => {
+        if (!isCurrent()) return;
+        // `nowSec` is captured at response time, not at effect
+        // mount, so we reject anchors that are already in the past
+        // relative to the clock the user will also see in the
+        // Review schedule.
+        const anchor = nextSuperblockEpochSecFromStats(
+          stats,
+          Math.floor(Date.now() / 1000)
+        );
+        if (!anchor) {
+          setStatsError(new Error('missing_next_superblock_epoch'));
+          setNextSuperblockSec(null);
+          return;
+        }
+        setNextSuperblockSec(anchor);
+      })
+      .catch((err) => {
+        if (!isCurrent()) return;
+        setStatsError(err);
+        setNextSuperblockSec(null);
+      })
+      .finally(() => {
+        if (isCurrent()) setStatsLoading(false);
+      });
+    return () => {
+      // Invalidate this specific request by advancing past it iff
+      // we're still the latest. Any newer refreshStats call has
+      // already bumped the counter on its own, so the no-op branch
+      // here is correct.
+      if (isCurrent()) statsReqIdRef.current += 1;
+    };
+  }, []);
+  useEffect(() => {
+    const cancel = refreshStats();
+    return cancel;
+  }, [refreshStats]);
+
+  // Periodic wall-clock tick so the render-time `isAnchorLive`
+  // predicate below (and all date displays derived from it) stay
+  // consistent with the wall clock while the wizard sits idle.
+  // Without a tick, a user who reaches Review and then leaves the
+  // tab open past `superblock_next_epoch_sec` would keep seeing
+  // the stale anchor as "live" (WindowPreview card, schedule
+  // dates, Prepare button), while `computeProposalWindow` has
+  // already switched to its internal `now + cycle` fallback —
+  // the displayed and submitted windows can then diverge. The
+  // tick does NOT refetch network stats; it just forces a
+  // re-render so the gates re-evaluate against a fresh clock.
+  // 30 s cadence is fine-grained enough for testnet's 2.5 h
+  // cycle without meaningful render cost (Codex PR20 round 6 P2).
+  const [, forceTick] = useReducer((x) => x + 1, 0);
+  useEffect(() => {
+    const id = setInterval(forceTick, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // True only when /mnStats gave us a future superblock anchor.
+  // Used consistently by WindowPreview, the Prepare-button gate,
+  // and the ReviewStep schedule so all three flip together the
+  // instant the cached anchor goes stale. Mere truthiness is
+  // insufficient — a cached anchor that has already passed is
+  // still finite and > 0 but no longer describes the chain's
+  // next payout slot, and letting it drive the UI would print a
+  // schedule that doesn't match the window Prepare would submit
+  // (Codex PR20 round 6 P2). The stale-to-live recovery path is
+  // user-initiated: Prepare's pre-submit refresh + the Retry
+  // button on the stats-error banner; we don't auto-refetch
+  // here because a setTimeout large enough to span mainnet's
+  // ~30-day horizon overflows Node's int32 delay (silently
+  // collapses to 1 ms and fires immediately).
+  const nowSecForAnchor = Math.floor(Date.now() / 1000);
+  const isAnchorLive =
+    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > nowSecForAnchor;
 
   const dirty = !formsEqual(form, baseline) && prepared == null;
 
@@ -375,6 +490,31 @@ export default function NewProposal() {
   );
   const payloadBytes = useMemo(() => estimatePayloadBytes(form), [form]);
 
+  // Derive the proposal's on-chain payment window purely from the
+  // user's duration input + the live next-superblock anchor. We
+  // show this to the user in both the Payment step (as a preview
+  // under the duration input) and the Review step (as the
+  // authoritative "Voting window" the backend will submit). The
+  // same formula runs again inside onPrepare with a freshly-
+  // fetched anchor, so any drift between this preview and the
+  // actual submission is bounded by how much wall-clock time
+  // passes between render and Prepare — essentially zero for the
+  // 0-second-old cached anchor and at most one `fetchNetworkStats`
+  // round-trip otherwise.
+  const derivedWindow = useMemo(() => {
+    const n = Math.floor(Number(form.paymentCount));
+    if (!Number.isInteger(n) || n < 1) return null;
+    try {
+      return computeProposalWindow({
+        durationMonths: n,
+        nowSec: Math.floor(Date.now() / 1000),
+        nextSuperblockSec,
+      });
+    } catch (_e) {
+      return null;
+    }
+  }, [form.paymentCount, nextSuperblockSec]);
+
   // Which form fields belong to each step. Used by the "Next"
   // handler to mark every field on the current step as touched
   // when validation fails, so inline red borders + hint text
@@ -387,13 +527,7 @@ export default function NewProposal() {
   const STEP_FIELDS = useMemo(
     () => ({
       basics: ['name', 'url'],
-      payment: [
-        'paymentAddress',
-        'paymentAmount',
-        'paymentCount',
-        'startEpoch',
-        'endEpoch',
-      ],
+      payment: ['paymentAddress', 'paymentAmount', 'paymentCount'],
     }),
     []
   );
@@ -583,9 +717,125 @@ export default function NewProposal() {
     setPreparing(true);
     setPrepareError(null);
     try {
+      // Derive the on-chain payment window at submit time from the
+      // user's duration input (months). We anchor to the current
+      // next-superblock epoch rather than freezing this at draft
+      // time so a draft resumed days later still points at the
+      // correct cycle. See lib/governanceWindow.js for the full
+      // derivation.
+      const durationMonths = Math.floor(Number(form.paymentCount));
+
+      // Re-fetch the live next-SB anchor right before submission
+      // and FAIL CLOSED on anything that would let the submitted
+      // window diverge from what the user saw on Review:
+      //
+      //   (a) fetch throws (transport error, 5xx, timeout) → surface
+      //       the stats-unavailable banner, clear the cached anchor
+      //       so Prepare stays disabled until refreshStats() recovers.
+      //   (b) fetch returns a stale or missing anchor
+      //       (next_SB epoch <= now) → same as (a). The /mnStats
+      //       source occasionally lags a few blocks behind the tip
+      //       and we refuse to submit against a backward-pointing
+      //       anchor for the same reason.
+      //   (c) fetch returns a DIFFERENT future anchor than the one
+      //       Review rendered from (a superblock passed while the
+      //       wizard was open) → update state so the preview card
+      //       rerenders with the new schedule, and surface an
+      //       "anchor drift" message asking the user to re-review
+      //       before clicking Prepare again. We do NOT submit the
+      //       new window under the user — they reviewed the old one.
+      //
+      // Codex PR20 round 2 P2: the previous implementation caught
+      // (a) silently, kept the cached anchor, and let
+      // computeProposalWindow fall back to `now + cycle` if the
+      // cached anchor had also gone stale. That path could ship a
+      // window a full cycle off from the reviewed schedule and
+      // burn collateral on a proposal whose effective payout
+      // window had shifted. All three branches now short-circuit
+      // before prepareBodyFromForm / proposalService.prepare.
+      //
+      // Codex PR20 round 3 P2: the wall-clock cutoff used to validate
+      // the refreshed anchor must be read AFTER the fetch resolves,
+      // not before. /mnStats is a real network RTT (plus jsdom /
+      // proxy / slow-node delays in practice) and can straddle the
+      // actual superblock transition; in that window an anchor that
+      // was strictly future at pre-await time can already be in the
+      // past by the time we use it. Capturing `nowSec` pre-await
+      // allowed `nextSuperblockEpochSecFromStats` to validate a
+      // just-passed anchor as live and silently ship payouts off
+      // by one cycle (N → N-1 months). Reading the clock post-await
+      // closes that window; the same post-await `nowSec` is also
+      // passed into `computeProposalWindow` so its stale-fallback
+      // branch sees a consistent view of the clock.
+      let liveAnchor = null;
+      let refreshErr = null;
+      let nowSec;
+      try {
+        const freshStats = await fetchNetworkStats();
+        nowSec = Math.floor(Date.now() / 1000);
+        liveAnchor = nextSuperblockEpochSecFromStats(freshStats, nowSec);
+        if (!liveAnchor) {
+          refreshErr = new Error('stale_superblock_anchor');
+        }
+      } catch (err) {
+        refreshErr = err;
+      }
+      if (refreshErr) {
+        setStatsError(refreshErr);
+        setNextSuperblockSec(null);
+        setPrepareError(
+          Object.assign(
+            new Error(
+              'Could not confirm live superblock timing from the node. ' +
+                'Please wait a moment and Prepare again — the wizard will ' +
+                'not submit with a potentially stale voting window.'
+            ),
+            { code: 'stats_unavailable' }
+          )
+        );
+        return;
+      }
+      // Compare the refreshed anchor against the cached one the
+      // user just reviewed. We CANNOT use strict equality — the
+      // backend's /mnStats recomputes `superblock_next_epoch_sec`
+      // every sysMain tick (20 s) as `now + diffBlock *
+      // avgBlockTime`, so the value drifts by seconds/minutes
+      // between fetches even when the same upcoming superblock is
+      // still the target. Under strict equality users could get
+      // stuck looping through re-review prompts on every attempted
+      // submit (Codex PR20 round 4 P1). `anchorsAreSameSuperblock`
+      // applies a `cycle/2` tolerance — any legitimate rotation
+      // advances the anchor by ≈ cycle, well above the threshold.
+      if (!anchorsAreSameSuperblock(liveAnchor, nextSuperblockSec)) {
+        // Chain advanced a cycle while the wizard was open. The
+        // fresh anchor is fine, but the user reviewed a schedule
+        // built from the previous anchor. Sync state so the
+        // WindowPreview + schedule re-render, and force a second
+        // Prepare click so they commit collateral to a window
+        // they actually saw.
+        setNextSuperblockSec(liveAnchor);
+        setPrepareError(
+          Object.assign(
+            new Error(
+              'Chain timing updated while this wizard was open — the ' +
+                'voting window has been refreshed to match the next ' +
+                'superblock. Please re-check the updated window above, ' +
+                'then click Prepare again to submit.'
+            ),
+            { code: 'anchor_drift' }
+          )
+        );
+        return;
+      }
+      const windowSpec = computeProposalWindow({
+        durationMonths,
+        nowSec,
+        nextSuperblockSec: liveAnchor,
+      });
       const body = prepareBodyFromForm(form, {
         draftId: draftId || undefined,
         consumeDraft: true,
+        window: windowSpec,
       });
       const envelope = await proposalService.prepare(body);
       setPrepared(envelope);
@@ -780,10 +1030,25 @@ export default function NewProposal() {
               onField={setField}
               onBlur={markTouched}
               payloadBytes={payloadBytes}
+              derivedWindow={derivedWindow}
+              nextSuperblockSec={nextSuperblockSec}
+              isAnchorLive={isAnchorLive}
+              statsLoading={statsLoading}
+              statsError={statsError}
+              onRetryStats={refreshStats}
             />
           ) : null}
           {currentStep === 'review' ? (
-            <ReviewStep form={form} payloadBytes={payloadBytes} />
+            <ReviewStep
+              form={form}
+              payloadBytes={payloadBytes}
+              derivedWindow={derivedWindow}
+              nextSuperblockSec={nextSuperblockSec}
+              isAnchorLive={isAnchorLive}
+              statsLoading={statsLoading}
+              statsError={statsError}
+              onRetryStats={refreshStats}
+            />
           ) : null}
           {currentStep === 'submit' ? (
             <SubmitStep
@@ -892,9 +1157,24 @@ export default function NewProposal() {
                     preparing ||
                     payloadBytes > MAX_DATA_SIZE ||
                     Object.keys(basicsErrors).length > 0 ||
-                    Object.keys(paymentErrors).length > 0
+                    Object.keys(paymentErrors).length > 0 ||
+                    // Gate Prepare on having a live next-superblock
+                    // anchor. Without one we would fall back to the
+                    // "now + cycle" worst-case branch of
+                    // computeProposalWindow, which is safe for Core
+                    // (window is still long enough) but can mis-align
+                    // the displayed voting dates by up to a cycle. Ask
+                    // the user to retry rather than submit an
+                    // unanchored window silently.
+                    !derivedWindow ||
+                    !isAnchorLive
                   }
                   data-testid="wizard-prepare"
+                  title={
+                    !isAnchorLive
+                      ? 'Waiting for live superblock timing…'
+                      : undefined
+                  }
                 >
                   {preparing ? 'Preparing…' : 'Prepare proposal'}
                 </button>
@@ -984,14 +1264,29 @@ function BasicsStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
   );
 }
 
-function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
+function PaymentStep({
+  form,
+  errors,
+  touched,
+  onField,
+  onBlur,
+  payloadBytes,
+  derivedWindow,
+  nextSuperblockSec,
+  isAnchorLive,
+  statsLoading,
+  statsError,
+  onRetryStats,
+}) {
   return (
     <div className="proposal-wizard__panel" data-testid="wizard-panel-payment">
       <h2>Payment details</h2>
       <p className="proposal-wizard__help">
         Specify the Syscoin address that will receive the monthly
-        superblock payment, the amount per month, and the voting
-        window. Start and end times are UTC epoch seconds.
+        superblock payment, the amount per month, and how many
+        months the proposal should run. The on-chain voting window
+        is derived automatically from the duration so it aligns
+        with the next superblock and prunes cleanly.
       </p>
 
       <label className="form-field">
@@ -1051,7 +1346,7 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
 
         <div className="proposal-wizard__cell">
           <label className="form-field">
-            <span>Number of payments (months)</span>
+            <span>Duration (months)</span>
             <input
               type="number"
               min={1}
@@ -1066,8 +1361,8 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
               data-testid="wizard-field-count"
             />
             <small>
-              Informational only. Voters see this in the UI; not stored
-              on-chain. Max {MAX_PAYMENT_COUNT}.
+              One payment per month for this many months. Max{' '}
+              {MAX_PAYMENT_COUNT}.
             </small>
           </label>
           {touched.paymentCount ? (
@@ -1076,83 +1371,228 @@ function PaymentStep({ form, errors, touched, onField, onBlur, payloadBytes }) {
         </div>
       </div>
 
-      <div className="proposal-wizard__row">
-        <div className="proposal-wizard__cell">
-          <label className="form-field">
-            <span>Start (UTC epoch seconds)</span>
-            <input
-              type="number"
-              value={form.startEpoch}
-              onChange={(e) => onField('startEpoch', e.target.value)}
-              onBlur={() => onBlur('startEpoch')}
-              aria-invalid={touched.startEpoch && !!errors.startEpoch}
-              aria-describedby={
-                errors.startEpoch ? 'err-startEpoch' : undefined
-              }
-              data-testid="wizard-field-start"
-            />
-            <small>
-              {form.startEpoch && Number(form.startEpoch) > 0
-                ? new Date(Number(form.startEpoch) * 1000).toUTCString()
-                : 'Use a future UTC time.'}
-            </small>
-          </label>
-          {touched.startEpoch ? (
-            <FieldError id="err-startEpoch" message={errors.startEpoch} />
-          ) : null}
-        </div>
+      <TightVotingWindowNotice
+        nextSuperblockSec={nextSuperblockSec}
+        paymentCount={form.paymentCount}
+      />
 
-        <div className="proposal-wizard__cell">
-          <label className="form-field">
-            <span>End (UTC epoch seconds)</span>
-            <input
-              type="number"
-              value={form.endEpoch}
-              onChange={(e) => onField('endEpoch', e.target.value)}
-              onBlur={() => onBlur('endEpoch')}
-              aria-invalid={touched.endEpoch && !!errors.endEpoch}
-              aria-describedby={errors.endEpoch ? 'err-endEpoch' : undefined}
-              data-testid="wizard-field-end"
-            />
-            <small>
-              {form.endEpoch && Number(form.endEpoch) > 0
-                ? new Date(Number(form.endEpoch) * 1000).toUTCString()
-                : 'Must be after start.'}
-            </small>
-          </label>
-          {touched.endEpoch ? (
-            <FieldError id="err-endEpoch" message={errors.endEpoch} />
-          ) : null}
-        </div>
-      </div>
+      <WindowPreview
+        derivedWindow={derivedWindow}
+        nextSuperblockSec={nextSuperblockSec}
+        isAnchorLive={isAnchorLive}
+        statsLoading={statsLoading}
+        statsError={statsError}
+        onRetryStats={onRetryStats}
+      />
 
       <PayloadSizeMeter bytes={payloadBytes} />
     </div>
   );
 }
 
-// Approximate cadence of Syscoin governance superblocks — 30 days,
-// roughly. Mainnet consensus sets `nSuperblockCycle = 17520` blocks
-// at a 150-second (2.5-minute) block target, which works out to
-// 17520 * 150 = 2,628,000 s ≈ 30.42 days. The REAL gap between any
-// two superblocks still drifts a few hours either way depending on
-// network hash-rate, so we surface this number as a planning-grade
-// estimate ONLY; pairing every rendered date with a "~" prefix and
-// a caveat in the copy keeps us honest.
+// Compact "Xd Yh Zm" formatter for how-long-until-next-superblock
+// copy in the tight-voting-window notice. Sub-minute granularity
+// would imply precision we don't have (the backend's anchor is
+// itself a projection of `(nNextSuperblock - nHeight) * 150s`),
+// so we stop at whole minutes. Null guard returns an empty string
+// so the caller can concatenate safely.
+function humanizeDurationShort(totalSec) {
+  if (!Number.isFinite(totalSec) || totalSec <= 0) return '';
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (days === 0 && mins > 0) parts.push(`${mins}m`);
+  if (parts.length === 0) parts.push('< 1m');
+  return parts.join(' ');
+}
+
+// Prominent banner shown on Payment + Review whenever the next
+// superblock is inside the wizard's warning buffer
+// (SUPERBLOCK_VOTE_DEADLINE_WARN_SEC, currently 4 days).
 //
-// Kept as a module constant (not a backend-fed value) because the
-// wizard is a pre-submission planning surface — the user is
-// estimating what their proposal would look like, not querying the
-// live chain. Once the proposal is actually on-chain, the
-// ProposalStatus page shows the live `start_epoch`/`end_epoch`
-// from Core instead.
-const SUPERBLOCK_INTERVAL_DAYS = 30;
-const DAY_SECONDS = 86400;
+// Why it matters: Core forms the superblock payment-list
+// candidate in the last ~3 days before the superblock
+// (`nSuperblockMaturityWindow` = 1728 blocks). Each masternode
+// independently picks a candidate, votes YES-FUNDING on it,
+// and is then locked out of voting YES on any other trigger for
+// this cycle (governance.cpp:727 asserts this). So a proposal
+// submitted inside that 3-day window is racing masternode
+// commits, and any MN that has already committed cannot
+// retroactively include it. Our window intentionally excludes
+// SB_{N+1} to prevent silent over-payment, so missing SB_1
+// means the proposal pays out N-1 months instead of N.
+//
+// We fire the warning a day earlier than Core's 3-day maturity
+// threshold to give MN operators at least ~24h of headroom
+// between proposal submission and the earliest MN commit
+// (covers collateral confirmation, relay, operator review,
+// and vote propagation).
+//
+// Non-blocking by design: Prepare stays enabled. Some proposers
+// are fine with N-1 (e.g. emergency funding), and we don't want
+// to override their intent — we just make sure they see the
+// trade-off before submitting.
+function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!isTightVotingWindow(nowSec, nextSuperblockSec)) return null;
+  const secondsToSb = nextSuperblockSec - nowSec;
+  const n = Math.floor(Number(paymentCount));
+  const hasValidCount = Number.isInteger(n) && n >= 1;
+  // If the user only asked for 1 month, there's nothing to
+  // demote to (N-1 = 0), so the honest message is just "will
+  // likely miss that superblock".
+  const willLoseOnePayment = hasValidCount && n >= 2;
+  // Network-derived copy. On mainnet this renders "~3d" + "~30d"
+  // matching the original hardcoded UX; on testnet/regtest the
+  // same computation gives the actual, much shorter maturity +
+  // cycle values so the guidance stays numerically correct
+  // across every supported network. Codex PR20 round 4 P3:
+  // hardcoding "~3 days" / "~30 days" made the copy mislead
+  // non-mainnet deployments by orders of magnitude and could
+  // drive incorrect operator decisions.
+  const maturityLabel = humanizeDurationShort(SUPERBLOCK_MATURITY_WINDOW_SEC);
+  const cycleLabel = humanizeDurationShort(SUPERBLOCK_CYCLE_SEC);
+  return (
+    <div
+      className="proposal-wizard__tight-warning"
+      role="alert"
+      data-testid="tight-voting-window-warning"
+    >
+      <strong className="proposal-wizard__tight-warning-title">
+        Tight voting window — masternodes may not have time to vote
+      </strong>
+      <p>
+        The next superblock is in{' '}
+        <strong>{humanizeDurationShort(secondsToSb)}</strong>. Syscoin
+        Core forms the superblock payment list during the last{' '}
+        ~{maturityLabel} before each superblock, and once a masternode
+        has voted on that payment list it cannot change its vote
+        for this cycle. Submitting now means your proposal{' '}
+        <strong>will likely miss that superblock</strong>
+        {willLoseOnePayment ? (
+          <>
+            {' '}
+            and pay out{' '}
+            <strong data-testid="tight-voting-window-warning-paid">
+              {n - 1} month{n - 1 === 1 ? '' : 's'}
+            </strong>{' '}
+            instead of <strong>{n}</strong>
+          </>
+        ) : null}
+        .
+      </p>
+      <p>
+        If you need the full duration you requested, consider
+        waiting for the next superblock cycle (~{cycleLabel}) so
+        masternodes have time to see and vote on the proposal
+        before the next payment list locks in. You can also
+        proceed anyway — Prepare is still enabled — if you've
+        coordinated with operators or are OK with one fewer
+        payment.
+      </p>
+    </div>
+  );
+}
+
+// Shared renderer for the derived voting window. Used under the
+// duration input on the Payment step AND as the authoritative
+// "Voting window" entry on the Review step. Keeping both call
+// sites on the same component guarantees they render identical
+// dates — which is exactly what the user will see on the live
+// chain once the proposal goes through.
+function WindowPreview({
+  derivedWindow,
+  nextSuperblockSec,
+  isAnchorLive,
+  statsLoading,
+  statsError,
+  onRetryStats,
+}) {
+  // Treat `!isAnchorLive` as equivalent to "no anchor" — a cached
+  // anchor whose timestamp has already elapsed is not usable as a
+  // live reference (Codex PR20 round 6 P2). The wall-clock tick
+  // in NewProposal forces a re-render every 30 s so this branch
+  // flips the moment `superblock_next_epoch_sec` passes without
+  // relying on an external state update.
+  if (statsLoading && !isAnchorLive) {
+    return (
+      <div className="proposal-wizard__window-preview" aria-busy="true">
+        <strong>Voting window</strong>
+        <p className="proposal-wizard__help">
+          Loading live superblock timing…
+        </p>
+      </div>
+    );
+  }
+  if (statsError || !isAnchorLive) {
+    return (
+      <div
+        className="proposal-wizard__window-preview proposal-wizard__window-preview--error"
+        role="alert"
+      >
+        <strong>Voting window</strong>
+        <p className="proposal-wizard__help">
+          Couldn't fetch the next-superblock time from the backend.
+          We need it to anchor the proposal's payment window.{' '}
+          {onRetryStats ? (
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={onRetryStats}
+            >
+              Retry
+            </button>
+          ) : null}
+        </p>
+      </div>
+    );
+  }
+  if (!derivedWindow) {
+    return (
+      <div className="proposal-wizard__window-preview">
+        <strong>Voting window</strong>
+        <p className="proposal-wizard__help">
+          Enter a valid duration to see the derived voting window.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="proposal-wizard__window-preview"
+      data-testid="window-preview"
+    >
+      <strong>Voting window (auto)</strong>
+      <p className="proposal-wizard__help">
+        Start:{' '}
+        <time dateTime={new Date(derivedWindow.startEpoch * 1000).toISOString()}>
+          {new Date(derivedWindow.startEpoch * 1000).toUTCString()}
+        </time>
+        <br />
+        End:{' '}
+        <time dateTime={new Date(derivedWindow.endEpoch * 1000).toISOString()}>
+          {new Date(derivedWindow.endEpoch * 1000).toUTCString()}
+        </time>
+      </p>
+      <p className="proposal-wizard__help">
+        Anchored to the next superblock (
+        {new Date(nextSuperblockSec * 1000).toUTCString()}). The start
+        is placed ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
+        before the first payout and the end ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
+        after the last so each payment lands safely inside the window
+        and the proposal prunes cleanly afterwards.
+      </p>
+    </div>
+  );
+}
 
 // Format a UNIX-seconds timestamp as a short UTC calendar date. We
 // intentionally drop the time portion in the schedule breakdown
-// because the approximation error (~several hours) is larger than
-// the clock portion would imply precision for.
+// because the superblock-to-wall-clock projection drifts by a few
+// hours and the clock portion would imply false precision.
 function formatUtcDate(epochSec) {
   if (!Number.isFinite(epochSec) || epochSec <= 0) return '';
   try {
@@ -1167,52 +1607,44 @@ function formatUtcDate(epochSec) {
   }
 }
 
-// Build an APPROXIMATE schedule of payment dates for a proposal's
-// Review step. Returns one entry per payment, each projected to
-// the NEXT superblock after `startEpoch`. Capped by the voting
-// window: we never project a payment date past `endEpoch` because
-// the proposal's window says Core won't pay it beyond that point.
-// Negative / invalid inputs return an empty array so callers can
-// just gate on `.length`.
+// Build the projected payment schedule for the Review step.
 //
-// Why we step by (i + 1), not i:
+// The schedule is derived from the same `derivedWindow` the user
+// sees in the WindowPreview card (and that onPrepare submits on-
+// chain), not from the raw `nextSuperblockSec` state. This matters:
+// computeProposalWindow has an internal fallback to `now + cycle`
+// when the anchor is missing / stale, while a raw-anchor projection
+// would happily run off a stale timestamp. Sourcing both UI
+// elements from the same canonical window means the Review
+// schedule can never diverge from the submitted window, even if
+// state were to drift stale between renders.
 //
-//   Syscoin governance payouts are executed on superblocks — not
-//   at `startEpoch` itself. The first payable point is the next
-//   superblock that lands at or after `startEpoch`, not the raw
-//   start timestamp. The frontend has no network anchor for
-//   superblock timing, so we use the conservative worst-case
-//   model: assume the next superblock is exactly
-//   `SUPERBLOCK_INTERVAL_DAYS` after startEpoch. That matches
-//   real consensus behavior when startEpoch happens to be right
-//   after a superblock (the most common case when a user has
-//   just dragged a date picker forward), and it AVOIDS the
-//   bug Codex flagged on round 3: treating payment #1 as if it
-//   lands on `startEpoch` overestimates how many payments fit
-//   inside the voting window, which in turn hides the
-//   truncation warning for proposals that can't actually pay
-//   out every requested installment before `endEpoch`.
+// The anchor for the first payment comes directly from
+// computeProposalWindow's returned `anchor` field — the same
+// value it uses to place `startEpoch = anchor - padding`. The
+// loop then walks forward by whole cycles for superblocks #1..#N.
+// Unlike the legacy approximator this never needs a truncation
+// warning — if derivedWindow is truthy the window fits N payments
+// by construction (see lib/governanceWindow.js).
 //
-//   The tradeoff: for the rare case where `startEpoch` is
-//   moments before a superblock, we show payment #1 one
-//   interval later than reality — erring safely toward a user
-//   seeing more truncation warnings, not fewer. A false
-//   "won't fit, extend the window" warning costs one picker
-//   drag; a silent omission costs a proposal that can't
-//   actually pay all installments.
-function buildApproximateSchedule({ startEpoch, endEpoch, paymentCount }) {
-  const start = Number(startEpoch);
-  const end = Number(endEpoch);
+// We used to reconstruct the anchor as `startEpoch + cycle/2`,
+// which was correct on mainnet where padding IS cycle/2 but
+// broke on networks where computeProposalWindow clamps padding
+// below cycle/2 (testnet: padding 1740 s vs cycle/2 4500 s). The
+// reconstruction shifted every projected row forward by
+// `cycle/2 - padding`, pushing row #N past `endEpoch` and making
+// the Review schedule disagree with the window actually sent to
+// `/prepare`. Reading `derivedWindow.anchor` directly keeps the
+// two in lockstep regardless of network (Codex PR20 round 7 P2).
+function buildProjectedSchedule({ derivedWindow, paymentCount }) {
+  if (!derivedWindow) return [];
+  const anchor = Number(derivedWindow.anchor);
   const count = Math.floor(Number(paymentCount));
-  if (!Number.isFinite(start) || start <= 0) return [];
-  if (!Number.isFinite(end) || end <= start) return [];
+  if (!Number.isFinite(anchor) || anchor <= 0) return [];
   if (!Number.isFinite(count) || count <= 0) return [];
-  const step = SUPERBLOCK_INTERVAL_DAYS * DAY_SECONDS;
   const out = [];
   for (let i = 0; i < count; i += 1) {
-    const at = start + (i + 1) * step;
-    if (at > end) break;
-    out.push({ index: i + 1, epochSec: at });
+    out.push({ index: i + 1, epochSec: anchor + i * SUPERBLOCK_CYCLE_SEC });
   }
   return out;
 }
@@ -1244,17 +1676,38 @@ function computeTotalBudgetSys(amount, count) {
   }
 }
 
-function ReviewStep({ form, payloadBytes }) {
+function ReviewStep({
+  form,
+  payloadBytes,
+  derivedWindow,
+  nextSuperblockSec,
+  isAnchorLive,
+  statsLoading,
+  statsError,
+  onRetryStats,
+}) {
   const paymentCountNum = Number(form.paymentCount);
   const totalBudgetSys = computeTotalBudgetSys(
     form.paymentAmount,
     form.paymentCount
   );
+  // Only render the projected schedule when we have a live next-SB
+  // anchor from /mnStats. `derivedWindow` alone is insufficient:
+  // computeProposalWindow falls back to `now + cycle` when the anchor
+  // is missing/stale, which would paint a plausible-looking list of
+  // payout dates that don't match the chain. WindowPreview already
+  // suppresses itself on the same `isAnchorLive` predicate; the
+  // schedule row must stay in lockstep or Review shows synthetic
+  // timing alongside a "live data unavailable" banner (Codex PR20
+  // round 4 P2 + round 6 P2). The predicate is a boolean prop
+  // computed once in NewProposal against the wall clock (with a
+  // 30 s periodic re-render tick), so a cached anchor that has
+  // already elapsed is treated as not-live even if it's still a
+  // positive finite number.
   const schedule =
-    paymentCountNum >= 2
-      ? buildApproximateSchedule({
-          startEpoch: form.startEpoch,
-          endEpoch: form.endEpoch,
+    paymentCountNum >= 2 && derivedWindow && isAnchorLive
+      ? buildProjectedSchedule({
+          derivedWindow,
           paymentCount: paymentCountNum,
         })
       : [];
@@ -1279,75 +1732,70 @@ function ReviewStep({ form, payloadBytes }) {
         <dd data-testid="review-address">{form.paymentAddress}</dd>
         <dt>Amount per payment</dt>
         <dd data-testid="review-amount">{form.paymentAmount} SYS</dd>
-        <dt>Number of payments</dt>
-        <dd data-testid="review-count">{form.paymentCount}</dd>
+        <dt>Duration</dt>
+        <dd data-testid="review-count">
+          {form.paymentCount} month
+          {Number(form.paymentCount) === 1 ? '' : 's'}
+        </dd>
         {totalBudgetSys ? (
           <>
             <dt>Total budget</dt>
             <dd data-testid="review-total">{totalBudgetSys} SYS</dd>
           </>
         ) : null}
-        <dt>Voting window</dt>
-        <dd>
-          {new Date(Number(form.startEpoch) * 1000).toUTCString()}
-          <br />→{' '}
-          {new Date(Number(form.endEpoch) * 1000).toUTCString()}
-        </dd>
       </dl>
 
-      {paymentCountNum >= 2 ? (
+      <TightVotingWindowNotice
+        nextSuperblockSec={nextSuperblockSec}
+        paymentCount={form.paymentCount}
+      />
+
+      <WindowPreview
+        derivedWindow={derivedWindow}
+        nextSuperblockSec={nextSuperblockSec}
+        isAnchorLive={isAnchorLive}
+        statsLoading={statsLoading}
+        statsError={statsError}
+        onRetryStats={onRetryStats}
+      />
+
+      {schedule.length > 0 ? (
         <div
           className="proposal-wizard__schedule"
           data-testid="review-schedule"
         >
           <h3 className="proposal-wizard__schedule-heading">
-            Approximate payment schedule
+            Projected payment schedule
           </h3>
           <p className="proposal-wizard__help">
-            Governance payouts are paid on Syscoin superblocks —
-            roughly every {SUPERBLOCK_INTERVAL_DAYS} days — and
-            the first payable superblock is the one that lands{' '}
-            <em>after</em> your start date. The dates below are
-            worst-case (one full cycle past start) so your voting
-            window has room even when start lands right after a
-            superblock. Actual payout dates may run a bit earlier
-            depending on when your proposal opens relative to the
-            next superblock.
+            One payment per Syscoin superblock, starting at the
+            next superblock. Actual payout timing drifts a few hours
+            either way depending on network hash-rate; the voting
+            window leaves ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
+            of margin on each side.
           </p>
-          {schedule.length > 0 ? (
-            <ol
-              className="proposal-wizard__schedule-list"
-              data-testid="review-schedule-list"
-            >
-              {schedule.map((p) => (
-                <li
-                  key={p.index}
-                  data-testid="review-schedule-row"
-                  data-payment-index={p.index}
-                >
-                  <span className="proposal-wizard__schedule-idx">
-                    #{p.index}
-                  </span>
-                  <span className="proposal-wizard__schedule-date">
-                    ~ {formatUtcDate(p.epochSec)}
-                  </span>
-                  <span className="proposal-wizard__schedule-amount">
-                    {form.paymentAmount} SYS
-                  </span>
-                </li>
-              ))}
-            </ol>
-          ) : null}
-          {schedule.length < paymentCountNum ? (
-            <p
-              className="proposal-wizard__help proposal-wizard__help--warn"
-              data-testid="review-schedule-trunc"
-            >
-              {schedule.length === 0
-                ? `Your voting window is too short to land any of the ${paymentCountNum} requested payments on a superblock. Extend the voting end date so each payment has a superblock to land in.`
-                : `Your voting window only fits ${schedule.length} of the ${paymentCountNum} requested payments. Extend the voting end date, or reduce the payment count, so every payment has a superblock to land in.`}
-            </p>
-          ) : null}
+          <ol
+            className="proposal-wizard__schedule-list"
+            data-testid="review-schedule-list"
+          >
+            {schedule.map((p) => (
+              <li
+                key={p.index}
+                data-testid="review-schedule-row"
+                data-payment-index={p.index}
+              >
+                <span className="proposal-wizard__schedule-idx">
+                  #{p.index}
+                </span>
+                <span className="proposal-wizard__schedule-date">
+                  ~ {formatUtcDate(p.epochSec)}
+                </span>
+                <span className="proposal-wizard__schedule-amount">
+                  {form.paymentAmount} SYS
+                </span>
+              </li>
+            ))}
+          </ol>
         </div>
       ) : null}
 

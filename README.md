@@ -41,7 +41,7 @@ The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses,
 REACT_APP_API_BASE=https://your-backend.example npm run build
 ```
 
-The value is read at build time by `src/lib/apiClient.js`; without it, development builds use `http://localhost:3001` and production builds use `https://syscoin.dev`.
+The value is read at build time by both `src/lib/apiClient.js` (authenticated surface) and `src/lib/api.js` (anonymous surface — superblock timing, governance feed, masternode stats); without it, development builds use `http://localhost:3001` and production builds use `https://syscoin.dev`. Keeping both clients on the same override means `REACT_APP_API_BASE` retargets the entire app in a single build.
 
 ## Getting Started
 

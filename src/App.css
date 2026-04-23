@@ -4031,8 +4031,82 @@
   font-weight: 700;
 }
 
-.proposal-wizard__help--warn {
-  color: #b45309;
+.proposal-wizard__window-preview {
+  border: 1px solid var(--panel-outline);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--panel-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proposal-wizard__window-preview > strong {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.proposal-wizard__window-preview p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.proposal-wizard__window-preview--error {
+  background: rgba(229, 107, 85, 0.08);
+  border-color: rgba(229, 107, 85, 0.35);
+}
+
+/* Tight-voting-window warning. Fires when the next superblock is
+   within SUPERBLOCK_VOTE_DEADLINE_WARN_SEC (4 days) so the user
+   has a chance to rethink a last-minute submission that would
+   likely miss the payout. Uses the amber "warning" palette
+   (status-chip.is-warning / notice--warning / vote-modal__error--warn)
+   that's already used elsewhere to signal caution rather than
+   hard error. Larger padding + border-left accent makes the
+   banner harder to skim past than the plain window-preview card. */
+.proposal-wizard__tight-warning {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 248, 237, 0.96) 0%,
+    rgba(255, 240, 214, 0.98) 100%
+  );
+  border: 1px solid rgba(243, 179, 86, 0.45);
+  border-left: 4px solid #d89a3c;
+  border-radius: 14px;
+  padding: 14px 18px;
+  color: #6b4500;
+  margin-bottom: 12px;
+}
+
+.proposal-wizard__tight-warning-title {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #8a5c0f;
+  margin-bottom: 6px;
+}
+
+.proposal-wizard__tight-warning p {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.proposal-wizard__tight-warning p:last-child {
+  margin-bottom: 0;
+}
+
+/* Inline emphasis inside the notice (numeric month counts, the
+   "will likely miss" clause) should stay inline so the sentence
+   reads as a sentence, not a bulleted stack. Without this the
+   generic `strong` rule from the title selector above would
+   bleed in on nested strongs — same pattern as
+   .proposal-wizard__burn-warning > strong. */
+.proposal-wizard__tight-warning p strong {
+  font-weight: 700;
+  display: inline;
 }
 
 .proposal-wizard__schedule {
