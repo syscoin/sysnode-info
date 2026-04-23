@@ -135,6 +135,47 @@ describe('useGovernanceReceipts', () => {
     expect(snapshot.summaryMap.size).toBe(0);
   });
 
+  test('preserves the last successful summary snapshot when a background refresh fails — a transient blip must not wipe cohort chips back to "Not voted"', async () => {
+    // Regression guard: before this behaviour the catch branch in
+    // load() unconditionally set `summary` to []. Once background
+    // polling landed (useBackgroundPoll in this hook + the activity
+    // card), every transient /gov/receipts/summary failure flashed
+    // the hero's "Voted N of M" counter to zero and flipped every
+    // cohort chip on the table from "Voted" back to "Not voted"
+    // until the next successful tick. For a user who just voted,
+    // that reads as "my vote disappeared" — the opposite of the
+    // auto-refresh UX goal. We now keep the last-good snapshot on
+    // error and only surface the error code; the gated-off auth
+    // path still clears on sign-out (covered by the first test).
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(makeOwnedHook({ owned: [] }));
+    const good = row({ proposalHash: 'a'.repeat(64), confirmed: 1 });
+    const err = Object.assign(new Error('blip'), { code: 'network_error' });
+    const service = {
+      fetchReceiptsSummary: jest
+        .fn()
+        .mockResolvedValueOnce({ summary: [good] })
+        .mockRejectedValueOnce(err),
+    };
+
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+
+    // First load succeeds.
+    await waitFor(() => expect(snapshot.summary.length).toBe(1));
+    expect(snapshot.summaryError).toBeNull();
+
+    // Trigger a manual refresh — the second call rejects.
+    await act(async () => {
+      await snapshot.refresh();
+    });
+    expect(service.fetchReceiptsSummary).toHaveBeenCalledTimes(2);
+    // Error surfaced, but the good snapshot is preserved.
+    expect(snapshot.summaryError).toBe('network_error');
+    expect(snapshot.summary).toEqual([good]);
+    expect(snapshot.summaryMap.get('a'.repeat(64))).toBe(good);
+  });
+
   test('ownedCount is null until useOwnedMasternodes reaches READY', async () => {
     useAuth.mockReturnValue({ isAuthenticated: true });
     useOwnedMasternodes.mockReturnValue(

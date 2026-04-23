@@ -195,6 +195,56 @@ describe('useBackgroundPoll', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  test('rapid hidden→visible toggles during an in-flight load do not spawn a concurrent request', async () => {
+    // Regression guard for a racey edge case: with the scheduled-
+    // tick path alone, overlap was already impossible because
+    // schedule() is only armed from the load's finally. But the
+    // visibility catch-up path was a second entry point — if a
+    // tick fired, the user quickly tabbed away and back while the
+    // fetch was still pending, onVisibility would call the fetch a
+    // second time, producing duplicate traffic and racey commits
+    // for consumers that aren't generation-guarded. The inFlight
+    // gate at the runAndReschedule() entry-point now enforces
+    // "at most one load active at any time" across all entry
+    // points (tick OR visibility OR future callers).
+    let resolveFirst;
+    const firstLoad = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const load = jest
+      .fn()
+      .mockImplementationOnce(() => firstLoad)
+      .mockResolvedValue(undefined);
+
+    render(<Probe load={load} enabled={true} intervalMs={1000} />);
+
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+      await flushMicrotasks();
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Toggle hidden then visible while the first load is still
+    // pending. The visible transition must NOT start a second
+    // fetch — the pending one already covers "catch up after
+    // focus" by virtue of being in flight.
+    await act(async () => {
+      setDocumentHidden(true);
+      setDocumentHidden(false);
+      await flushMicrotasks();
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Once the first load settles, the regular cadence resumes.
+    await act(async () => {
+      resolveFirst();
+      await flushMicrotasks();
+      jest.advanceTimersByTime(1000);
+      await flushMicrotasks();
+    });
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   test('serialises overlapping load calls — next tick only schedules after the previous load settles', async () => {
     // Prevents a slow load from stacking ticks behind itself: if
     // load takes > intervalMs, we don't want a queue of 3 pending

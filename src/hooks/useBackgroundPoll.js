@@ -64,6 +64,19 @@ export function useBackgroundPoll(load, options) {
 
     let cancelled = false;
     let timer = null;
+    // Single in-flight guard: ensures at most one load() is active
+    // at any time across every entry point (timer tick, visibility
+    // catch-up, or any future caller). Without this, a rapid
+    // hidden→visible toggle while a poll is already in flight
+    // spawns a concurrent second request, breaking the "next run
+    // starts after the previous load settles" cadence contract and
+    // producing duplicate network traffic plus racey updates for
+    // consumers that aren't defensively generation-guarded. The
+    // scheduled-tick path already couldn't overlap (schedule() is
+    // only armed from the load's finally), but onVisibility could
+    // — hence the guard must live at the entry point, not in
+    // schedule().
+    let inFlight = false;
 
     function clearTimer() {
       if (timer !== null) {
@@ -73,6 +86,16 @@ export function useBackgroundPoll(load, options) {
     }
 
     function runAndReschedule() {
+      if (inFlight) {
+        // A previous load is still pending; its finally branch will
+        // reschedule. No-op here rather than stacking a concurrent
+        // request — note this means a hidden→visible transition
+        // while a tick's load is in flight won't fire an extra
+        // catch-up, which is correct: the in-flight load IS the
+        // catch-up, by virtue of being fresher than intervalMs old.
+        return;
+      }
+      inFlight = true;
       // `Promise.resolve(...)` normalises the shape whether `load`
       // returned a promise, a bare value, or nothing; the primitive
       // must not break if a caller accidentally forgets `async`.
@@ -81,6 +104,7 @@ export function useBackgroundPoll(load, options) {
           return load();
         })
         .finally(function afterLoad() {
+          inFlight = false;
           if (cancelled) return;
           schedule();
         });
@@ -109,6 +133,8 @@ export function useBackgroundPoll(load, options) {
       // Visible again — fire immediately so the user doesn't sit
       // on stale data for up to intervalMs after focus returns,
       // then resume the regular cadence from the end of that load.
+      // The inFlight guard inside runAndReschedule() makes rapid
+      // hidden/visible toggles during a pending load a no-op.
       clearTimer();
       runAndReschedule();
     }

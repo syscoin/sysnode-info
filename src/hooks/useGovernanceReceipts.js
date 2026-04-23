@@ -91,7 +91,20 @@ export function useGovernanceReceipts({
     } catch (err) {
       if (!mountedRef.current || genRef.current !== myGen) return;
       setSummaryError((err && err.code) || 'summary_failed');
-      setSummary([]);
+      // Intentionally do NOT clear `summary` here. The first-load
+      // case starts from the useState([]) default, so a first-time
+      // failure still surfaces the empty state correctly (no data
+      // to "preserve"). For background refreshes, a transient
+      // /gov/receipts/summary blip would otherwise wipe out the
+      // cached snapshot on every tick — flashing cohort chips
+      // from "Voted" back to "Not voted" and flipping the hero's
+      // voted-count to zero, only to restore on the next successful
+      // poll. Keeping the last good snapshot + surfacing the error
+      // code lets consumers show a non-blocking notice ("summary
+      // temporarily unavailable") while the UI stays stable. The
+      // gated-off branch above handles the auth/enabled transition
+      // separately and DOES reset the summary, which is the only
+      // case where we actually want to drop the cache.
     } finally {
       if (mountedRef.current && genRef.current === myGen) {
         setSummaryLoading(false);
