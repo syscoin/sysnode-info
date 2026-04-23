@@ -1,12 +1,13 @@
 import React from 'react';
 import {
+  act,
   render,
   screen,
   fireEvent,
   waitFor,
 } from '@testing-library/react';
 
-import GovernanceActivity from './GovernanceActivity';
+import GovernanceActivity, { ACTIVITY_POLL_MS } from './GovernanceActivity';
 
 function makeService(overrides = {}) {
   return {
@@ -110,6 +111,42 @@ describe('GovernanceActivity', () => {
     await waitFor(() => {
       expect(svc.fetchRecentReceipts).toHaveBeenCalledWith({ limit: 5 });
     });
+  });
+
+  test('auto-refreshes on the background poll cadence so reconciliation-driven status changes (e.g. relayed → confirmed) surface without user action', async () => {
+    // Regression guard for the UX gap reported by operators: a
+    // vote submitted one moment would show "Submitted" on the
+    // activity card indefinitely, because the card only refetched
+    // when the vote modal closed. Backend reconciliation flipped
+    // the row to confirmed, but the card didn't know. The shared
+    // `useBackgroundPoll` primitive now drives both this card and
+    // the per-proposal summary on the same cadence.
+    jest.useFakeTimers();
+    try {
+      const svc = makeService();
+      render(
+        <GovernanceActivity governanceService={svc} proposalsByHash={{}} />
+      );
+      await waitFor(() => {
+        expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(1);
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('refreshes when the refreshToken prop changes', async () => {

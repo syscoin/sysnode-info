@@ -1,6 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useBackgroundPoll } from '../hooks/useBackgroundPoll';
 import { governanceService as defaultService } from '../lib/governanceService';
+
+// Cadence matches `SUMMARY_POLL_MS` in useGovernanceReceipts on
+// purpose: both endpoints read from the same receipt-rows state on
+// the backend, so when a relayed receipt reconciles to confirmed
+// the summary count AND the activity badge change at the same
+// instant. Keeping the two pollers on the same tick prevents a
+// user from seeing one of them update alone and wondering whether
+// the UI is inconsistent. The two constants are intentionally
+// independent so a future divergence (e.g. if the activity card
+// picks up heavier per-row enrichment) doesn't silently drag the
+// cheap summary query along.
+export const ACTIVITY_POLL_MS = 30 * 1000;
 
 // Small helper: "relative time" for a millisecond timestamp.
 // Intentionally local to this component — we don't ship a relative-
@@ -177,6 +190,19 @@ export default function GovernanceActivity({
   useEffect(() => {
     load();
   }, [load, refreshToken]);
+
+  // Background poll so the On-chain / Submitted / Needs retry /
+  // Failed badges keep pace with backend reconciliation without the
+  // user having to close the vote modal or reload the page. Same
+  // visibility-aware contract as the summary poll — see
+  // `useBackgroundPoll` for semantics. The component is only
+  // rendered by Governance.js under `isAuthenticated`, so the
+  // primitive's `enabled` flag is just `true` here; the mount-gate
+  // handles the auth check.
+  useBackgroundPoll(load, {
+    enabled: true,
+    intervalMs: ACTIVITY_POLL_MS,
+  });
 
   const proposalLookup = useMemo(() => {
     if (proposalsByHash instanceof Map) return proposalsByHash;

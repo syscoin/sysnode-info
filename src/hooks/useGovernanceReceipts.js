@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '../context/AuthContext';
 import { governanceService as defaultService } from '../lib/governanceService';
+import { useBackgroundPoll } from './useBackgroundPoll';
 import { useOwnedMasternodes } from './useOwnedMasternodes';
 
 // Data source for the authenticated Governance page: the user's
@@ -110,78 +111,24 @@ export function useGovernanceReceipts({
   //
   // Deliberate scope:
   //
-  //   * Only /summary is polled — it's a per-user SQL query, cheap
-  //     enough to hit every 30s. The governance feed (gobject list)
-  //     is NOT refreshed here; that one drives the on-chain tally
+  //   * Only /summary is polled here — it's a per-user SQL query,
+  //     cheap enough to hit every 30s. The governance feed (gobject
+  //     list) is NOT refreshed; that one drives the on-chain tally
   //     which evolves on a longer cadence and costs Core RPC time.
   //     A separate refresh can be added for the feed if needed.
-  //   * Paused while `document.hidden` so dormant background tabs
-  //     don't contribute traffic. Listens for `visibilitychange` so
-  //     the poll resumes (and fires an immediate catch-up fetch)
-  //     the moment the user tabs back in — otherwise they'd sit
-  //     on stale numbers for up to POLL_MS after focus returns.
+  //   * The "Last N votes" activity card has its own identical-
+  //     cadence poll — both read from receipt-rows state, so we
+  //     want them to catch the same reconciliation tick.
   //   * Gated on `enabled && isAuthenticated`, same contract as the
   //     initial load. Anonymous sessions never poll.
   //
-  // The existing generation guard inside `load()` makes overlapping
-  // polls safe: a vote-modal-triggered refresh firing at the same
-  // instant as a scheduled tick will still only commit the latest
-  // response. We therefore don't need per-caller coordination.
-  useEffect(() => {
-    if (!enabled || !isAuthenticated) return undefined;
-    if (typeof document === 'undefined' || typeof window === 'undefined') {
-      return undefined;
-    }
-
-    let cancelled = false;
-    let timer = null;
-
-    function clearTimer() {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-    }
-
-    function schedule() {
-      clearTimer();
-      if (document.hidden) return;
-      timer = window.setTimeout(function onTick() {
-        timer = null;
-        if (cancelled || document.hidden) return;
-        load().finally(function afterLoad() {
-          if (cancelled) return;
-          schedule();
-        });
-      }, SUMMARY_POLL_MS);
-    }
-
-    function onVisibility() {
-      if (cancelled) return;
-      if (document.hidden) {
-        clearTimer();
-        return;
-      }
-      // Visible again — catch up immediately, then resume the
-      // regular cadence. The catch-up fetch is the important part:
-      // otherwise a user alt-tabs back to find their dashboard
-      // unchanged and assumes the page is broken.
-      clearTimer();
-      load().finally(function afterLoad() {
-        if (cancelled) return;
-        schedule();
-      });
-    }
-
-    document.addEventListener('visibilitychange', onVisibility);
-    schedule();
-
-    return function cleanup() {
-      cancelled = true;
-      clearTimer();
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [enabled, isAuthenticated, load]);
+  // Visibility-aware pause + catch-up semantics live in the shared
+  // `useBackgroundPoll` primitive; see that file for the
+  // cadence/visibility contract.
+  useBackgroundPoll(load, {
+    enabled: Boolean(enabled && isAuthenticated),
+    intervalMs: SUMMARY_POLL_MS,
+  });
 
   const summaryMap = useMemo(() => {
     const m = new Map();
