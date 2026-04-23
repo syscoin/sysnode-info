@@ -3960,6 +3960,57 @@
   gap: 10px;
 }
 
+/* Pay-with-Pali primary button: keeps the wallet's hex logo flush
+   with the label so "Pay with Pali" reads as a wallet-branded CTA
+   (user-requested). The logo is decorative (aria-hidden) — the
+   button text names the wallet, so a screen reader would otherwise
+   announce "Pali logo, Pay with Pali". */
+.proposal-wizard__pali-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposal-wizard__pali-button-logo {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  /* Don't inherit .button's text color onto the raster — keep the
+     Pali brand gradient intact. */
+  filter: none;
+}
+
+.proposal-wizard__pali-button-label {
+  display: inline-block;
+}
+
+/* PayWithPaliPanel container: the hint paragraph, auth-alert error
+   blocks, and pali-attach-failed card were sitting flush under the
+   button (user-reported: "no space under button"). Normal block
+   margin was being eaten because the panel renders inside a flex
+   column from the parent section, where the siblings have no
+   collapsing-margin story. Give direct children a consistent
+   ~12px vertical rhythm; the h3 and leading <p> stay tight (they
+   introduce the affordance) via the targeted overrides below. */
+.proposal-wizard__pali-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.proposal-wizard__pali-panel > h3 {
+  margin: 0;
+}
+
+.proposal-wizard__pali-panel > p {
+  margin: 0;
+}
+
+.proposal-wizard__pali-panel > button {
+  align-self: flex-start;
+}
+
 /* Modal shared with UnsavedChangesModal */
 .proposal-modal-overlay {
   position: fixed;
