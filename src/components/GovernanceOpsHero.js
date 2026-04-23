@@ -74,8 +74,7 @@ export default function GovernanceOpsHero({
           <p className="eyebrow">Your voting dashboard</p>
           <h2>Import your masternode voting keys to take part.</h2>
           <p className="ops-hero__copy">
-            Once you add a voting key on your Account page, this
-            hero lights up with a live view of what needs your vote
+            Once you add a voting key on your Account page, you will see a live view of what needs your vote
             and how far along you are.
           </p>
           <div className="ops-hero__actions">
