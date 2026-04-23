@@ -83,14 +83,53 @@ export const SUPERBLOCK_MATURITY_WINDOW_SEC =
   NETWORK.superblockMaturityWindowBlocks * NETWORK.targetBlockTimeSec;
 
 // Wizard warning threshold — slightly wider than Core's maturity
-// window to give masternodes at least a day of headroom between
-// proposal submission and the earliest MN commit. That headroom
-// covers collateral confirmation (~15 min for 6 blocks), gobject
-// relay, operator review, and vote propagation. Proposals
-// submitted inside this 4-day window will likely miss the next
-// superblock and pay out N-1 months instead of N, so the wizard
-// surfaces a prominent notice.
-export const SUPERBLOCK_VOTE_DEADLINE_WARN_SEC = 4 * 24 * 60 * 60;
+// window to give masternodes headroom between proposal submission
+// and the earliest MN commit. That headroom covers collateral
+// confirmation (~15 min for 6 blocks), gobject relay, operator
+// review, and vote propagation. Proposals submitted inside this
+// window will likely miss the next superblock and pay out N-1
+// months instead of N, so the wizard surfaces a prominent notice.
+//
+// Derivation: `MATURITY * 4/3`. On mainnet this is exactly 4 days
+// (3-day maturity + 1-day headroom), matching the original UX
+// copy. On testnet (50-min maturity) it becomes ~67 min and on
+// regtest (12.5-min maturity) ~17 min — the "1/3 of the maturity
+// window as operator headroom" ratio is preserved across networks.
+// Codex PR20 round 4 P2: prior to this derivation the constant
+// was hardcoded to 4 days, so `isTightVotingWindow` was a
+// permanent true on testnet/regtest (cycle < 4 days) and the
+// warning banner became useless noise on every non-mainnet build.
+export const SUPERBLOCK_VOTE_DEADLINE_WARN_SEC = Math.floor(
+  (SUPERBLOCK_MATURITY_WINDOW_SEC * 4) / 3
+);
+
+// Tolerance used by the wizard's prepare-time anchor-drift check.
+// The backend recomputes `superblock_next_epoch_sec` every
+// sysMain.js tick (20 s) as `now + diffBlock * avgBlockTime`, so
+// the value drifts by seconds/minutes between fetches even when
+// the actual next superblock hasn't rotated. A strict equality
+// check treated every such drift as a rotation and popped an
+// anchor_drift error — users could get stuck looping through
+// re-review prompts without ever reaching `proposalService.prepare`
+// (Codex PR20 round 4 P1). Any legitimate rotation advances the
+// anchor by ≈ one full cycle, which is ≥ `cycle/2` regardless of
+// network, so `cycle/2` cleanly separates drift from rotation.
+export const ANCHOR_SAME_SB_TOLERANCE_SEC = Math.floor(
+  SUPERBLOCK_CYCLE_SEC / 2
+);
+
+// True when `freshAnchor` and `cachedAnchor` refer to the same
+// upcoming superblock (differences are estimate drift, not a
+// rotation). Both arguments must be positive integers or the
+// helper returns false (fail-closed: the caller should treat
+// "can't tell" the same as "different SB" and force a re-review).
+export function anchorsAreSameSuperblock(freshAnchor, cachedAnchor) {
+  const fresh = Math.floor(Number(freshAnchor));
+  const cached = Math.floor(Number(cachedAnchor));
+  if (!Number.isFinite(fresh) || fresh <= 0) return false;
+  if (!Number.isFinite(cached) || cached <= 0) return false;
+  return Math.abs(fresh - cached) < ANCHOR_SAME_SB_TOLERANCE_SEC;
+}
 
 // Returns true when the next superblock is close enough that
 // masternodes are unlikely to have finished voting + committing

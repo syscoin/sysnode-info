@@ -1,8 +1,10 @@
 import {
+  ANCHOR_SAME_SB_TOLERANCE_SEC,
   SUPERBLOCK_CYCLE_SEC,
   SUPERBLOCK_FUDGE_SEC,
   SUPERBLOCK_MATURITY_WINDOW_SEC,
   SUPERBLOCK_VOTE_DEADLINE_WARN_SEC,
+  anchorsAreSameSuperblock,
   computeProposalWindow,
   isTightVotingWindow,
   nextSuperblockEpochSecFromStats,
@@ -23,11 +25,87 @@ describe('SUPERBLOCK_CYCLE_SEC', () => {
     // Sanity: ~3 days.
     expect(SUPERBLOCK_MATURITY_WINDOW_SEC / 86400).toBeCloseTo(3.0, 1);
   });
-  test('SUPERBLOCK_VOTE_DEADLINE_WARN_SEC is 4 days (1 day wider than Core maturity)', () => {
+  test('SUPERBLOCK_VOTE_DEADLINE_WARN_SEC on mainnet is exactly 4 days (maturity * 4/3)', () => {
+    // 3-day maturity * 4/3 = 4 days. Derived (not hardcoded) so
+    // testnet/regtest builds scale the warning proportionally.
+    // Codex PR20 round 4 P2.
     expect(SUPERBLOCK_VOTE_DEADLINE_WARN_SEC).toBe(4 * 86400);
+    expect(SUPERBLOCK_VOTE_DEADLINE_WARN_SEC).toBe(
+      Math.floor((SUPERBLOCK_MATURITY_WINDOW_SEC * 4) / 3)
+    );
     expect(SUPERBLOCK_VOTE_DEADLINE_WARN_SEC).toBeGreaterThan(
       SUPERBLOCK_MATURITY_WINDOW_SEC
     );
+  });
+
+  test('ANCHOR_SAME_SB_TOLERANCE_SEC is cycle/2 on mainnet (~15 days)', () => {
+    expect(ANCHOR_SAME_SB_TOLERANCE_SEC).toBe(
+      Math.floor(SUPERBLOCK_CYCLE_SEC / 2)
+    );
+    // Sanity check: tolerance is strictly less than one full cycle
+    // so a legitimate rotation (anchor jumps by ~cycle) is never
+    // mis-classified as drift.
+    expect(ANCHOR_SAME_SB_TOLERANCE_SEC).toBeLessThan(SUPERBLOCK_CYCLE_SEC);
+  });
+});
+
+// Codex PR20 round 4 P1: the prepare-time drift check must not
+// treat sub-SB /mnStats re-estimates as a superblock rotation.
+describe('anchorsAreSameSuperblock', () => {
+  const NOW = 1_800_000_000;
+  const ANCHOR = NOW + 10 * 86400;
+
+  test('exact equality → same SB', () => {
+    expect(anchorsAreSameSuperblock(ANCHOR, ANCHOR)).toBe(true);
+  });
+
+  test('sub-cycle drift (seconds / minutes) → same SB', () => {
+    // sysMain.js recomputes estimate every 20s as `now +
+    // diffBlock * avgBlockTime`. Typical drift between two
+    // fetches is seconds to a few minutes depending on new
+    // blocks arriving. None of those should ever surface as
+    // anchor_drift to the user.
+    expect(anchorsAreSameSuperblock(ANCHOR + 20, ANCHOR)).toBe(true);
+    expect(anchorsAreSameSuperblock(ANCHOR - 20, ANCHOR)).toBe(true);
+    expect(anchorsAreSameSuperblock(ANCHOR + 300, ANCHOR)).toBe(true);
+    expect(anchorsAreSameSuperblock(ANCHOR - 300, ANCHOR)).toBe(true);
+    // Hours of drift — still within cycle/2 on mainnet.
+    expect(anchorsAreSameSuperblock(ANCHOR + 86400, ANCHOR)).toBe(true);
+  });
+
+  test('drift approaching cycle/2 is still same SB (boundary)', () => {
+    // Any value strictly < cycle/2 is same SB.
+    expect(
+      anchorsAreSameSuperblock(ANCHOR + ANCHOR_SAME_SB_TOLERANCE_SEC - 1, ANCHOR)
+    ).toBe(true);
+  });
+
+  test('drift at cycle/2 is NOT same SB (strict less-than)', () => {
+    expect(
+      anchorsAreSameSuperblock(ANCHOR + ANCHOR_SAME_SB_TOLERANCE_SEC, ANCHOR)
+    ).toBe(false);
+  });
+
+  test('full-cycle jump (real rotation) → different SB', () => {
+    expect(
+      anchorsAreSameSuperblock(ANCHOR + SUPERBLOCK_CYCLE_SEC, ANCHOR)
+    ).toBe(false);
+    expect(
+      anchorsAreSameSuperblock(ANCHOR + 30 * 86400, ANCHOR)
+    ).toBe(false);
+  });
+
+  test('fail-closed on bogus inputs (treated as different SB)', () => {
+    // If we cannot tell whether the anchors refer to the same
+    // SB, the caller MUST force a re-review rather than silently
+    // submit — same semantics as a legitimate rotation.
+    expect(anchorsAreSameSuperblock(null, ANCHOR)).toBe(false);
+    expect(anchorsAreSameSuperblock(ANCHOR, null)).toBe(false);
+    expect(anchorsAreSameSuperblock(undefined, ANCHOR)).toBe(false);
+    expect(anchorsAreSameSuperblock(0, ANCHOR)).toBe(false);
+    expect(anchorsAreSameSuperblock(ANCHOR, 0)).toBe(false);
+    expect(anchorsAreSameSuperblock(-1, ANCHOR)).toBe(false);
+    expect(anchorsAreSameSuperblock('soon', ANCHOR)).toBe(false);
   });
 });
 

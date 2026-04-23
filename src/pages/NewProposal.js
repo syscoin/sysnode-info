@@ -17,6 +17,7 @@ import { useAuth } from '../context/AuthContext';
 import { fetchNetworkStats } from '../lib/api';
 import {
   SUPERBLOCK_CYCLE_SEC,
+  anchorsAreSameSuperblock,
   computeProposalWindow,
   isTightVotingWindow,
   nextSuperblockEpochSecFromStats,
@@ -741,7 +742,18 @@ export default function NewProposal() {
         );
         return;
       }
-      if (liveAnchor !== nextSuperblockSec) {
+      // Compare the refreshed anchor against the cached one the
+      // user just reviewed. We CANNOT use strict equality — the
+      // backend's /mnStats recomputes `superblock_next_epoch_sec`
+      // every sysMain tick (20 s) as `now + diffBlock *
+      // avgBlockTime`, so the value drifts by seconds/minutes
+      // between fetches even when the same upcoming superblock is
+      // still the target. Under strict equality users could get
+      // stuck looping through re-review prompts on every attempted
+      // submit (Codex PR20 round 4 P1). `anchorsAreSameSuperblock`
+      // applies a `cycle/2` tolerance — any legitimate rotation
+      // advances the anchor by ≈ cycle, well above the threshold.
+      if (!anchorsAreSameSuperblock(liveAnchor, nextSuperblockSec)) {
         // Chain advanced a cycle while the wizard was open. The
         // fresh anchor is fine, but the user reviewed a schedule
         // built from the previous anchor. Sync state so the

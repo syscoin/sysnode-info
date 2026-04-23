@@ -1028,6 +1028,77 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'Prepare proceeds without anchor_drift when refreshed anchor differs only by estimate drift (sub-SB, Codex round 4 P1)',
+    async () => {
+      // sysMain.js on the backend recomputes
+      // `superblock_next_epoch_sec` every 20 s as `now +
+      // diffBlock * avgBlockTime`, so the value drifts by
+      // seconds between fetches without the next superblock
+      // actually rotating. The previous strict-equality check
+      // in onPrepare treated every such drift as a rotation
+      // and popped the "Chain timing updated" banner, which
+      // meant users could get stuck never reaching
+      // proposalService.prepare — clicking Prepare kept
+      // bouncing them back to re-review. Regression: a 60 s
+      // drift (well under the cycle/2 tolerance) must submit
+      // cleanly on the first click.
+      proposalService.prepare.mockResolvedValue({
+        submission: {
+          id: 88,
+          proposalHash: 'bb'.repeat(32),
+          parentHash: '0',
+          revision: 1,
+          timeUnix: 1700000000,
+          dataHex: 'deadbeef',
+          name: 'my-grant',
+          url: 'https://forum.syscoin.org/t/my-grant',
+          paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+          paymentAmountSats: '100000000000',
+          paymentCount: 1,
+          startEpoch: 1700000000,
+          endEpoch: 1701000000,
+        },
+        opReturnHex: 'bb'.repeat(32),
+        canonicalJson: '{}',
+        payloadBytes: 2,
+        collateralFeeSats: '15000000000',
+        requiredConfirmations: 6,
+      });
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Next /mnStats call returns a slightly drifted anchor
+      // (60 s forward). Well within the cycle/2 tolerance, so
+      // the wizard must treat it as "same SB, just a fresher
+      // estimate" and proceed to prepare.
+      currentStableNextSb += 60;
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // Submitted on the first click — no anchor_drift banner.
+      expect(proposalService.prepare).toHaveBeenCalledTimes(1);
+      const alerts = screen.queryAllByRole('alert');
+      const spuriousDrift = alerts.find((el) =>
+        /chain timing updated while this wizard was open/i.test(
+          el.textContent
+        )
+      );
+      expect(spuriousDrift).toBeUndefined();
+    }
+  );
+
+  test(
     'Review step hides the schedule block for single-payment proposals',
     async () => {
       // paymentCount=1 is the default and most common case.
