@@ -70,16 +70,20 @@ import { fetchNetworkStats } from '../lib/api';
 import { proposalService } from '../lib/proposalService';
 /* eslint-enable import/first */
 
-// Default network-stats resolver used by beforeEach to reinstate the
-// mock impl after jest.clearAllMocks wipes it. Kept as a function so
-// `Date.now()` is re-evaluated per call (tests that freeze time or
-// advance it still see a fresh anchor in the future).
+// Stable next-superblock anchor captured fresh per-test in beforeEach
+// (see below). The wizard now fetches /mnStats BOTH on mount AND at
+// Prepare time and compares the two — if they differ it assumes the
+// chain advanced a cycle while the wizard was open and forces a
+// re-review instead of submitting. A mock that recomputes
+// `Date.now() + 30 days` on every call would cross the whole-second
+// boundary between mount and prepare and spuriously trigger the
+// drift branch, so we freeze a single value per test.
+let currentStableNextSb = 0;
 function defaultNetworkStatsResolver() {
   return Promise.resolve({
     stats: {
       superblock_stats: {
-        superblock_next_epoch_sec:
-          Math.floor(Date.now() / 1000) + 30 * 86400,
+        superblock_next_epoch_sec: currentStableNextSb,
       },
     },
   });
@@ -164,8 +168,11 @@ function validPayment({ count = '1' } = {}) {
 describe('NewProposal wizard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Reinstate the network-stats resolver — clearAllMocks wipes
-    // the default impl set in the jest.mock factory.
+    // Snapshot a stable next-SB anchor at test start so both the
+    // mount-time and prepare-time fetchNetworkStats calls return
+    // the same value (same rationale as in production: /mnStats
+    // reports the same pre-computed SB epoch across rapid calls).
+    currentStableNextSb = Math.floor(Date.now() / 1000) + 30 * 86400;
     fetchNetworkStats.mockImplementation(defaultNetworkStatsResolver);
     // Default to no pre-existing draft fetch.
     proposalService.getDraft.mockRejectedValue(
@@ -712,17 +719,10 @@ describe('NewProposal wizard', () => {
       // likely won't have time to finish voting, so the proposal
       // would probably miss that superblock and pay out N-1
       // months instead of N. The warning must fire on BOTH steps
-      // so the user doesn't skip past it.
-      fetchNetworkStats.mockImplementation(() =>
-        Promise.resolve({
-          stats: {
-            superblock_stats: {
-              superblock_next_epoch_sec:
-                Math.floor(Date.now() / 1000) + 2 * 86400,
-            },
-          },
-        })
-      );
+      // so the user doesn't skip past it. Anchor stable across
+      // both fetchNetworkStats calls (mount + prepare) — see the
+      // comment above `currentStableNextSb`.
+      currentStableNextSb = Math.floor(Date.now() / 1000) + 2 * 86400;
 
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
@@ -760,17 +760,8 @@ describe('NewProposal wizard', () => {
       // Edge case: user asked for 1 month. "Will pay 0 months
       // instead of 1" is unhelpful — the honest message is just
       // "will likely miss that superblock" without the demotion
-      // clause.
-      fetchNetworkStats.mockImplementation(() =>
-        Promise.resolve({
-          stats: {
-            superblock_stats: {
-              superblock_next_epoch_sec:
-                Math.floor(Date.now() / 1000) + 2 * 86400,
-            },
-          },
-        })
-      );
+      // clause. Same stable-anchor pattern as above.
+      currentStableNextSb = Math.floor(Date.now() / 1000) + 2 * 86400;
 
       await renderWizard();
       await screen.findByTestId('wizard-panel-basics');
@@ -785,6 +776,172 @@ describe('NewProposal wizard', () => {
         screen.queryByTestId('tight-voting-window-warning-paid')
       ).toBeNull();
       expect(warn.textContent).toMatch(/likely miss/i);
+    }
+  );
+
+  test(
+    'Prepare fails closed when the pre-submit /mnStats refresh throws (Codex round 2 P2)',
+    async () => {
+      // The wizard refreshes the next-SB anchor right before
+      // submitting. If that fetch errors out, we must NOT fall
+      // through to the cached (possibly-now-stale) anchor or to
+      // computeProposalWindow's `now + cycle` fallback — either
+      // path could ship a window that diverges from the reviewed
+      // schedule and burn collateral. Fail closed: show the
+      // stats-unavailable banner, drop the cached anchor so
+      // Prepare stays disabled, and do NOT call prepare().
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Now break the /mnStats endpoint for the prepare-time
+      // refresh. The mount-time fetch already succeeded with the
+      // stable anchor from beforeEach.
+      fetchNetworkStats.mockRejectedValueOnce(
+        new Error('transient_network_failure')
+      );
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // prepare() must NOT have been called — we short-circuited.
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      // The inline error banner surfaces the retry guidance.
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /could not confirm live superblock timing/i.test(el.textContent)
+      );
+      expect(errBanner).toBeDefined();
+      // Cached anchor dropped → Prepare button goes back to
+      // disabled until refreshStats recovers.
+      await waitFor(() =>
+        expect(screen.getByTestId('wizard-prepare')).toBeDisabled()
+      );
+    }
+  );
+
+  test(
+    'Prepare fails closed when the pre-submit /mnStats refresh returns a stale (past) anchor',
+    async () => {
+      // Same fail-closed behaviour as the throw case: a lagging
+      // /mnStats feed that still returns a positive but past
+      // timestamp must not let us submit. The mount fetch used
+      // the stable future anchor from beforeEach; we corrupt only
+      // the prepare-time refresh.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      fetchNetworkStats.mockResolvedValueOnce({
+        stats: {
+          superblock_stats: {
+            superblock_next_epoch_sec: Math.floor(Date.now() / 1000) - 60,
+          },
+        },
+      });
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /could not confirm live superblock timing/i.test(el.textContent)
+      );
+      expect(errBanner).toBeDefined();
+    }
+  );
+
+  test(
+    'Prepare surfaces anchor_drift when the refreshed anchor differs from the cached one, and submits on the retry click',
+    async () => {
+      // Chain advanced a cycle while the wizard was open. The
+      // fresh anchor is valid, but the user reviewed a schedule
+      // built from the previous anchor. We must update state so
+      // the WindowPreview rerenders with the new schedule, then
+      // let the user commit by clicking Prepare again — this
+      // ensures they only ever burn collateral on a window they
+      // actually saw.
+      proposalService.prepare.mockResolvedValue({
+        submission: {
+          id: 77,
+          proposalHash: 'aa'.repeat(32),
+          parentHash: '0',
+          revision: 1,
+          timeUnix: 1700000000,
+          dataHex: 'deadbeef',
+          name: 'my-grant',
+          url: 'https://forum.syscoin.org/t/my-grant',
+          paymentAddress: 'sys1qexampleexampleexampleexampleexampleaaaa',
+          paymentAmountSats: '100000000000',
+          paymentCount: 1,
+          startEpoch: 1700000000,
+          endEpoch: 1701000000,
+        },
+        opReturnHex: 'aa'.repeat(32),
+        canonicalJson: '{}',
+        payloadBytes: 2,
+        collateralFeeSats: '15000000000',
+        requiredConfirmations: 6,
+      });
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Next /mnStats call returns a DIFFERENT future anchor (one
+      // superblock past the cached one). Subsequent calls return
+      // the same drifted value so the retry click sees a stable
+      // state.
+      const driftedAnchor = currentStableNextSb + 30 * 86400;
+      currentStableNextSb = driftedAnchor;
+
+      const prepareBtn = screen.getByTestId('wizard-prepare');
+      await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+      await act(async () => {
+        fireEvent.click(prepareBtn);
+      });
+
+      // First click: detected drift, updated state, did NOT submit.
+      expect(proposalService.prepare).not.toHaveBeenCalled();
+      const alerts = screen.getAllByRole('alert');
+      const errBanner = alerts.find((el) =>
+        /chain timing updated while this wizard was open/i.test(
+          el.textContent
+        )
+      );
+      expect(errBanner).toBeDefined();
+      // Prepare button is still enabled for the retry click
+      // (cached anchor was updated, not cleared).
+      expect(screen.getByTestId('wizard-prepare')).not.toBeDisabled();
+
+      // Second click: cached anchor now matches the refreshed
+      // one, so we proceed to prepare.
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wizard-prepare'));
+      });
+      expect(proposalService.prepare).toHaveBeenCalledTimes(1);
     }
   );
 

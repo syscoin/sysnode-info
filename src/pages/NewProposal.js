@@ -155,6 +155,11 @@ function describePrepareError(err) {
       return 'Network hiccup. Check your connection and try again.';
     case 'http_error':
       return 'The server returned an error. Try again in a moment.';
+    case 'stats_unavailable':
+    case 'anchor_drift':
+      // Messages for these two are authored in onPrepare so they can
+      // quote the exact recovery action inline. Codex PR20 round 2 P2.
+      return err.message || 'Live superblock timing unavailable. Please retry.';
     default:
       return err.code || 'Unknown error.';
   }
@@ -666,19 +671,81 @@ export default function NewProposal() {
       // derivation.
       const durationMonths = Math.floor(Number(form.paymentCount));
       const nowSec = Math.floor(Date.now() / 1000);
-      // Re-fetch stats at prepare time so the anchor is fresh even
-      // if the wizard has been open for a while. Falls back to the
-      // hook-cached value if the fetch fails, and (last resort) to
-      // `now + cycle` inside computeProposalWindow's stale-anchor
-      // branch — that branch is always safe, just less precise.
-      let liveAnchor = nextSuperblockSec;
+
+      // Re-fetch the live next-SB anchor right before submission
+      // and FAIL CLOSED on anything that would let the submitted
+      // window diverge from what the user saw on Review:
+      //
+      //   (a) fetch throws (transport error, 5xx, timeout) → surface
+      //       the stats-unavailable banner, clear the cached anchor
+      //       so Prepare stays disabled until refreshStats() recovers.
+      //   (b) fetch returns a stale or missing anchor
+      //       (next_SB epoch <= now) → same as (a). The /mnStats
+      //       source occasionally lags a few blocks behind the tip
+      //       and we refuse to submit against a backward-pointing
+      //       anchor for the same reason.
+      //   (c) fetch returns a DIFFERENT future anchor than the one
+      //       Review rendered from (a superblock passed while the
+      //       wizard was open) → update state so the preview card
+      //       rerenders with the new schedule, and surface an
+      //       "anchor drift" message asking the user to re-review
+      //       before clicking Prepare again. We do NOT submit the
+      //       new window under the user — they reviewed the old one.
+      //
+      // Codex PR20 round 2 P2: the previous implementation caught
+      // (a) silently, kept the cached anchor, and let
+      // computeProposalWindow fall back to `now + cycle` if the
+      // cached anchor had also gone stale. That path could ship a
+      // window a full cycle off from the reviewed schedule and
+      // burn collateral on a proposal whose effective payout
+      // window had shifted. All three branches now short-circuit
+      // before prepareBodyFromForm / proposalService.prepare.
+      let liveAnchor = null;
+      let refreshErr = null;
       try {
         const freshStats = await fetchNetworkStats();
-        const fresh = nextSuperblockEpochSecFromStats(freshStats, nowSec);
-        if (fresh) liveAnchor = fresh;
-      } catch (_e) {
-        // Swallow; liveAnchor already reflects the cached hook value
-        // and computeProposalWindow tolerates a null anchor.
+        liveAnchor = nextSuperblockEpochSecFromStats(freshStats, nowSec);
+        if (!liveAnchor) {
+          refreshErr = new Error('stale_superblock_anchor');
+        }
+      } catch (err) {
+        refreshErr = err;
+      }
+      if (refreshErr) {
+        setStatsError(refreshErr);
+        setNextSuperblockSec(null);
+        setPrepareError(
+          Object.assign(
+            new Error(
+              'Could not confirm live superblock timing from the node. ' +
+                'Please wait a moment and Prepare again — the wizard will ' +
+                'not submit with a potentially stale voting window.'
+            ),
+            { code: 'stats_unavailable' }
+          )
+        );
+        return;
+      }
+      if (liveAnchor !== nextSuperblockSec) {
+        // Chain advanced a cycle while the wizard was open. The
+        // fresh anchor is fine, but the user reviewed a schedule
+        // built from the previous anchor. Sync state so the
+        // WindowPreview + schedule re-render, and force a second
+        // Prepare click so they commit collateral to a window
+        // they actually saw.
+        setNextSuperblockSec(liveAnchor);
+        setPrepareError(
+          Object.assign(
+            new Error(
+              'Chain timing updated while this wizard was open — the ' +
+                'voting window has been refreshed to match the next ' +
+                'superblock. Please re-check the updated window above, ' +
+                'then click Prepare again to submit.'
+            ),
+            { code: 'anchor_drift' }
+          )
+        );
+        return;
       }
       const windowSpec = computeProposalWindow({
         durationMonths,
