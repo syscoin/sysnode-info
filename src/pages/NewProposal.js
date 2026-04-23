@@ -670,7 +670,6 @@ export default function NewProposal() {
       // correct cycle. See lib/governanceWindow.js for the full
       // derivation.
       const durationMonths = Math.floor(Number(form.paymentCount));
-      const nowSec = Math.floor(Date.now() / 1000);
 
       // Re-fetch the live next-SB anchor right before submission
       // and FAIL CLOSED on anything that would let the submitted
@@ -700,10 +699,26 @@ export default function NewProposal() {
       // burn collateral on a proposal whose effective payout
       // window had shifted. All three branches now short-circuit
       // before prepareBodyFromForm / proposalService.prepare.
+      //
+      // Codex PR20 round 3 P2: the wall-clock cutoff used to validate
+      // the refreshed anchor must be read AFTER the fetch resolves,
+      // not before. /mnStats is a real network RTT (plus jsdom /
+      // proxy / slow-node delays in practice) and can straddle the
+      // actual superblock transition; in that window an anchor that
+      // was strictly future at pre-await time can already be in the
+      // past by the time we use it. Capturing `nowSec` pre-await
+      // allowed `nextSuperblockEpochSecFromStats` to validate a
+      // just-passed anchor as live and silently ship payouts off
+      // by one cycle (N → N-1 months). Reading the clock post-await
+      // closes that window; the same post-await `nowSec` is also
+      // passed into `computeProposalWindow` so its stale-fallback
+      // branch sees a consistent view of the clock.
       let liveAnchor = null;
       let refreshErr = null;
+      let nowSec;
       try {
         const freshStats = await fetchNetworkStats();
+        nowSec = Math.floor(Date.now() / 1000);
         liveAnchor = nextSuperblockEpochSecFromStats(freshStats, nowSec);
         if (!liveAnchor) {
           refreshErr = new Error('stale_superblock_anchor');

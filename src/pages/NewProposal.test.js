@@ -869,6 +869,88 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'Prepare fails closed when /mnStats resolves across the SB boundary (anchor future at pre-await, past at post-await) (Codex round 3 P2)',
+    async () => {
+      // Codex PR20 round 3 P2: the previous implementation captured
+      // `nowSec = Math.floor(Date.now() / 1000)` BEFORE awaiting
+      // fetchNetworkStats() and reused it to validate the refreshed
+      // anchor. /mnStats is a real network RTT and can straddle
+      // wall-clock boundaries — including, at a SB transition, the
+      // actual superblock. In that case an anchor that was strictly
+      // future at pre-await time is already in the past by the time
+      // we use it, so passing the pre-await clock to
+      // nextSuperblockEpochSecFromStats would green-light a
+      // just-passed anchor and ship a window anchored to a SB that
+      // already happened (effective payouts shift N -> N-1).
+      //
+      // Simulate this by installing a Date.now() spy that advances
+      // time forward WHILE fetchNetworkStats is in flight. The
+      // anchor returned is +10s relative to the pre-await clock
+      // but the clock moves +20s during the await, so the same
+      // anchor is -10s relative to the post-await clock. The fix
+      // captures nowSec AFTER the await, so the anchor is rejected
+      // as stale and we fail closed with stats_unavailable.
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      await screen.findByTestId('window-preview');
+      validPayment();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      const baseNowMs = Date.now();
+      const baseNowSec = Math.floor(baseNowMs / 1000);
+
+      // Install the Date.now spy AFTER all prior setup has run on
+      // the real clock. The spy advances time on every read so that
+      // once the fetchNetworkStats mock resolver fires we've already
+      // moved past the anchor it's about to return.
+      let dateNowSpy;
+      try {
+        fetchNetworkStats.mockImplementationOnce(async () => {
+          // Bump the clock forward by 20s BEFORE resolving.
+          // Consumers of Date.now() after the await will see the
+          // advanced time; consumers before the await already
+          // captured the un-advanced time. Also pin every subsequent
+          // Date.now() read for the rest of the prepare call to
+          // this value so the assertion is deterministic.
+          dateNowSpy = jest
+            .spyOn(Date, 'now')
+            .mockReturnValue((baseNowSec + 20) * 1000);
+          return {
+            stats: {
+              superblock_stats: {
+                superblock_next_epoch_sec: baseNowSec + 10,
+              },
+            },
+          };
+        });
+
+        const prepareBtn = screen.getByTestId('wizard-prepare');
+        await waitFor(() => expect(prepareBtn).not.toBeDisabled());
+        await act(async () => {
+          fireEvent.click(prepareBtn);
+        });
+
+        // prepare() must NOT have been called — the post-await
+        // clock read sees the anchor as already-past and fails
+        // closed. Without the fix, nextSuperblockEpochSecFromStats
+        // sees nowSec=baseNowSec and anchor=baseNowSec+10 → validates
+        // as live and the submission proceeds.
+        expect(proposalService.prepare).not.toHaveBeenCalled();
+        const alerts = screen.getAllByRole('alert');
+        const errBanner = alerts.find((el) =>
+          /could not confirm live superblock timing/i.test(el.textContent)
+        );
+        expect(errBanner).toBeDefined();
+      } finally {
+        if (dateNowSpy) dateNowSpy.mockRestore();
+      }
+    }
+  );
+
+  test(
     'Prepare surfaces anchor_drift when the refreshed anchor differs from the cached one, and submits on the retry click',
     async () => {
       // Chain advanced a cycle while the wizard was open. The
