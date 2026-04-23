@@ -220,13 +220,24 @@ export default function NewProposal() {
   const [nextSuperblockSec, setNextSuperblockSec] = useState(null);
   const [statsError, setStatsError] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  // Monotonic counter tracking the "latest issued /mnStats request".
+  // Each refreshStats invocation takes a snapshot of its own id and
+  // only mutates anchor state if that id is still current when the
+  // response resolves. Prevents out-of-order responses from clobbering
+  // fresher state: e.g. the mount fetch can finish after a manual
+  // Retry click, and without a guard its (potentially stale) response
+  // would overwrite the Retry's successful anchor and re-disable
+  // Prepare. useRef instead of state because we want synchronous
+  // sequencing without triggering re-renders (Codex PR20 round 5 P2).
+  const statsReqIdRef = useRef(0);
   const refreshStats = useCallback(() => {
-    let cancelled = false;
+    const reqId = ++statsReqIdRef.current;
     setStatsLoading(true);
     setStatsError(null);
+    const isCurrent = () => reqId === statsReqIdRef.current;
     fetchNetworkStats()
       .then((stats) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         // `nowSec` is captured at response time, not at effect
         // mount, so we reject anchors that are already in the past
         // relative to the clock the user will also see in the
@@ -243,15 +254,19 @@ export default function NewProposal() {
         setNextSuperblockSec(anchor);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setStatsError(err);
         setNextSuperblockSec(null);
       })
       .finally(() => {
-        if (!cancelled) setStatsLoading(false);
+        if (isCurrent()) setStatsLoading(false);
       });
     return () => {
-      cancelled = true;
+      // Invalidate this specific request by advancing past it iff
+      // we're still the latest. Any newer refreshStats call has
+      // already bumped the counter on its own, so the no-op branch
+      // here is correct.
+      if (isCurrent()) statsReqIdRef.current += 1;
     };
   }, []);
   useEffect(() => {
@@ -1517,7 +1532,8 @@ function WindowPreview({
       <p className="proposal-wizard__help">
         Anchored to the next superblock (
         {new Date(nextSuperblockSec * 1000).toUTCString()}). The start
-        is placed ~15 days before the first payout and the end ~15 days
+        is placed ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
+        before the first payout and the end ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
         after the last so each payment lands safely inside the window
         and the proposal prunes cleanly afterwards.
       </p>
@@ -1693,7 +1709,8 @@ function ReviewStep({
             One payment per Syscoin superblock, starting at the
             next superblock. Actual payout timing drifts a few hours
             either way depending on network hash-rate; the voting
-            window leaves ~15 days of margin on each side.
+            window leaves ~{humanizeDurationShort(Math.floor(SUPERBLOCK_CYCLE_SEC / 2))}{' '}
+            of margin on each side.
           </p>
           <ol
             className="proposal-wizard__schedule-list"
