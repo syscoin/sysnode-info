@@ -2054,7 +2054,7 @@ export default function ProposalVoteModal({
                     </h3>
                     <button
                       type="button"
-                      className="vote-modal__group-toggle"
+                      className="auth-card__disclosure-toggle"
                       onClick={() =>
                         setShowAlreadyVoted((prev) => !prev)
                       }
@@ -2066,15 +2066,20 @@ export default function ProposalVoteModal({
                           : 'Expand already-voted sentry nodes'
                       }
                     >
-                      {/* Chevron matches ProposalsCreatedPanel's
-                          grouped/counted-list disclosure (the
-                          closest sibling pattern in the codebase).
-                          The whole button is hit-target, including
-                          whitespace around the glyph; the glyph is
-                          aria-hidden so SR users get the proper
-                          "Expand/Collapse…" label above. */}
-                      <span aria-hidden="true">
-                        {showAlreadyVoted ? '▾' : '▸'}
+                      {/* Reuse the `auth-card__disclosure-toggle`
+                          pattern (NotificationPreferencesCard,
+                          ChangePasswordCard) rather than minting a
+                          third disclosure affordance. The glyph
+                          stays `▸` in markup; the CSS flips it to
+                          `▾` via `rotate(90deg)` on the
+                          `aria-expanded='true'` selector, so the
+                          DOM stays stable across toggles and the
+                          visual matches the accounts screen 1:1.
+                          The class name is historical (born in
+                          AuthCard) but is already the codebase's
+                          shared disclosure pattern. */}
+                      <span className="auth-card__chevron" aria-hidden="true">
+                        ▸
                       </span>
                     </button>
                   </header>

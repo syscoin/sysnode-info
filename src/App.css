@@ -2249,6 +2249,65 @@
   transform: translateX(0) translateY(0);
 }
 
+/* Bottom-row tooltip flip — companion to the "render below"
+ * baseline above. `.proposal-table { overflow: hidden }` is
+ * required to keep row background fills (`.is-passing`,
+ * `.is-watch`, `.is-highlighted`) inside the table's 24px
+ * rounded corners; the same clip catches DOWNWARD tooltips on
+ * the last row because there's no row below them to host the
+ * popover, so `::after` renders into the table's clipped bottom
+ * margin and gets cut off (observed on the "Voted N/M" cohort
+ * chip on the bottom proposal). Flip ONLY the last row's tooltip
+ * to render above its chip — the rows above (and the table head)
+ * sit inside the clip region, so the popover stays visible as
+ * long as the body has at least one row, which is every
+ * non-empty state. Default downward behavior is preserved for
+ * every other row, and for every chip outside this table
+ * (modal, hero, activity card), because the selector is
+ * strictly scoped to `.proposal-table__body > .proposal-row:last-child`.
+ *
+ * Two variants mirror the baseline cascade: the generic rule
+ * centers on the chip (`left: 50%` + `translateX(-50%)`), and
+ * the status-column override re-applies `left: 0` /
+ * `translateX(0)` to match the existing
+ * `.proposal-row__status .status-chip[data-tip]` start-alignment
+ * that exists because the status column is left-most and a
+ * centered popover would leak past the table's left edge.
+ * Specificity of the new rules (5 class-equivalents) is higher
+ * than the baseline (2) and the column override (3), so the
+ * cascade falls out naturally. */
+.proposal-table__body > .proposal-row:last-child
+  .status-chip[data-tip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%) translateY(3px);
+}
+
+.proposal-table__body > .proposal-row:last-child
+  .status-chip[data-tip]:hover::after,
+.proposal-table__body > .proposal-row:last-child
+  .status-chip[data-tip]:focus::after,
+.proposal-table__body > .proposal-row:last-child
+  .status-chip[data-tip]:focus-visible::after {
+  transform: translateX(-50%) translateY(0);
+}
+
+.proposal-table__body > .proposal-row:last-child
+  .proposal-row__status .status-chip[data-tip]::after {
+  left: 0;
+  right: auto;
+  transform: translateX(0) translateY(3px);
+}
+
+.proposal-table__body > .proposal-row:last-child
+  .proposal-row__status .status-chip[data-tip]:hover::after,
+.proposal-table__body > .proposal-row:last-child
+  .proposal-row__status .status-chip[data-tip]:focus::after,
+.proposal-table__body > .proposal-row:last-child
+  .proposal-row__status .status-chip[data-tip]:focus-visible::after {
+  transform: translateX(0) translateY(0);
+}
+
 .meta-chip--margin-near {
   background: rgba(30, 120, 255, 0.1);
   color: #1a4fb0;
@@ -2290,7 +2349,14 @@
 
 .vote-modal__group:first-child {
   border-top: 0;
-  padding-top: 0;
+  /* `.vote-modal__list` keeps `padding: 0` (so the inter-group
+     border-top dividers still span edge-to-edge), which means the
+     first group has to provide its own top breathing room against
+     the list's rounded border — otherwise "Needs vote" sits
+     flush against the top of the bordered box. Horizontal
+     breathing room is handled on `.vote-modal__group-header`
+     (see below) rather than here so the dividers stay full-bleed. */
+  padding-top: 12px;
   margin-top: 0;
 }
 
@@ -2300,6 +2366,15 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+  /* Indent the header content to line up with `.vote-modal__row`'s
+     own 12px horizontal padding, so the group title and the row's
+     checkbox both sit 12px in from the bordered list's edge
+     instead of the header hugging the border while rows are
+     indented. The padding lives on the header (not the outer
+     `.vote-modal__group`) so the border-top divider between
+     groups stays edge-to-edge — a visual pattern the existing
+     `.vote-modal__list { padding: 0 }` was designed around. */
+  padding: 0 12px;
 }
 
 .vote-modal__group-title {
@@ -2346,32 +2421,14 @@
   display: none;
 }
 
-/* Chevron disclosure button for the "Already voted" group —
-   matches the grouped/counted-list pattern used by
-   `.proposals-created__toggle` so disclosure affordances stay
-   consistent across the app. Kept module-local rather than
-   reaching for the proposals-created class so the modal's styles
-   don't couple to an unrelated component's CSS surface. */
-.vote-modal__group-toggle {
-  background: none;
-  border: 0;
-  padding: 2px 6px;
-  margin: 0;
-  color: var(--accent);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-}
-
-.vote-modal__group-toggle:hover,
-.vote-modal__group-toggle:focus-visible {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  outline: none;
-}
+/* The "Already voted" disclosure button reuses
+   `.auth-card__disclosure-toggle` + `.auth-card__chevron`
+   (defined for NotificationPreferencesCard / ChangePasswordCard)
+   rather than a modal-scoped variant. That keeps the circular
+   chevron glyph and its rotation transition identical to the
+   accounts surface — same visual weight, same hover state, same
+   focus ring — instead of drifting into a second disclosure
+   affordance the designer would eventually ask us to unify. */
 
 /* CONFIRM_CHANGE body — a guard-rail step before we overwrite a
    confirmed on-chain vote. Distinct from the picker so there's no
@@ -3664,6 +3721,14 @@
   gap: 6px 12px;
   align-items: baseline;
   padding: 10px 12px;
+  /* Without a bottom margin, the "Net support" pill sits flush
+     against `.vote-modal__list`'s top border (the list only has
+     `margin-bottom`), which visually fuses the two panels. A
+     fixed 12px breathing room matches the vertical rhythm used
+     elsewhere in the modal body (`.vote-modal__selection-header`
+     margin-bottom, the group header margin-bottom) without
+     introducing a new token. */
+  margin-bottom: 12px;
   border-radius: 12px;
   background: var(--accent-soft);
   border: 1px solid rgba(30, 120, 255, 0.18);
