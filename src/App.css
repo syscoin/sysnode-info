@@ -3828,6 +3828,12 @@
 .proposal-wizard__summary dd {
   margin: 0;
   color: var(--text);
+  /* Hashes / addresses inside <dd><code>…</code></dd> are unbreakable
+     64-char hex runs that the browser treats as one "word". Without
+     overflow-wrap they punch the dd past the viewport on narrow
+     screens. `anywhere` only breaks when needed, so short values
+     still read as one line. */
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
