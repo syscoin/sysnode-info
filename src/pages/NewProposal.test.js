@@ -1117,6 +1117,49 @@ describe('NewProposal wizard', () => {
   );
 
   test(
+    'Review step suppresses the projected schedule when /mnStats anchor is unavailable (Codex round 5 P2)',
+    async () => {
+      // Regression: computeProposalWindow has an internal
+      // "stale anchor" fallback (anchor = now + cycle) so that
+      // the duration preview can still render something sensible
+      // while stats load. That fallback makes `derivedWindow`
+      // truthy even when `nextSuperblockSec` is null, which in
+      // turn made the Review step paint a convincing-looking
+      // projected payment schedule from entirely synthetic
+      // timestamps — alongside the "live chain data unavailable"
+      // WindowPreview banner that was (correctly) hiding the
+      // voting window itself. Post-fix: the schedule must stay
+      // in lockstep with WindowPreview and only render when we
+      // have a real live anchor.
+      //
+      // Setup: stub /mnStats to return a response that
+      // nextSuperblockEpochSecFromStats rejects (missing
+      // superblock_next_epoch_sec field). Wizard state lands at
+      // `nextSuperblockSec = null, statsError != null`. 3-month
+      // proposal so paymentCount >= 2 is satisfied — the only
+      // remaining gate on the schedule is the live-anchor check.
+      fetchNetworkStats.mockImplementation(() =>
+        Promise.resolve({ stats: { superblock_stats: {} } })
+      );
+
+      await renderWizard();
+      await screen.findByTestId('wizard-panel-basics');
+      validBasics();
+      fireEvent.click(screen.getByTestId('wizard-next'));
+      validPayment({ count: '3' });
+      fireEvent.click(screen.getByTestId('wizard-next'));
+
+      expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
+
+      // Review must not fabricate a schedule when the anchor is
+      // gone. WindowPreview's error banner is the only source
+      // of truth about timing in this state.
+      expect(screen.queryByTestId('review-schedule')).toBeNull();
+      expect(screen.queryAllByTestId('review-schedule-row')).toHaveLength(0);
+    }
+  );
+
+  test(
     'edits typed while save is in flight remain dirty (baseline is the saved snapshot, not the live form) (Codex round 7 P1)',
     async () => {
       // Regression: `mark_saved` used to set

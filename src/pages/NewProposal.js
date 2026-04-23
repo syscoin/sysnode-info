@@ -17,6 +17,7 @@ import { useAuth } from '../context/AuthContext';
 import { fetchNetworkStats } from '../lib/api';
 import {
   SUPERBLOCK_CYCLE_SEC,
+  SUPERBLOCK_MATURITY_WINDOW_SEC,
   anchorsAreSameSuperblock,
   computeProposalWindow,
   isTightVotingWindow,
@@ -1388,6 +1389,16 @@ function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
   // demote to (N-1 = 0), so the honest message is just "will
   // likely miss that superblock".
   const willLoseOnePayment = hasValidCount && n >= 2;
+  // Network-derived copy. On mainnet this renders "~3d" + "~30d"
+  // matching the original hardcoded UX; on testnet/regtest the
+  // same computation gives the actual, much shorter maturity +
+  // cycle values so the guidance stays numerically correct
+  // across every supported network. Codex PR20 round 4 P3:
+  // hardcoding "~3 days" / "~30 days" made the copy mislead
+  // non-mainnet deployments by orders of magnitude and could
+  // drive incorrect operator decisions.
+  const maturityLabel = humanizeDurationShort(SUPERBLOCK_MATURITY_WINDOW_SEC);
+  const cycleLabel = humanizeDurationShort(SUPERBLOCK_CYCLE_SEC);
   return (
     <div
       className="proposal-wizard__tight-warning"
@@ -1401,7 +1412,7 @@ function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
         The next superblock is in{' '}
         <strong>{humanizeDurationShort(secondsToSb)}</strong>. Syscoin
         Core forms the superblock payment list during the last{' '}
-        ~3&nbsp;days before each superblock, and once a masternode
+        ~{maturityLabel} before each superblock, and once a masternode
         has voted on that payment list it cannot change its vote
         for this cycle. Submitting now means your proposal{' '}
         <strong>will likely miss that superblock</strong>
@@ -1419,7 +1430,7 @@ function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
       </p>
       <p>
         If you need the full duration you requested, consider
-        waiting for the next superblock cycle (~30&nbsp;days) so
+        waiting for the next superblock cycle (~{cycleLabel}) so
         masternodes have time to see and vote on the proposal
         before the next payment list locks in. You can also
         proceed anyway — Prepare is still enabled — if you've
@@ -1606,8 +1617,18 @@ function ReviewStep({
     form.paymentAmount,
     form.paymentCount
   );
+  // Only render the projected schedule when we have a live next-SB
+  // anchor from /mnStats. `derivedWindow` alone is insufficient:
+  // computeProposalWindow falls back to `now + cycle` when the anchor
+  // is missing/stale, which would paint a plausible-looking list of
+  // payout dates that don't match the chain. WindowPreview already
+  // suppresses itself in the same condition; the schedule row must
+  // stay in lockstep or Review shows synthetic timing alongside a
+  // "live data unavailable" banner (Codex PR20 round 4 P2).
+  const hasLiveAnchor =
+    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > 0;
   const schedule =
-    paymentCountNum >= 2 && derivedWindow
+    paymentCountNum >= 2 && derivedWindow && hasLiveAnchor
       ? buildProjectedSchedule({
           derivedWindow,
           paymentCount: paymentCountNum,
