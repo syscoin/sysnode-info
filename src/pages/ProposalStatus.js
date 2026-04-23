@@ -858,6 +858,16 @@ export default function ProposalStatus() {
                   <PayWithPaliPanel
                     submission={submission}
                     proposalServiceImpl={proposalService}
+                    /* On this page the sibling lanes (Amount + OP_RETURN
+                       reference <dl>, collapsed Syscoin-Qt / CLI details)
+                       are not labelled as "Option B / C" — there's no
+                       three-lane framing like the wizard has. An
+                       orphaned "Option A — Pay with Pali" reads like a
+                       UX bug (user-reported), so we drop the prefix
+                       here and keep the descriptive heading only.
+                       NewProposal still uses the default because its
+                       three lanes are all labelled. */
+                    heading="Pay with Pali"
                     onAttached={async () => {
                       // The panel's internal attachCollateral call
                       // already flipped the row to
@@ -923,7 +933,7 @@ export default function ProposalStatus() {
                         Open Syscoin-Qt's <em>Debug console</em> (or
                         your CLI) and paste this — Core will broadcast
                         the 150 SYS burn and print the collateral TXID
-                        to paste above.
+                        to paste below.
                       </p>
                       {(() => {
                         const cliCommand = `gobject prepare ${

@@ -476,16 +476,31 @@ export default function PayWithPaliPanel({
       </p>
       <button
         type="button"
-        className="button button--primary"
+        className="button button--primary proposal-wizard__pali-button"
         onClick={onClick}
         disabled={disabled}
         data-testid="pali-pay-button"
       >
-        {phase === 'attached'
-          ? 'Paid'
-          : pending
-          ? 'Working…'
-          : 'Pay with Pali'}
+        {/* Pali hex mark (favicon-128 from the pali-wallet repo,
+            copied verbatim to keep brand fidelity). Hidden from
+            assistive tech — the button text already names the
+            wallet, so the logo would be duplicative noise in a
+            screen reader. */}
+        <img
+          src={process.env.PUBLIC_URL + '/pali-logo.png'}
+          alt=""
+          aria-hidden="true"
+          className="proposal-wizard__pali-button-logo"
+          width="20"
+          height="20"
+        />
+        <span className="proposal-wizard__pali-button-label">
+          {phase === 'attached'
+            ? 'Paid'
+            : pending
+            ? 'Working…'
+            : 'Pay with Pali'}
+        </span>
       </button>
       {hint ? (
         <p
