@@ -274,6 +274,43 @@ export default function NewProposal() {
     return cancel;
   }, [refreshStats]);
 
+  // Periodic wall-clock tick so the render-time `isAnchorLive`
+  // predicate below (and all date displays derived from it) stay
+  // consistent with the wall clock while the wizard sits idle.
+  // Without a tick, a user who reaches Review and then leaves the
+  // tab open past `superblock_next_epoch_sec` would keep seeing
+  // the stale anchor as "live" (WindowPreview card, schedule
+  // dates, Prepare button), while `computeProposalWindow` has
+  // already switched to its internal `now + cycle` fallback —
+  // the displayed and submitted windows can then diverge. The
+  // tick does NOT refetch network stats; it just forces a
+  // re-render so the gates re-evaluate against a fresh clock.
+  // 30 s cadence is fine-grained enough for testnet's 2.5 h
+  // cycle without meaningful render cost (Codex PR20 round 6 P2).
+  const [, forceTick] = useReducer((x) => x + 1, 0);
+  useEffect(() => {
+    const id = setInterval(forceTick, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // True only when /mnStats gave us a future superblock anchor.
+  // Used consistently by WindowPreview, the Prepare-button gate,
+  // and the ReviewStep schedule so all three flip together the
+  // instant the cached anchor goes stale. Mere truthiness is
+  // insufficient — a cached anchor that has already passed is
+  // still finite and > 0 but no longer describes the chain's
+  // next payout slot, and letting it drive the UI would print a
+  // schedule that doesn't match the window Prepare would submit
+  // (Codex PR20 round 6 P2). The stale-to-live recovery path is
+  // user-initiated: Prepare's pre-submit refresh + the Retry
+  // button on the stats-error banner; we don't auto-refetch
+  // here because a setTimeout large enough to span mainnet's
+  // ~30-day horizon overflows Node's int32 delay (silently
+  // collapses to 1 ms and fires immediately).
+  const nowSecForAnchor = Math.floor(Date.now() / 1000);
+  const isAnchorLive =
+    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > nowSecForAnchor;
+
   const dirty = !formsEqual(form, baseline) && prepared == null;
 
   // ---- Draft load -------------------------------------------------------
@@ -995,6 +1032,7 @@ export default function NewProposal() {
               payloadBytes={payloadBytes}
               derivedWindow={derivedWindow}
               nextSuperblockSec={nextSuperblockSec}
+              isAnchorLive={isAnchorLive}
               statsLoading={statsLoading}
               statsError={statsError}
               onRetryStats={refreshStats}
@@ -1006,6 +1044,7 @@ export default function NewProposal() {
               payloadBytes={payloadBytes}
               derivedWindow={derivedWindow}
               nextSuperblockSec={nextSuperblockSec}
+              isAnchorLive={isAnchorLive}
               statsLoading={statsLoading}
               statsError={statsError}
               onRetryStats={refreshStats}
@@ -1128,11 +1167,11 @@ export default function NewProposal() {
                     // the user to retry rather than submit an
                     // unanchored window silently.
                     !derivedWindow ||
-                    !nextSuperblockSec
+                    !isAnchorLive
                   }
                   data-testid="wizard-prepare"
                   title={
-                    !nextSuperblockSec
+                    !isAnchorLive
                       ? 'Waiting for live superblock timing…'
                       : undefined
                   }
@@ -1234,6 +1273,7 @@ function PaymentStep({
   payloadBytes,
   derivedWindow,
   nextSuperblockSec,
+  isAnchorLive,
   statsLoading,
   statsError,
   onRetryStats,
@@ -1339,6 +1379,7 @@ function PaymentStep({
       <WindowPreview
         derivedWindow={derivedWindow}
         nextSuperblockSec={nextSuperblockSec}
+        isAnchorLive={isAnchorLive}
         statsLoading={statsLoading}
         statsError={statsError}
         onRetryStats={onRetryStats}
@@ -1465,11 +1506,18 @@ function TightVotingWindowNotice({ nextSuperblockSec, paymentCount }) {
 function WindowPreview({
   derivedWindow,
   nextSuperblockSec,
+  isAnchorLive,
   statsLoading,
   statsError,
   onRetryStats,
 }) {
-  if (statsLoading && !nextSuperblockSec) {
+  // Treat `!isAnchorLive` as equivalent to "no anchor" — a cached
+  // anchor whose timestamp has already elapsed is not usable as a
+  // live reference (Codex PR20 round 6 P2). The wall-clock tick
+  // in NewProposal forces a re-render every 30 s so this branch
+  // flips the moment `superblock_next_epoch_sec` passes without
+  // relying on an external state update.
+  if (statsLoading && !isAnchorLive) {
     return (
       <div className="proposal-wizard__window-preview" aria-busy="true">
         <strong>Voting window</strong>
@@ -1479,7 +1527,7 @@ function WindowPreview({
       </div>
     );
   }
-  if (statsError || !nextSuperblockSec) {
+  if (statsError || !isAnchorLive) {
     return (
       <div
         className="proposal-wizard__window-preview proposal-wizard__window-preview--error"
@@ -1624,6 +1672,7 @@ function ReviewStep({
   payloadBytes,
   derivedWindow,
   nextSuperblockSec,
+  isAnchorLive,
   statsLoading,
   statsError,
   onRetryStats,
@@ -1638,13 +1687,16 @@ function ReviewStep({
   // computeProposalWindow falls back to `now + cycle` when the anchor
   // is missing/stale, which would paint a plausible-looking list of
   // payout dates that don't match the chain. WindowPreview already
-  // suppresses itself in the same condition; the schedule row must
-  // stay in lockstep or Review shows synthetic timing alongside a
-  // "live data unavailable" banner (Codex PR20 round 4 P2).
-  const hasLiveAnchor =
-    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > 0;
+  // suppresses itself on the same `isAnchorLive` predicate; the
+  // schedule row must stay in lockstep or Review shows synthetic
+  // timing alongside a "live data unavailable" banner (Codex PR20
+  // round 4 P2 + round 6 P2). The predicate is a boolean prop
+  // computed once in NewProposal against the wall clock (with a
+  // 30 s periodic re-render tick), so a cached anchor that has
+  // already elapsed is treated as not-live even if it's still a
+  // positive finite number.
   const schedule =
-    paymentCountNum >= 2 && derivedWindow && hasLiveAnchor
+    paymentCountNum >= 2 && derivedWindow && isAnchorLive
       ? buildProjectedSchedule({
           derivedWindow,
           paymentCount: paymentCountNum,
@@ -1692,6 +1744,7 @@ function ReviewStep({
       <WindowPreview
         derivedWindow={derivedWindow}
         nextSuperblockSec={nextSuperblockSec}
+        isAnchorLive={isAnchorLive}
         statsLoading={statsLoading}
         statsError={statsError}
         onRetryStats={onRetryStats}

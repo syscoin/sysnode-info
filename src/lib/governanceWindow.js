@@ -52,11 +52,23 @@ export const SUPERBLOCK_CYCLE_SEC =
   NETWORK.superblockCycleBlocks * NETWORK.targetBlockTimeSec;
 
 // Core's fudge tolerance (governanceobject.h GOVERNANCE_FUDGE_WINDOW).
-// Included here for tests and sanity asserts; the wizard's safety
-// margin is `SUPERBLOCK_CYCLE_SEC / 2` which is ~180x larger than this,
-// so in practice we never need to reason about the 2-hour tolerance
-// directly.
+// A superblock at SB_time is considered payable by Core iff
+//   start_epoch - FUDGE <= SB_time <= end_epoch + FUDGE
+// so the wizard's symmetric anchor padding must be > FUDGE to
+// guarantee that SB_{N+1} (at anchor + N*cycle) stays strictly
+// outside the eligibility window on every network. On mainnet
+// FUDGE is dwarfed by cycle/2 (~15 days vs 2 hours), but on
+// testnet / regtest cycle/2 can be comparable to or smaller than
+// FUDGE — computeProposalWindow clamps accordingly.
 export const SUPERBLOCK_FUDGE_SEC = 2 * 60 * 60;
+
+// Additional seconds of slack beyond FUDGE that we require between
+// the window boundary and the nearest excluded superblock. Keeps
+// the window strictly outside the eligibility region under
+// worst-case block-time drift at the boundary — 60 s is about
+// 24 testnet blocks or 60 regtest blocks of margin, enough to
+// absorb re-orgs and stale clocks without getting close to FUDGE.
+export const SUPERBLOCK_FUDGE_SAFETY_SEC = 60;
 
 // Core's pre-superblock maturity window during which masternodes
 // build the payment-list candidate and lock in their YES-FUNDING
@@ -168,18 +180,44 @@ export function isTightVotingWindow(nowSec, nextSuperblockSec) {
 //
 // Formula:
 //   anchor     = nextSuperblockSec      (stale-anchor fallback: now + cycle)
-//   startEpoch = anchor - cycle/2
-//   endEpoch   = anchor + (N - 1) * cycle + cycle/2
+//   padding    = min(cycle/2, cycle - FUDGE - SAFETY)
+//   startEpoch = anchor - padding
+//   endEpoch   = anchor + (N - 1) * cycle + padding
 //
-// Why cycle/2 margins:
-//   * Start: symmetric around the first SB so (end - start) is
-//     exactly N * cycle, which renders as precisely N months via
-//     getProposalDurationMonths for every N in [1, MAX_PAYMENT_COUNT].
-//   * End:   puts end_epoch halfway between SB_N and SB_{N+1}, so
-//     SB_N lands comfortably inside the window and SB_{N+1} is
-//     excluded with ~15 days of safety — many orders of magnitude
-//     larger than the 2-hour consensus fudge, so block-time drift
-//     cannot push an extra payment inside the window.
+// Why symmetric padding:
+//   * Start: places windowStart cleanly before the first SB so
+//     Core's `start_epoch - FUDGE <= SB_time` check passes for
+//     SB_1 and fails for SB_0 (the SB before the anchor).
+//   * End:   places windowEnd between SB_N and SB_{N+1}, so SB_N
+//     lands comfortably inside the window and SB_{N+1} is excluded.
+//   * On mainnet cycle/2 (~15 days) is orders of magnitude larger
+//     than Core's 2-hour FUDGE, so block-time drift cannot push an
+//     extra payment inside the window and the end - start = N*cycle
+//     invariant holds exactly (renders as N months via
+//     getProposalDurationMonths).
+//
+// Why the padding clamp:
+//   On testnet (cycle 9000 s) and regtest (cycle 1500 s), raw
+//   cycle/2 padding is smaller than FUDGE (7200 s), so SB_{N+1}
+//   would satisfy `SB_time <= end_epoch + FUDGE` and Core would
+//   pay it — a proposal silently pays N+1 superblocks instead of
+//   the requested N. Clamping padding to `cycle - FUDGE - SAFETY`
+//   keeps SB_{N+1} strictly outside the eligibility window on any
+//   network where `cycle > FUDGE + SAFETY`. On such networks
+//   `end - start < N*cycle`, so getProposalDurationMonths won't
+//   round to N there — but the 30.4375-day month math is
+//   mainnet-specific and already didn't render "N months" on
+//   testnet/regtest regardless of the padding choice (a testnet
+//   "1 month" window spans ~9000 s ≈ 0.1 days). Correctness of the
+//   on-chain payout count takes priority over the displayed label
+//   on non-mainnet builds. Codex PR20 round 5 P1.
+//
+// Fundamental limit:
+//   If `cycle <= FUDGE + SAFETY`, no symmetric padding exists that
+//   includes SB_N and excludes SB_{N±1}. We throw rather than
+//   silently pad wrong — the wizard UI gates its error surface on
+//   this throw. Regtest (cycle 1500 s < FUDGE 7200 s) falls here
+//   and is an unsupported target for the duration-derived flow.
 //
 // Past start_epoch note:
 //   When the next superblock is sooner than cycle/2 (up to ~15 days
@@ -213,9 +251,20 @@ export function computeProposalWindow({
   // is comfortably before the real SB).
   const anchor =
     Number.isFinite(nextSb) && nextSb > now ? nextSb : now + SUPERBLOCK_CYCLE_SEC;
-  const halfCycle = Math.floor(SUPERBLOCK_CYCLE_SEC / 2);
-  const startEpoch = anchor - halfCycle;
-  const endEpoch = anchor + (n - 1) * SUPERBLOCK_CYCLE_SEC + halfCycle;
+  const desiredPadding = Math.floor(SUPERBLOCK_CYCLE_SEC / 2);
+  const maxPadding =
+    SUPERBLOCK_CYCLE_SEC - SUPERBLOCK_FUDGE_SEC - SUPERBLOCK_FUDGE_SAFETY_SEC;
+  if (maxPadding <= 0) {
+    throw new Error(
+      `computeProposalWindow: network superblock cycle (${SUPERBLOCK_CYCLE_SEC}s) ` +
+        `is too short to derive a safe proposal window — needs to exceed ` +
+        `GOVERNANCE_FUDGE_WINDOW (${SUPERBLOCK_FUDGE_SEC}s) + safety ` +
+        `(${SUPERBLOCK_FUDGE_SAFETY_SEC}s) so SB_{N+1} can be excluded`
+    );
+  }
+  const padding = Math.min(desiredPadding, maxPadding);
+  const startEpoch = anchor - padding;
+  const endEpoch = anchor + (n - 1) * SUPERBLOCK_CYCLE_SEC + padding;
   return { startEpoch, endEpoch };
 }
 

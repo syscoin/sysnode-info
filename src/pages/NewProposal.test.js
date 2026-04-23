@@ -1817,4 +1817,74 @@ describe('NewProposal wizard', () => {
       expect(body.paymentAddress).toBe('sys1qresumed1234567890');
     }
   );
+
+  test(
+    'WindowPreview + Prepare flip to error when the cached next-SB anchor becomes stale while the wizard is open (Codex round 6 P2)',
+    async () => {
+      // Regression for the round-6 P2 ask: the live-anchor check
+      // used to be "nextSuperblockSec is finite and > 0", which
+      // meant a cached anchor whose timestamp had already passed
+      // was still treated as live. That let WindowPreview keep
+      // showing the stale SB date and Prepare stay enabled while
+      // computeProposalWindow had already switched to its
+      // stale-anchor fallback — a divergence between the displayed
+      // and prepare-able windows. Fix: derive isAnchorLive from a
+      // `> nowSec` comparison and force a periodic re-render so
+      // all gates flip in lockstep when the wall clock passes.
+      //
+      // We simulate time passing by (a) fetching a short-horizon
+      // anchor (6 s in the future) and then (b) advancing the fake
+      // clock past it and flushing the 30 s tick interval. The
+      // post-advance refresh mock returns the same stale value so
+      // refreshStats rejects it via nextSuperblockEpochSecFromStats
+      // and the Retry-in-error-banner path is exercised too.
+      jest.useFakeTimers({ doNotFake: ['performance'] });
+      try {
+        const baseNow = Date.now();
+        jest.setSystemTime(baseNow);
+        // Anchor 6 seconds in the future relative to mount. The
+        // wizard will accept this as a live anchor, but we'll
+        // advance wall-clock past it before Prepare.
+        currentStableNextSb = Math.floor(baseNow / 1000) + 6;
+
+        await renderWizard();
+        await screen.findByTestId('wizard-panel-basics');
+        validBasics();
+
+        // Run the pending microtask queue so the mount fetch
+        // resolves inside act().
+        await act(async () => {
+          jest.advanceTimersByTime(0);
+        });
+
+        fireEvent.click(screen.getByTestId('wizard-next'));
+        await screen.findByTestId('window-preview');
+        validPayment();
+        fireEvent.click(screen.getByTestId('wizard-next'));
+        await screen.findByTestId('wizard-panel-review');
+
+        // Prepare is currently enabled (live anchor, 6 s in future).
+        expect(screen.getByTestId('wizard-prepare')).not.toBeDisabled();
+
+        // Advance wall clock past the anchor. The 30 s render-tick
+        // interval plus React flushes pick up the change.
+        jest.setSystemTime(baseNow + 60_000);
+        await act(async () => {
+          jest.advanceTimersByTime(30_000);
+        });
+
+        // isAnchorLive flips false → Prepare is gated and the
+        // WindowPreview card swaps into its stats-unavailable
+        // branch. Both are driven by the same predicate, so they
+        // must flip together.
+        await waitFor(() =>
+          expect(screen.getByTestId('wizard-prepare')).toBeDisabled()
+        );
+        expect(screen.queryByTestId('window-preview')).toBeNull();
+        expect(screen.queryByTestId('review-schedule')).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+  );
 });

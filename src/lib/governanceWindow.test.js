@@ -172,24 +172,67 @@ describe('per-network consensus params (Codex PR20 round 3 P1)', () => {
     expect(mod.SUPERBLOCK_MATURITY_WINDOW_SEC).toBe(1728 * 150);
   });
 
-  test.each(['testnet', 'regtest'])(
-    '%s: computeProposalWindow span is exactly N * cycle for the active network',
-    (netId) => {
-      const mod = requireWithNetwork(netId);
+  test(
+    'testnet: computeProposalWindow excludes SB_{N+1} despite a cycle < 2*FUDGE (Codex round 5 P1)',
+    () => {
+      // Testnet cycle = 9000s, half = 4500s. The raw cycle/2
+      // padding is smaller than Core's GOVERNANCE_FUDGE_WINDOW
+      // (7200s), so without the clamp SB_{N+1} would satisfy
+      // `SB_time <= end_epoch + FUDGE` and Core would pay out one
+      // extra superblock beyond the declared duration. This is
+      // the regression Codex flagged; the fix clamps padding to
+      // `cycle - FUDGE - SAFETY` so SB_{N+1} stays strictly
+      // outside the eligibility window by at least SAFETY seconds.
+      const mod = requireWithNetwork('testnet');
       const NOW = 1_800_000_000;
       for (const N of [1, 2, 6, 12]) {
-        const anchor = NOW + mod.SUPERBLOCK_CYCLE_SEC + 60; // comfortably future
+        const anchor = NOW + mod.SUPERBLOCK_CYCLE_SEC + 60;
         const { startEpoch, endEpoch } = mod.computeProposalWindow({
           durationMonths: N,
           nowSec: NOW,
           nextSuperblockSec: anchor,
         });
-        // The full-month invariant (end - start = N*cycle) that
-        // mainnet tests rely on must also hold on test/reg nets —
-        // if it didn't, getProposalDurationMonths would display
-        // the wrong label on non-mainnet deployments.
-        expect(endEpoch - startEpoch).toBe(N * mod.SUPERBLOCK_CYCLE_SEC);
+        const windowStart = startEpoch - mod.SUPERBLOCK_FUDGE_SEC;
+        const windowEnd = endEpoch + mod.SUPERBLOCK_FUDGE_SEC;
+        // Requested SB 1..N are payable.
+        for (let i = 1; i <= N; i += 1) {
+          const sb = anchor + (i - 1) * mod.SUPERBLOCK_CYCLE_SEC;
+          expect(sb).toBeGreaterThanOrEqual(windowStart);
+          expect(sb).toBeLessThanOrEqual(windowEnd);
+        }
+        // SB_{N+1} must be strictly excluded.
+        const sbNext = anchor + N * mod.SUPERBLOCK_CYCLE_SEC;
+        expect(sbNext).toBeGreaterThan(windowEnd);
+        // Concrete slack: cycle - padding - FUDGE = at least SAFETY.
+        expect(sbNext - windowEnd).toBeGreaterThanOrEqual(
+          mod.SUPERBLOCK_FUDGE_SAFETY_SEC
+        );
       }
+    }
+  );
+
+  test(
+    'regtest: cycle is shorter than FUDGE so computeProposalWindow fails closed',
+    () => {
+      // Regtest cycle = 1500s is less than Core's 7200s fudge
+      // tolerance, so no symmetric padding exists that includes
+      // SB_N and excludes SB_{N+1} simultaneously — the
+      // eligibility windows of adjacent superblocks overlap.
+      // The helper must throw rather than silently submit a
+      // window that pays out the wrong number of superblocks.
+      // Regtest is therefore an unsupported target for the
+      // duration-derived governance wizard; the wizard's
+      // derivedWindow memo catches this throw and surfaces it as
+      // an empty window, which the WindowPreview component
+      // already renders as a neutral error state.
+      const mod = requireWithNetwork('regtest');
+      expect(() =>
+        mod.computeProposalWindow({
+          durationMonths: 1,
+          nowSec: 1_800_000_000,
+          nextSuperblockSec: 1_800_000_000 + mod.SUPERBLOCK_CYCLE_SEC,
+        })
+      ).toThrow(/too short to derive a safe proposal window/);
     }
   );
 });
