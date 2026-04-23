@@ -4153,6 +4153,20 @@
   margin: 0;
 }
 
+/* Inline <code> blobs inside paragraphs of a status section are
+   always hashes / addresses / TXIDs — continuous 64-char hex runs
+   that the browser treats as one unbreakable "word" and lets
+   overflow the viewport on narrow screens (observed on the
+   awaiting_collateral card at the browser's ~400px width). Allow
+   mid-string breaks only when needed; short values stay on one
+   line. Scoped to <p> (not <pre>) so the `gobject prepare` CLI
+   snippet inside `.proposal-wizard__cli` keeps control of its own
+   wrapping rules. */
+.proposal-status__section p code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .proposal-status__actions {
   display: flex;
   flex-wrap: wrap;
