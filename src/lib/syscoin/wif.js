@@ -194,7 +194,7 @@ function addressFromWif(wif, expectedNetwork) {
   if (!compressed) {
     throw err(
       'wif_uncompressed_unsupported',
-      'Uncompressed WIFs cannot be used as masternode voting keys ' +
+      'Uncompressed WIFs cannot be used as sentry node voting keys ' +
         '(BIP141 segwit requires a compressed public key).'
     );
   }

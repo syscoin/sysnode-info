@@ -1,8 +1,50 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { computeOpsStats } from '../lib/governanceOps';
 import { formatNumber } from '../lib/formatters';
+import { useAuth } from '../context/AuthContext';
+import { useVault } from '../context/VaultContext';
+
+// Error copy for the inline unlock form. Kept in sync with the same
+// map in components/VaultStatusCard.js (the /account source of truth
+// for unlock UX). If this diverges, update both — the hero is simply
+// the governance-page on-ramp to the same `vault.unlock(...)` call.
+const UNLOCK_ERROR_COPY = {
+  envelope_decrypt_failed:
+    "That password doesn't match this vault. Try again — the keys stay safe locally until the correct password decrypts them.",
+  password_required: 'Please enter your password.',
+  email_required: 'Your account email is missing. Try refreshing the page.',
+  invalid_envelope_format:
+    "Your vault blob looks corrupted. If this keeps happening, contact support — we haven't decrypted anything.",
+  network_error:
+    "We couldn't reach the sysnode server. Check your connection and try again.",
+  unauthorized: 'Your session expired. Please sign in again.',
+};
+
+function unlockErrorCopy(code) {
+  return UNLOCK_ERROR_COPY[code] || 'Unlock failed. Please try again.';
+}
+
+// Dashboard tooltips that explain the "voted" accounting rule. The
+// hero counts a proposal as voted only when every one of the user's
+// masternodes has a receipt for it — this is the same definition
+// the per-row cohort chip uses (see lib/governanceCohort.js). A
+// proposal the user has partially voted on (e.g. 1 of 5 masternodes
+// submitted) still shows under "Need vote" here, and carries a
+// "Voted X/Y" chip on its row. We expose the rule through native
+// `title` tooltips so users who see a count that feels lower than
+// their intuition can discover the reason without a docs trip.
+const PROGRESS_TOOLTIP =
+  'Counts proposals where every sentry node you own has a receipt. ' +
+  "Proposals with partial coverage show a 'Voted X/Y' chip on their " +
+  "row and stay under 'Need vote' until the remaining sentry nodes " +
+  'have voted.';
+const VOTED_TOOLTIP = PROGRESS_TOOLTIP;
+const NEEDS_VOTE_TOOLTIP =
+  "Includes proposals you haven't voted on yet AND proposals where " +
+  'only some of your sentry nodes have voted. Check the row chip for ' +
+  "the 'Voted X/Y' badge to see which need the rest of your fleet.";
 
 // Ops-summary hero that sits above the proposal table for
 // authenticated users. The goal is to give a voting operator a
@@ -28,7 +70,7 @@ import { formatNumber } from '../lib/formatters';
 //   gentle skeleton state instead of stale numbers.
 
 function pluralMn(n) {
-  return n === 1 ? 'masternode' : 'masternodes';
+  return n === 1 ? 'sentry node' : 'sentry nodes';
 }
 
 function pluralProposal(n) {
@@ -46,6 +88,7 @@ export default function GovernanceOpsHero({
   ownedCount,
   enabledCount,
   onJumpToProposal,
+  isVaultLocked = false,
 }) {
   const stats = useMemo(
     () =>
@@ -59,7 +102,11 @@ export default function GovernanceOpsHero({
   );
 
   const isVaultEmpty = ownedCount === 0;
-  const isAwaitingLookup = ownedCount === null;
+  // Awaiting-lookup is only meaningful when we aren't already blocked
+  // on the user unlocking their vault. Otherwise a refresh (which
+  // always returns the vault to LOCKED, since the master key lives
+  // only in memory) would sit on the loading skeleton forever.
+  const isAwaitingLookup = ownedCount === null && !isVaultLocked;
   const hasApplicable = stats.applicable > 0;
 
   // 1) User has no voting keys imported yet — gently nudge them to
@@ -72,7 +119,7 @@ export default function GovernanceOpsHero({
       >
         <div className="ops-hero__body">
           <p className="eyebrow">Your voting dashboard</p>
-          <h2>Import your masternode voting keys to take part.</h2>
+          <h2>Import your sentry node voting keys to take part.</h2>
           <p className="ops-hero__copy">
             Once you add a voting key on your Account page, you will see a live view of what needs your vote
             and how far along you are.
@@ -91,7 +138,19 @@ export default function GovernanceOpsHero({
     );
   }
 
-  // 2) Vault is unlocked but the owned-MN lookup hasn't landed yet.
+  // 2) Vault is locked — the user is signed in and has a vault on
+  //    the server, but the in-memory master key is gone (fresh load,
+  //    page refresh, or explicit lock). The owned-MN lookup can't
+  //    fire without decrypted voting addresses, so `ownedCount`
+  //    stays null; without this branch the hero would render an
+  //    unending loading skeleton with no hint that the user needs
+  //    to act. Render the unlock form inline so the user can
+  //    re-enter the dashboard without navigating away.
+  if (isVaultLocked) {
+    return <VaultLockedHero />;
+  }
+
+  // 3) Vault is unlocked but the owned-MN lookup hasn't landed yet.
   //    Render a skeleton rather than flash zeros.
   if (isAwaitingLookup) {
     return (
@@ -174,6 +233,7 @@ export default function GovernanceOpsHero({
           <div
             className="ops-hero__progress"
             data-testid="gov-ops-hero-progress"
+            title={PROGRESS_TOOLTIP}
           >
             <div className="ops-hero__progress-label">
               <span>
@@ -214,6 +274,7 @@ export default function GovernanceOpsHero({
             className="ops-hero__stat ops-hero__stat--needs-vote"
             role="listitem"
             data-testid="gov-ops-hero-needs-vote"
+            title={NEEDS_VOTE_TOOLTIP}
           >
             <span className="ops-hero__stat-label">Need vote</span>
             <strong>{formatCount(needsVote)}</strong>
@@ -227,6 +288,7 @@ export default function GovernanceOpsHero({
             className="ops-hero__stat ops-hero__stat--voted"
             role="listitem"
             data-testid="gov-ops-hero-voted"
+            title={VOTED_TOOLTIP}
           >
             <span className="ops-hero__stat-label">Voted</span>
             <strong>{formatCount(voted)}</strong>
@@ -277,6 +339,102 @@ export default function GovernanceOpsHero({
             </span>
           </div>
         ) : null}
+      </div>
+    </aside>
+  );
+}
+
+// VaultLockedHero
+// -----------------------------------------------------------------------
+// Locked-vault fallback for the ops hero. Self-contained (manages its
+// own password / error / submitting state) so the main hero body
+// stays declarative. We intentionally mirror the unlock form shape
+// used by VaultStatusCard on /account so the user sees the same
+// field order, autocomplete behaviour, and error copy regardless of
+// where they land the unlock.
+function VaultLockedHero() {
+  const vault = useVault();
+  const { user } = useAuth();
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [unlockErr, setUnlockErr] = useState(null);
+
+  function onUnlock(event) {
+    event.preventDefault();
+    if (submitting) return;
+    if (!user || !user.email) {
+      setUnlockErr('email_required');
+      return;
+    }
+    if (password.length === 0) {
+      setUnlockErr('password_required');
+      return;
+    }
+    setSubmitting(true);
+    setUnlockErr(null);
+    vault
+      .unlock({ password, email: user.email })
+      .then(function onUnlocked() {
+        setPassword('');
+      })
+      .catch(function onUnlockError(err) {
+        setUnlockErr((err && err.code) || 'unlock_failed');
+      })
+      .finally(function always() {
+        setSubmitting(false);
+      });
+  }
+
+  return (
+    <aside
+      className="panel ops-hero ops-hero--locked"
+      data-testid="gov-ops-hero-locked"
+    >
+      <div className="ops-hero__body">
+        <p className="eyebrow">Your voting dashboard</p>
+        <h2>Unlock your vault to see your voting dashboard.</h2>
+        <p className="ops-hero__copy">
+          Your voting keys stay encrypted locally. Enter your account
+          password to decrypt them in this tab only — the password is
+          never sent to the server.
+        </p>
+        <form className="ops-hero__unlock" onSubmit={onUnlock} noValidate>
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="gov-hero-vault-password">
+              Password
+            </label>
+            <input
+              id="gov-hero-vault-password"
+              className="auth-input"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={function onChange(e) {
+                setPassword(e.target.value);
+              }}
+              required
+            />
+          </div>
+          {unlockErr ? (
+            <div
+              className="auth-alert auth-alert--error"
+              role="alert"
+              data-testid="gov-ops-hero-unlock-error"
+            >
+              {unlockErrorCopy(unlockErr)}
+            </div>
+          ) : null}
+          <div className="ops-hero__actions">
+            <button
+              type="submit"
+              className="button button--primary button--small"
+              disabled={submitting}
+              data-testid="gov-ops-hero-unlock"
+            >
+              {submitting ? 'Unlocking…' : 'Unlock vault'}
+            </button>
+          </div>
+        </form>
       </div>
     </aside>
   );

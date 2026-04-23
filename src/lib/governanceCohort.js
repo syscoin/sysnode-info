@@ -64,7 +64,7 @@ function toNonNegativeInt(value) {
 }
 
 function pluralMn(n) {
-  return n === 1 ? 'masternode' : 'masternodes';
+  return n === 1 ? 'sentry node' : 'sentry nodes';
 }
 
 function pluralVote(n) {

@@ -1,12 +1,13 @@
 import React from 'react';
 import {
+  act,
   render,
   screen,
   fireEvent,
   waitFor,
 } from '@testing-library/react';
 
-import GovernanceActivity from './GovernanceActivity';
+import GovernanceActivity, { ACTIVITY_POLL_MS } from './GovernanceActivity';
 
 function makeService(overrides = {}) {
   return {
@@ -112,6 +113,42 @@ describe('GovernanceActivity', () => {
     });
   });
 
+  test('auto-refreshes on the background poll cadence so reconciliation-driven status changes (e.g. relayed → confirmed) surface without user action', async () => {
+    // Regression guard for the UX gap reported by operators: a
+    // vote submitted one moment would show "Submitted" on the
+    // activity card indefinitely, because the card only refetched
+    // when the vote modal closed. Backend reconciliation flipped
+    // the row to confirmed, but the card didn't know. The shared
+    // `useBackgroundPoll` primitive now drives both this card and
+    // the per-proposal summary on the same cadence.
+    jest.useFakeTimers();
+    try {
+      const svc = makeService();
+      render(
+        <GovernanceActivity governanceService={svc} proposalsByHash={{}} />
+      );
+      await waitFor(() => {
+        expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(1);
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('refreshes when the refreshToken prop changes', async () => {
     const svc = makeService();
     const { rerender } = render(
@@ -134,6 +171,54 @@ describe('GovernanceActivity', () => {
     await waitFor(() => {
       expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(2);
     });
+  });
+
+  test('preserves the last-good receipts when a background poll fails — transient blips must not collapse a populated activity card back to an empty/error state', async () => {
+    // Regression guard for a user-visible issue introduced the
+    // moment background polling landed here: with the prior catch
+    // branch resetting `receipts` to [], every 30s network hiccup
+    // would flash the activity card from "Last 3 votes" back to
+    // the empty/error panel until the next successful poll. We
+    // now keep the last snapshot and surface only the error code.
+    jest.useFakeTimers();
+    try {
+      const hash = 'a'.repeat(64);
+      const good = baseReceipt({ proposalHash: hash });
+      const err = Object.assign(new Error('blip'), { code: 'network_error' });
+      const svc = makeService({
+        fetchRecentReceipts: jest
+          .fn()
+          .mockResolvedValueOnce({ receipts: [good] })
+          .mockRejectedValueOnce(err),
+      });
+      render(
+        <GovernanceActivity
+          governanceService={svc}
+          proposalsByHash={new Map([[hash, { Key: hash, title: 'X' }]])}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('gov-activity')).toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('gov-activity-item')).toHaveLength(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(ACTIVITY_POLL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(svc.fetchRecentReceipts).toHaveBeenCalledTimes(2);
+
+      // After the failed background poll the list must still be
+      // on-screen — NOT the error panel, NOT the empty panel.
+      expect(screen.getByTestId('gov-activity')).toBeInTheDocument();
+      expect(screen.getAllByTestId('gov-activity-item')).toHaveLength(1);
+      expect(screen.queryByTestId('gov-activity-error')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('gov-activity-empty')).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('shows an error state with a retry button on failure', async () => {

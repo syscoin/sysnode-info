@@ -1,6 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useBackgroundPoll } from '../hooks/useBackgroundPoll';
 import { governanceService as defaultService } from '../lib/governanceService';
+
+// Cadence matches `SUMMARY_POLL_MS` in useGovernanceReceipts on
+// purpose: both endpoints read from the same receipt-rows state on
+// the backend, so when a relayed receipt reconciles to confirmed
+// the summary count AND the activity badge change at the same
+// instant. Keeping the two pollers on the same tick prevents a
+// user from seeing one of them update alone and wondering whether
+// the UI is inconsistent. The two constants are intentionally
+// independent so a future divergence (e.g. if the activity card
+// picks up heavier per-row enrichment) doesn't silently drag the
+// cheap summary query along.
+export const ACTIVITY_POLL_MS = 30 * 1000;
 
 // Small helper: "relative time" for a millisecond timestamp.
 // Intentionally local to this component — we don't ship a relative-
@@ -166,17 +179,45 @@ export default function GovernanceActivity({
       });
     } catch (err) {
       if (!mountedRef.current || genRef.current !== myGen) return;
-      setState({
+      // Preserve the last successful receipts array on error. The
+      // initial-load case starts with an empty array (useState
+      // default) so a first-time failure still resolves to the
+      // error branch in render (error + receipts.length === 0).
+      // But once we have data, a transient /gov/receipts/recent
+      // blip during the background poll must NOT collapse a
+      // populated activity card back to the empty/error state —
+      // that would repeatedly wipe a known-good view every 30s
+      // of network hiccups, which is the opposite of the auto-
+      // refresh UX goal. Same rationale as the summary hook's
+      // error branch in useGovernanceReceipts. The render path
+      // falls through to the list whenever receipts.length > 0,
+      // silently swallowing the error for users with cached data;
+      // a user on a truly broken backend still sees the error
+      // banner because their receipts array never populated.
+      setState((prev) => ({
         loading: false,
         error: (err && err.code) || 'activity_failed',
-        receipts: [],
-      });
+        receipts: prev.receipts,
+      }));
     }
   }, [governanceService, limit]);
 
   useEffect(() => {
     load();
   }, [load, refreshToken]);
+
+  // Background poll so the On-chain / Submitted / Needs retry /
+  // Failed badges keep pace with backend reconciliation without the
+  // user having to close the vote modal or reload the page. Same
+  // visibility-aware contract as the summary poll — see
+  // `useBackgroundPoll` for semantics. The component is only
+  // rendered by Governance.js under `isAuthenticated`, so the
+  // primitive's `enabled` flag is just `true` here; the mount-gate
+  // handles the auth check.
+  useBackgroundPoll(load, {
+    enabled: true,
+    intervalMs: ACTIVITY_POLL_MS,
+  });
 
   const proposalLookup = useMemo(() => {
     if (proposalsByHash instanceof Map) return proposalsByHash;

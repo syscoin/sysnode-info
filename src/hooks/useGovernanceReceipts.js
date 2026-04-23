@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAuth } from '../context/AuthContext';
 import { governanceService as defaultService } from '../lib/governanceService';
+import { useBackgroundPoll } from './useBackgroundPoll';
 import { useOwnedMasternodes } from './useOwnedMasternodes';
 
 // Data source for the authenticated Governance page: the user's
@@ -35,6 +36,14 @@ import { useOwnedMasternodes } from './useOwnedMasternodes';
 // is important during the short gap between "vault just unlocked"
 // and "lookup returned", so we don't flash partial/"Not voted"
 // chips that would then immediately change.
+
+// Cadence for the background /summary refresh. 30s is a compromise
+// between "catches a pending→confirmed transition within one minute
+// worst-case" and "one SQL per user per 30s is acceptable server
+// load". Stored as a module-level constant so tests can reference
+// it without hard-coding the number.
+export const SUMMARY_POLL_MS = 30 * 1000;
+
 export function useGovernanceReceipts({
   governanceService = defaultService,
   enabled = true,
@@ -82,7 +91,20 @@ export function useGovernanceReceipts({
     } catch (err) {
       if (!mountedRef.current || genRef.current !== myGen) return;
       setSummaryError((err && err.code) || 'summary_failed');
-      setSummary([]);
+      // Intentionally do NOT clear `summary` here. The first-load
+      // case starts from the useState([]) default, so a first-time
+      // failure still surfaces the empty state correctly (no data
+      // to "preserve"). For background refreshes, a transient
+      // /gov/receipts/summary blip would otherwise wipe out the
+      // cached snapshot on every tick — flashing cohort chips
+      // from "Voted" back to "Not voted" and flipping the hero's
+      // voted-count to zero, only to restore on the next successful
+      // poll. Keeping the last good snapshot + surfacing the error
+      // code lets consumers show a non-blocking notice ("summary
+      // temporarily unavailable") while the UI stays stable. The
+      // gated-off branch above handles the auth/enabled transition
+      // separately and DOES reset the summary, which is the only
+      // case where we actually want to drop the cache.
     } finally {
       if (mountedRef.current && genRef.current === myGen) {
         setSummaryLoading(false);
@@ -93,6 +115,33 @@ export function useGovernanceReceipts({
   useEffect(() => {
     load();
   }, [load]);
+
+  // Background polling for /gov/receipts/summary. Keeps per-row
+  // cohort chips and the hero "Voted N of M" counts in sync with
+  // backend-side reconciliation (e.g. relayed receipts flipping to
+  // confirmed as Core tallies them) without forcing the user to
+  // reload the page or close a modal.
+  //
+  // Deliberate scope:
+  //
+  //   * Only /summary is polled here — it's a per-user SQL query,
+  //     cheap enough to hit every 30s. The governance feed (gobject
+  //     list) is NOT refreshed; that one drives the on-chain tally
+  //     which evolves on a longer cadence and costs Core RPC time.
+  //     A separate refresh can be added for the feed if needed.
+  //   * The "Last N votes" activity card has its own identical-
+  //     cadence poll — both read from receipt-rows state, so we
+  //     want them to catch the same reconciliation tick.
+  //   * Gated on `enabled && isAuthenticated`, same contract as the
+  //     initial load. Anonymous sessions never poll.
+  //
+  // Visibility-aware pause + catch-up semantics live in the shared
+  // `useBackgroundPoll` primitive; see that file for the
+  // cadence/visibility contract.
+  useBackgroundPoll(load, {
+    enabled: Boolean(enabled && isAuthenticated),
+    intervalMs: SUMMARY_POLL_MS,
+  });
 
   const summaryMap = useMemo(() => {
     const m = new Map();
@@ -122,12 +171,23 @@ export function useGovernanceReceipts({
   // `vault_locked` and error states deliberately stay as `null` so
   // the hero's loading skeleton continues to cover them; surfacing
   // "Import your keys" copy to a user whose vault exists but is
-  // locked would be misleading.
+  // locked would be misleading. The hero instead uses the separate
+  // `isVaultLocked` signal below to swap the skeleton for a
+  // dedicated "unlock your vault" CTA, which otherwise the user
+  // would sit on forever after a page reload (the vault master
+  // key lives only in memory so every refresh returns to LOCKED).
   const ownedCount = ownedHook.isReady
     ? ownedHook.owned.length
     : ownedHook.isVaultEmpty
       ? 0
       : null;
+
+  // Explicit lock signal so UI can distinguish "waiting on a
+  // network fetch" from "waiting on the user to enter their vault
+  // password". We surface this as a boolean rather than folding it
+  // into `ownedCount` so existing consumers (cohort chips, ops
+  // stats) keep their null-means-unknown contract intact.
+  const isVaultLocked = Boolean(ownedHook.isVaultLocked);
 
   const refresh = useCallback(
     async ({ refreshOwned = false } = {}) => {
@@ -149,6 +209,7 @@ export function useGovernanceReceipts({
     ownedCount,
     ownedError: ownedHook.error,
     isLoading: summaryLoading || ownedHook.isLoading,
+    isVaultLocked,
     refresh,
   };
 }

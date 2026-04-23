@@ -363,8 +363,12 @@ export default function Governance() {
   // Cohort-aware data — only meaningful for authenticated users.
   // When anonymous, the hook returns dormant empties and does not
   // hit /gov/receipts/summary or /gov/mns/lookup.
-  const { summaryMap, ownedCount, refresh: refreshReceipts } =
-    useGovernanceReceipts({ enabled: isAuthenticated });
+  const {
+    summaryMap,
+    ownedCount,
+    isVaultLocked: isVaultLockedForHero,
+    refresh: refreshReceipts,
+  } = useGovernanceReceipts({ enabled: isAuthenticated });
 
   // Hash → proposal lookup for the activity card so receipts can
   // render titles and the jump-link can route the user to an
@@ -626,7 +630,7 @@ export default function Governance() {
               <p>
                 <strong>Vote in one click.</strong>{' '}
                 <Link to="/login">Log in</Link> and import your
-                masternode voting keys on the{' '}
+                sentry node voting keys on the{' '}
                 <Link to="/account">Account page</Link> to vote
                 without leaving the browser — no CLI needed.
               </p>
@@ -641,6 +645,7 @@ export default function Governance() {
                 ownedCount={ownedCount}
                 enabledCount={enabledCount}
                 onJumpToProposal={jumpToProposal}
+                isVaultLocked={isVaultLockedForHero}
               />
               <GovernanceActivity
                 proposalsByHash={proposalsByHash}

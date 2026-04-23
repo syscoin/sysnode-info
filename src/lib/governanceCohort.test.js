@@ -41,12 +41,12 @@ describe('cohortChip — no summary row', () => {
   test('returns a "Not voted" chip when the user owns MNs that have not voted yet', () => {
     const chip = cohortChip(null, 3);
     expect(chip).toMatchObject({ kind: 'not-voted', label: 'Not voted' });
-    expect(chip.detail).toMatch(/3 masternodes/);
+    expect(chip.detail).toMatch(/3 sentry nodes/);
   });
 
   test('"Not voted" chip uses singular for a single MN', () => {
     const chip = cohortChip(null, 1);
-    expect(chip.detail).toMatch(/1 masternode that/);
+    expect(chip.detail).toMatch(/1 sentry node that/);
   });
 });
 
@@ -94,8 +94,8 @@ describe('cohortChip — partial cohort', () => {
       5
     );
     expect(chip).toMatchObject({ kind: 'partial', label: 'Voted 2/5' });
-    expect(chip.detail).toMatch(/2 of your 5 masternodes voted/);
-    expect(chip.detail).toMatch(/3 masternodes haven't voted yet/);
+    expect(chip.detail).toMatch(/2 of your 5 sentry nodes voted/);
+    expect(chip.detail).toMatch(/3 sentry nodes haven't voted yet/);
   });
 
   test('partial chip includes confirmed-outcome breakdown when the user split their vote', () => {
@@ -168,7 +168,7 @@ describe('cohortChip — voted happy path', () => {
     );
     expect(chip).toMatchObject({ kind: 'voted', label: 'Voted yes' });
     expect(chip.detail).toMatch(/3 votes confirmed/);
-    expect(chip.detail).toMatch(/all 3 masternodes/);
+    expect(chip.detail).toMatch(/all 3 sentry nodes/);
   });
 
   test('all confirmed no → Voted no label', () => {
@@ -206,7 +206,7 @@ describe('cohortChip — voted happy path', () => {
       row({ confirmed: 5, confirmedYes: 5 }),
       5
     );
-    expect(chip.detail).toMatch(/all 5 masternodes/);
+    expect(chip.detail).toMatch(/all 5 sentry nodes/);
   });
 
   test('ownedCount unknown omits the suffix', () => {

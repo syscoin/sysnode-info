@@ -51,11 +51,20 @@ function makeOwnedHook({
   isReady = true,
   isLoading = false,
   isVaultEmpty = false,
+  isVaultLocked = false,
   owned = [],
   error = null,
   refresh = jest.fn(),
 } = {}) {
-  return { isReady, isLoading, isVaultEmpty, owned, error, refresh };
+  return {
+    isReady,
+    isLoading,
+    isVaultEmpty,
+    isVaultLocked,
+    owned,
+    error,
+    refresh,
+  };
 }
 
 describe('useGovernanceReceipts', () => {
@@ -126,6 +135,47 @@ describe('useGovernanceReceipts', () => {
     expect(snapshot.summaryMap.size).toBe(0);
   });
 
+  test('preserves the last successful summary snapshot when a background refresh fails — a transient blip must not wipe cohort chips back to "Not voted"', async () => {
+    // Regression guard: before this behaviour the catch branch in
+    // load() unconditionally set `summary` to []. Once background
+    // polling landed (useBackgroundPoll in this hook + the activity
+    // card), every transient /gov/receipts/summary failure flashed
+    // the hero's "Voted N of M" counter to zero and flipped every
+    // cohort chip on the table from "Voted" back to "Not voted"
+    // until the next successful tick. For a user who just voted,
+    // that reads as "my vote disappeared" — the opposite of the
+    // auto-refresh UX goal. We now keep the last-good snapshot on
+    // error and only surface the error code; the gated-off auth
+    // path still clears on sign-out (covered by the first test).
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(makeOwnedHook({ owned: [] }));
+    const good = row({ proposalHash: 'a'.repeat(64), confirmed: 1 });
+    const err = Object.assign(new Error('blip'), { code: 'network_error' });
+    const service = {
+      fetchReceiptsSummary: jest
+        .fn()
+        .mockResolvedValueOnce({ summary: [good] })
+        .mockRejectedValueOnce(err),
+    };
+
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+
+    // First load succeeds.
+    await waitFor(() => expect(snapshot.summary.length).toBe(1));
+    expect(snapshot.summaryError).toBeNull();
+
+    // Trigger a manual refresh — the second call rejects.
+    await act(async () => {
+      await snapshot.refresh();
+    });
+    expect(service.fetchReceiptsSummary).toHaveBeenCalledTimes(2);
+    // Error surfaced, but the good snapshot is preserved.
+    expect(snapshot.summaryError).toBe('network_error');
+    expect(snapshot.summary).toEqual([good]);
+    expect(snapshot.summaryMap.get('a'.repeat(64))).toBe(good);
+  });
+
   test('ownedCount is null until useOwnedMasternodes reaches READY', async () => {
     useAuth.mockReturnValue({ isAuthenticated: true });
     useOwnedMasternodes.mockReturnValue(
@@ -162,6 +212,45 @@ describe('useGovernanceReceipts', () => {
     render(<Probe service={service} capture={(s) => (snapshot = s)} />);
     await waitFor(() => expect(snapshot).toBeDefined());
     expect(snapshot.ownedCount).toBe(0);
+  });
+
+  test('surfaces isVaultLocked=true when the vault is locked so the ops-hero can render an unlock CTA instead of a perpetual skeleton', async () => {
+    // Regression: useOwnedMasternodes transitions to VAULT_LOCKED
+    // after every page refresh (the vault master key lives only in
+    // memory, so a reload always lands the user on LOCKED). Without
+    // a dedicated signal, ownedCount stayed null and
+    // GovernanceOpsHero sat on "Loading your personalised summary…"
+    // forever with no prompt to unlock. Expose the locked state so
+    // the hero can swap the skeleton for an inline unlock form.
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(
+      makeOwnedHook({
+        isReady: false,
+        isLoading: false,
+        isVaultLocked: true,
+        owned: [],
+      })
+    );
+    const service = makeService({ summary: [] });
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+    await waitFor(() => expect(snapshot).toBeDefined());
+    expect(snapshot.isVaultLocked).toBe(true);
+    // ownedCount semantics are preserved — null so cohort chips and
+    // ops stats still treat the denominator as unknown.
+    expect(snapshot.ownedCount).toBeNull();
+  });
+
+  test('isVaultLocked is false in the ordinary ready path', async () => {
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(
+      makeOwnedHook({ owned: [{ keyId: 'k1' }] })
+    );
+    const service = makeService({ summary: [] });
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+    await waitFor(() => expect(snapshot).toBeDefined());
+    expect(snapshot.isVaultLocked).toBe(false);
   });
 
   test('enabled=false keeps the hook dormant even when authenticated', async () => {

@@ -2198,13 +2198,14 @@
   outline-offset: 2px;
 }
 
-/* Right-most chips in a row risk their tooltip getting clipped by
- * the viewport edge. We shift the popover origin toward the visible
- * side when the chip is near the end of a flex track. There's no
- * pure-CSS way to detect "last on a wrapped line", so we opt for a
- * right-anchor style that authors can opt into per chip via a
- * `data-tip-align="end"` escape hatch — we don't use it yet, but
- * the hook is here if a very long detail string shows clipping. */
+/* Edge-most chips in a row risk their tooltip getting clipped by
+ * the viewport edge (or, inside the proposal table, by the
+ * `overflow: hidden` clip that keeps row background fills inside
+ * the table's rounded corners). We shift the popover origin toward
+ * the visible side when the chip is near the edge of a flex track.
+ * There's no pure-CSS way to detect "first/last on a wrapped line",
+ * so we opt for anchor styles that authors can opt into per chip
+ * via a `data-tip-align="start" | "end"` escape hatch. */
 .status-chip[data-tip][data-tip-align='end']::after {
   left: auto;
   right: 0;
@@ -2214,6 +2215,37 @@
 .status-chip[data-tip][data-tip-align='end']:hover::after,
 .status-chip[data-tip][data-tip-align='end']:focus::after,
 .status-chip[data-tip][data-tip-align='end']:focus-visible::after {
+  transform: translateX(0) translateY(0);
+}
+
+.status-chip[data-tip][data-tip-align='start']::after {
+  left: 0;
+  right: auto;
+  transform: translateX(0) translateY(-3px);
+}
+
+.status-chip[data-tip][data-tip-align='start']:hover::after,
+.status-chip[data-tip][data-tip-align='start']:focus::after,
+.status-chip[data-tip][data-tip-align='start']:focus-visible::after {
+  transform: translateX(0) translateY(0);
+}
+
+/* The status column is the left-most cell of every proposal row, so
+ * a centered tooltip on any chip here leaks past the table's left
+ * edge and gets clipped by `.proposal-table { overflow: hidden }`.
+ * Force start-alignment for every chip that lives in this column —
+ * this is the same fix as opting each chip into
+ * `data-tip-align="start"` manually, but applied structurally so
+ * future chips added to the status cell inherit it automatically. */
+.proposal-row__status .status-chip[data-tip]::after {
+  left: 0;
+  right: auto;
+  transform: translateX(0) translateY(-3px);
+}
+
+.proposal-row__status .status-chip[data-tip]:hover::after,
+.proposal-row__status .status-chip[data-tip]:focus::after,
+.proposal-row__status .status-chip[data-tip]:focus-visible::after {
   transform: translateX(0) translateY(0);
 }
 
@@ -3286,8 +3318,26 @@
 }
 
 .ops-hero--empty .ops-hero__body,
-.ops-hero--loading .ops-hero__body {
+.ops-hero--loading .ops-hero__body,
+.ops-hero--locked .ops-hero__body {
   gap: 10px;
+}
+
+/* Locked-vault fallback: inline unlock form lives inside the hero
+ * when the user's vault is LOCKED (e.g. right after a page refresh).
+ * We keep the form compact so the hero stays roughly the same
+ * vertical footprint as the empty / loading variants — otherwise
+ * the auth-rail's sibling (the activity card) would visually
+ * detach from it on narrow viewports. */
+.ops-hero__unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.ops-hero__unlock .auth-input {
+  max-width: 320px;
 }
 
 .ops-hero__skeleton {
@@ -3407,6 +3457,16 @@
   padding: 0;
   display: grid;
   gap: 8px;
+  /* Cap the scroll area so the card's natural height lines up with
+     the ops-hero on the same rail. Without this, 10 rows of
+     receipts produce a ~700px column; the rail's default
+     `align-items: stretch` then stretches the hero to match,
+     leaving empty whitespace under the hero stats. Scrolling only
+     the list (not the whole card) keeps the "Your activity"
+     header pinned while the rows scroll — same pattern as
+     `.vote-modal__list` (280px) and `.key-list` (480px). */
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 .gov-activity__item {

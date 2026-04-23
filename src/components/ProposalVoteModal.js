@@ -1203,7 +1203,7 @@ export default function ProposalVoteModal({
       <div className="vote-modal__state" data-testid="vote-modal-guard-locked">
         <p>
           Unlock your vault on the Account page to sign votes with your
-          masternode voting keys.
+          sentry node voting keys.
         </p>
         <div className="vote-modal__actions">
           <Link
@@ -1225,7 +1225,7 @@ export default function ProposalVoteModal({
   } else if (isLoading) {
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-loading">
-        <p>Looking up your masternodes...</p>
+        <p>Looking up your sentry nodes...</p>
       </div>
     );
   } else if (
@@ -1241,7 +1241,7 @@ export default function ProposalVoteModal({
     // the ERROR body tolerates an empty `owned` list.
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-lookup-error">
-        <p>Couldn't load your masternode list ({error || 'error'}).</p>
+        <p>Couldn't load your sentry node list ({error || 'error'}).</p>
         <div className="vote-modal__actions">
           <button
             type="button"
@@ -1267,7 +1267,7 @@ export default function ProposalVoteModal({
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-guard-empty-vault">
         <p>
-          Your vault is empty. Import your masternode voting keys on the
+          Your vault is empty. Import your sentry node voting keys on the
           Account page, then come back here to vote with them.
         </p>
         <div className="vote-modal__actions">
@@ -1305,7 +1305,7 @@ export default function ProposalVoteModal({
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-no-owned">
         <p>
-          None of the voting keys in your vault match a live masternode
+          None of the voting keys in your vault match a live sentry node
           right now. Verify the voting addresses you've imported match
           what <code>protx_info</code> displays.
         </p>
@@ -1478,7 +1478,7 @@ export default function ProposalVoteModal({
               <>
                 Retry isn't available for these {unretryableCount}{' '}
                 {unretryableCount === 1 ? 'failure' : 'failures'} — the
-                affected masternodes are no longer in your owned list
+                affected sentry nodes are no longer in your owned list
                 (deregistered, transferred, or missing collateral
                 metadata). Resolve from the Account page and vote
                 again from the proposal row.
@@ -1487,7 +1487,7 @@ export default function ProposalVoteModal({
               <>
                 {unretryableCount} of {failedCount}{' '}
                 {unretryableCount === 1 ? 'failure is' : 'failures are'}{' '}
-                not retryable here — those masternodes are no longer in
+                not retryable here — those sentry nodes are no longer in
                 your owned list, so they'll stay in the "not voted"
                 column until you fix ownership and run the vote again.
               </>
@@ -1803,7 +1803,7 @@ export default function ProposalVoteModal({
         data-testid="vote-modal-confirm-change"
       >
         <p>
-          <strong>Heads up:</strong> {changing.length} masternode
+          <strong>Heads up:</strong> {changing.length} sentry node
           {changing.length === 1 ? '' : 's'} already voted on this
           proposal with a different outcome. Submitting will
           <strong> overwrite</strong> those votes on-chain with{' '}
@@ -1878,7 +1878,7 @@ export default function ProposalVoteModal({
 
         <div className="vote-modal__selection-header">
           <p className="vote-modal__selection-summary">
-            {effectiveSelected.size} of {owned.length} masternode
+            {effectiveSelected.size} of {owned.length} sentry node
             {owned.length === 1 ? '' : 's'} selected
           </p>
           <div className="vote-modal__selection-actions">
@@ -1995,12 +1995,28 @@ export default function ProposalVoteModal({
                           constituents of this bucket: a failed
                           relay vs a vote-change candidate. Both
                           belong here because both require the
-                          user to notice before signing. */}
-                      {groups.actionNeeded.some(
-                        (g) => g.kind === 'confirmed-different'
-                      )
-                        ? 'Retry failed submissions and confirm vote changes.'
-                        : 'Retry failed submissions from a previous attempt.'}
+                          user to notice before signing. Pick the
+                          copy honestly — the old logic mentioned
+                          "retry failed submissions" whenever there
+                          was ANY vote-change row, even with zero
+                          failures, which confused users who had
+                          only voted successfully before and were
+                          now just changing their outcome. */}
+                      {(function actionNeededSubtitle() {
+                        const hasFailed = groups.actionNeeded.some(
+                          (g) => g.kind === 'failed'
+                        );
+                        const hasChange = groups.actionNeeded.some(
+                          (g) => g.kind === 'confirmed-different'
+                        );
+                        if (hasFailed && hasChange) {
+                          return 'Retry failed submissions and confirm vote changes.';
+                        }
+                        if (hasChange) {
+                          return 'Confirm these vote changes before submitting.';
+                        }
+                        return 'Retry failed submissions from a previous attempt.';
+                      })()}
                     </p>
                   </header>
                   <ul className="vote-modal__group-list">
