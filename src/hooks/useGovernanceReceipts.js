@@ -104,7 +104,30 @@ export function useGovernanceReceipts({
     return m;
   }, [summary]);
 
-  const ownedCount = ownedHook.isReady ? ownedHook.owned.length : null;
+  // `ownedCount` drives the Governance ops-hero branching:
+  //
+  //   * number (incl. 0) -> hero renders a concrete personalized
+  //                         summary (or the "import your keys" empty
+  //                         CTA when count is exactly 0).
+  //   * null             -> hero renders the loading skeleton.
+  //
+  // We must treat `empty_vault` as a terminal resolved state (count
+  // = 0), not as "still loading". Otherwise an authenticated user
+  // with no imported voting keys sits on "Loading your personalised
+  // summary…" forever, because useOwnedMasternodes shortcut to
+  // EMPTY_VAULT without ever becoming `isReady`. The hero already
+  // has a dedicated empty-vault branch — this mapping lets it
+  // trigger as intended.
+  //
+  // `vault_locked` and error states deliberately stay as `null` so
+  // the hero's loading skeleton continues to cover them; surfacing
+  // "Import your keys" copy to a user whose vault exists but is
+  // locked would be misleading.
+  const ownedCount = ownedHook.isReady
+    ? ownedHook.owned.length
+    : ownedHook.isVaultEmpty
+      ? 0
+      : null;
 
   const refresh = useCallback(
     async ({ refreshOwned = false } = {}) => {

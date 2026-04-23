@@ -88,6 +88,33 @@ describe('useOwnedMasternodes', () => {
     expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
   });
 
+  test('vault.isEmpty (never imported — no vault row) also resolves to empty_vault, not vault_locked', async () => {
+    // Regression: VaultContext EMPTY means "no vault row at all" —
+    // the user has never imported any voting keys. That state has
+    // isEmpty=true, isUnlocked=false. Without an explicit branch
+    // here the hook falls into the `!isUnlocked` fallback and
+    // returns VAULT_LOCKED, which (via useGovernanceReceipts'
+    // null-ownedCount mapping) pins GovernanceOpsHero on the
+    // "Loading your personalised summary…" skeleton forever for
+    // signed-in users who haven't set up a vault yet.
+    useVault.mockReturnValue(
+      makeVault({ isEmpty: true, isUnlocked: false })
+    );
+    const service = { lookupOwnedMasternodes: jest.fn() };
+    const values = [];
+
+    render(<Probe service={service} onValue={(v) => values.push(v)} />);
+
+    await waitFor(() => {
+      expect(values.at(-1).status).toBe('empty_vault');
+    });
+    const last = values.at(-1);
+    expect(last.isVaultEmpty).toBe(true);
+    expect(last.isVaultLocked).toBe(false);
+    expect(last.owned).toEqual([]);
+    expect(service.lookupOwnedMasternodes).not.toHaveBeenCalled();
+  });
+
   test('unlocked vault with keys calls the backend and joins results', async () => {
     useVault.mockReturnValue(
       makeVault({

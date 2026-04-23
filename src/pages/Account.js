@@ -99,9 +99,18 @@ export default function Account() {
 
           <GovernanceActivityLink />
 
-          <ChangePasswordCard />
+          {/*
+           * Settings-style disclosure: heavier forms (Change password,
+           * Notifications) render their header inline but hide the form
+           * body behind a chevron toggle so the Account page stops
+           * looking like a tall wall of fields. The Voting vault card
+           * stays always-expanded on purpose — its state (Import /
+           * Unlock / Unlocked) IS the card's content, not a form the
+           * user opts into. Delete account has its own reveal.
+           */}
+          <ChangePasswordCard defaultOpen={false} />
 
-          <NotificationPreferencesCard />
+          <NotificationPreferencesCard defaultOpen={false} />
 
           <DeleteAccountCard />
         </div>

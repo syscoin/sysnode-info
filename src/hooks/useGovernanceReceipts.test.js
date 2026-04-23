@@ -50,11 +50,12 @@ function row(partial) {
 function makeOwnedHook({
   isReady = true,
   isLoading = false,
+  isVaultEmpty = false,
   owned = [],
   error = null,
   refresh = jest.fn(),
 } = {}) {
-  return { isReady, isLoading, owned, error, refresh };
+  return { isReady, isLoading, isVaultEmpty, owned, error, refresh };
 }
 
 describe('useGovernanceReceipts', () => {
@@ -136,6 +137,31 @@ describe('useGovernanceReceipts', () => {
     await waitFor(() => expect(snapshot).toBeDefined());
     expect(snapshot.ownedCount).toBeNull();
     expect(snapshot.isLoading).toBe(true);
+  });
+
+  test('ownedCount is 0 (not null) when the vault is empty — lets the ops-hero render its empty-state CTA instead of a perpetual skeleton', async () => {
+    // Regression: useOwnedMasternodes transitions to EMPTY_VAULT for
+    // signed-in users who have NOT imported voting keys yet. Because
+    // that is a terminal non-error state (the hook does not progress
+    // to `isReady`), leaving `ownedCount` at null pins
+    // GovernanceOpsHero on its loading skeleton forever. Map empty-
+    // vault to count=0 so the hero's dedicated `isVaultEmpty` branch
+    // (ownedCount === 0) lights up instead, nudging the user to
+    // Import your masternode voting keys.
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(
+      makeOwnedHook({
+        isReady: false,
+        isLoading: false,
+        isVaultEmpty: true,
+        owned: [],
+      })
+    );
+    const service = makeService({ summary: [] });
+    let snapshot;
+    render(<Probe service={service} capture={(s) => (snapshot = s)} />);
+    await waitFor(() => expect(snapshot).toBeDefined());
+    expect(snapshot.ownedCount).toBe(0);
   });
 
   test('enabled=false keeps the hook dormant even when authenticated', async () => {

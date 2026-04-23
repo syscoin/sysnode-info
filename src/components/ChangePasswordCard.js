@@ -86,8 +86,15 @@ function errorCopy(code) {
   return ERROR_COPY[code] || 'Password change failed. Please try again.';
 }
 
+// `defaultOpen` — whether the card's form body is revealed on mount.
+// Kept as `true` by default so component-level tests (which render
+// the card in isolation and interact with its inputs directly)
+// continue to work without having to expand the disclosure first.
+// Account.js overrides to `false` so users land on a compact
+// settings stack and opt in to the form explicitly.
 export default function ChangePasswordCard({
   authService = defaultAuthService,
+  defaultOpen = true,
 }) {
   const { user, refresh, handleAuthLost } = useAuth();
   const vault = useVault();
@@ -99,6 +106,7 @@ export default function ChangePasswordCard({
   const [errCode, setErrCode] = useState(null);
   const [localError, setLocalError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
 
   const clearFeedback = useCallback(() => {
     setErrCode(null);
@@ -256,102 +264,130 @@ export default function ChangePasswordCard({
 
   return (
     <form
-      className="auth-card auth-card--info"
+      className="auth-card auth-card--info auth-card--collapsible"
       onSubmit={onSubmit}
       data-testid="change-password-card"
+      data-open={open ? 'true' : 'false'}
       noValidate
     >
-      <h2 className="auth-card__title">Change password</h2>
-      <p className="auth-card__hint">
-        Your new password re-encrypts your voting vault locally. Other
-        signed-in devices will be signed out.
-      </p>
-
-      <div className="auth-field">
-        <label className="auth-label" htmlFor="cp-old">
-          Current password
-        </label>
-        <input
-          id="cp-old"
-          className="auth-input"
-          type="password"
-          autoComplete="current-password"
-          value={oldPassword}
-          onChange={(e) => setOldPassword(e.target.value)}
-          required
-        />
+      <div className="auth-card__header">
+        <div className="auth-card__header-text">
+          <h2 className="auth-card__title" id="change-password-title">
+            Change password
+          </h2>
+          <p className="auth-card__hint">
+            Your new password re-encrypts your voting vault locally.
+            Other signed-in devices will be signed out.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="auth-card__disclosure-toggle"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="change-password-body"
+          aria-label={
+            open
+              ? 'Collapse change password form'
+              : 'Expand change password form'
+          }
+          data-testid="change-password-toggle"
+        >
+          <span className="auth-card__chevron" aria-hidden="true">
+            ▸
+          </span>
+        </button>
       </div>
 
-      <div className="auth-field">
-        <label className="auth-label" htmlFor="cp-new">
-          New password
-        </label>
-        <input
-          id="cp-new"
-          className="auth-input"
-          type="password"
-          autoComplete="new-password"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          minLength={MIN_PASSWORD_LENGTH}
-          required
-        />
-      </div>
+      {open ? (
+        <div id="change-password-body" className="auth-card__body">
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="cp-old">
+              Current password
+            </label>
+            <input
+              id="cp-old"
+              className="auth-input"
+              type="password"
+              autoComplete="current-password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              required
+            />
+          </div>
 
-      <div className="auth-field">
-        <label className="auth-label" htmlFor="cp-confirm">
-          Confirm new password
-        </label>
-        <input
-          id="cp-confirm"
-          className="auth-input"
-          type="password"
-          autoComplete="new-password"
-          value={confirmPassword}
-          onChange={(e) => setConfirmPassword(e.target.value)}
-          minLength={MIN_PASSWORD_LENGTH}
-          required
-        />
-      </div>
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="cp-new">
+              New password
+            </label>
+            <input
+              id="cp-new"
+              className="auth-input"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              minLength={MIN_PASSWORD_LENGTH}
+              required
+            />
+          </div>
 
-      {localError ? (
-        <div
-          className="auth-alert auth-alert--error"
-          role="alert"
-          data-testid="change-password-local-error"
-        >
-          {localError}
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="cp-confirm">
+              Confirm new password
+            </label>
+            <input
+              id="cp-confirm"
+              className="auth-input"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              minLength={MIN_PASSWORD_LENGTH}
+              required
+            />
+          </div>
+
+          {localError ? (
+            <div
+              className="auth-alert auth-alert--error"
+              role="alert"
+              data-testid="change-password-local-error"
+            >
+              {localError}
+            </div>
+          ) : null}
+
+          {errCode ? (
+            <div
+              className="auth-alert auth-alert--error"
+              role="alert"
+              data-testid="change-password-error"
+            >
+              {errorCopy(errCode)}
+            </div>
+          ) : null}
+
+          {success ? (
+            <div
+              className="auth-alert auth-alert--success"
+              role="status"
+              data-testid="change-password-success"
+            >
+              Password changed. Other devices have been signed out.
+            </div>
+          ) : null}
+
+          <button
+            type="submit"
+            className="button button--primary"
+            disabled={submitting}
+            data-testid="change-password-submit"
+          >
+            {submitting ? 'Updating…' : 'Change password'}
+          </button>
         </div>
       ) : null}
-
-      {errCode ? (
-        <div
-          className="auth-alert auth-alert--error"
-          role="alert"
-          data-testid="change-password-error"
-        >
-          {errorCopy(errCode)}
-        </div>
-      ) : null}
-
-      {success ? (
-        <div
-          className="auth-alert auth-alert--success"
-          role="status"
-          data-testid="change-password-success"
-        >
-          Password changed. Other devices have been signed out.
-        </div>
-      ) : null}
-
-      <button
-        type="submit"
-        className="button button--primary"
-        disabled={submitting}
-        data-testid="change-password-submit"
-      >
-        {submitting ? 'Updating…' : 'Change password'}
-      </button>
     </form>
   );
 }

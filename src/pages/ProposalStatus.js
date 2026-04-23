@@ -204,11 +204,27 @@ function classifyCoreRejection(failDetail) {
 // deliberate: it's purely a render branch over read-only data,
 // has no hooks, no state, and no effects — inlining it would just
 // make the already-large component body harder to read.
-function renderFailedSection({ submission, deleting, onDelete }) {
+function renderFailedSection({
+  submission,
+  deleting,
+  onDelete,
+  cloningDraft,
+  cloneError,
+  onStartOver,
+}) {
   const isCoreRejection = submission.failReason === 'submit_rejected';
   const coreKind = isCoreRejection
     ? classifyCoreRejection(submission.failDetail)
     : null;
+
+  // Rate-limit rejections are the one failure mode where starting
+  // over in-cycle is pointless — Core will just reject the new
+  // submission too. The user must wait for the next governance
+  // cycle. Don't offer Start-over here; offer a plain back-to-gov
+  // link + Delete instead. All OTHER failure modes (structural
+  // rejection, collateral-not-found, duplicate hash) are fixable
+  // by editing the proposal content, so we surface Start-over.
+  const offerStartOver = coreKind !== 'rate_limited';
 
   if (coreKind === 'rate_limited') {
     return (
@@ -286,15 +302,47 @@ function renderFailedSection({ submission, deleting, onDelete }) {
           <code>{submission.failDetail}</code>
         </pre>
       ) : null}
-      <button
-        type="button"
-        className="button button--ghost"
-        onClick={onDelete}
-        disabled={deleting}
-        data-testid="proposal-status-delete"
-      >
-        {deleting ? 'Deleting…' : 'Delete'}
-      </button>
+      {offerStartOver ? (
+        <p className="proposal-status__help">
+          <strong>Heads up:</strong> starting over opens the wizard
+          pre-filled with these details so you can edit the proposal
+          and resubmit. The old 150 SYS collateral burn is tied to
+          the old proposal hash by consensus and can't be reused —
+          a resubmitted proposal will require a fresh 150 SYS burn.
+        </p>
+      ) : null}
+      {cloneError ? (
+        <div
+          className="auth-alert auth-alert--error"
+          role="alert"
+          data-testid="proposal-status-clone-error"
+        >
+          Could not start over: {cloneError.code || 'error'}. Please
+          retry.
+        </div>
+      ) : null}
+      <div className="proposal-status__actions">
+        {offerStartOver ? (
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={onStartOver}
+            disabled={cloningDraft || deleting}
+            data-testid="proposal-status-start-over"
+          >
+            {cloningDraft ? 'Opening wizard…' : 'Edit details and start over'}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="button button--ghost"
+          onClick={onDelete}
+          disabled={deleting || cloningDraft}
+          data-testid="proposal-status-delete"
+        >
+          {deleting ? 'Deleting…' : 'Delete'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -309,6 +357,16 @@ export default function ProposalStatus() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  // Transient "copied!" badge for the CLI snippet copy button. Keyed
+  // by snippet id so we can support multiple copy targets without
+  // them fighting over a single boolean. Right now there's only the
+  // `gobject-prepare` snippet, but keeping this shape avoids the
+  // rewrite if/when we add another.
+  const [copiedKey, setCopiedKey] = useState(null);
+  // Start-over-from-failed flow. See the "Edit details" button in
+  // renderFailedSection() for the full copy and rationale.
+  const [cloningDraft, setCloningDraft] = useState(false);
+  const [cloneError, setCloneError] = useState(null);
   // Codex PR8 round 5 P2: delete-failure surface. The top-level
   // `error` banner only renders when `submission` is null (it's the
   // initial-fetch error channel), so a delete failure while the
@@ -414,6 +472,18 @@ export default function ProposalStatus() {
   // with the wrong txid, one "Submit" click away from an
   // accidental cross-row attach attempt. Clearing all of them is
   // the only safe default on route-id change.
+  //
+  // Codex PR13 round 1 P2: also reset `cloningDraft`. The
+  // "Edit details and start over" handler sets cloningDraft=true
+  // and only flips it back in its own finally. If the user kicks
+  // off Start-over on A and navigates to B before the request
+  // completes, B would inherit cloningDraft=true and the failed-
+  // panel actions would stay disabled / the CTA would stay stuck
+  // on "Opening wizard…" until the old request settles (or
+  // indefinitely on a hung request). Same cross-submission state
+  // leakage the other resets here exist to prevent. The stale
+  // response is dropped inside onStartOver via the latestReqIdRef
+  // token below.
   useEffect(() => {
     setSubmission(null);
     setError(null);
@@ -421,6 +491,9 @@ export default function ProposalStatus() {
     setDeleteError(null);
     setAttachError(null);
     setTxidInput('');
+    setCopiedKey(null);
+    setCloneError(null);
+    setCloningDraft(false);
   }, [id]);
 
   useEffect(() => {
@@ -495,6 +568,15 @@ export default function ProposalStatus() {
     if (!submission) return;
     setAttachError(null);
     const cleaned = (txidInput || '').trim().toLowerCase();
+    // Separate codes for empty vs malformed so the inline error can
+    // render distinct copy. Previously the button was `disabled` on
+    // empty input, so the user got no feedback on what was wrong.
+    // Now we enable the button unconditionally and surface an error
+    // on submit — matching the wizard's touch-on-Next pattern.
+    if (!cleaned) {
+      setAttachError({ code: 'txid_empty' });
+      return;
+    }
     if (!HEX64_RE.test(cleaned)) {
       setAttachError({ code: 'malformed_txid' });
       return;
@@ -513,6 +595,92 @@ export default function ProposalStatus() {
       setAttachError(err);
     } finally {
       if (mountedRef.current) setAttaching(false);
+    }
+  }
+
+  // "Copy to clipboard" for the gobject-prepare CLI snippet shown in
+  // the prepared panel's <details>. Best-effort: on browsers that
+  // refuse clipboard writes (e.g. insecure context, permission
+  // denied) we fall back to a short "Copy failed" hint. The flash
+  // badge self-clears after 2s. Scoped by `key` so future copy
+  // buttons (e.g. for the proposal hash) can share this handler.
+  const onCopy = useCallback(async (key, value) => {
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        throw new Error('clipboard_unavailable');
+      }
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((k) => (k === key ? null : k));
+      }, 2000);
+    } catch (_e) {
+      setCopiedKey(`${key}:error`);
+      window.setTimeout(() => {
+        setCopiedKey((k) => (k === `${key}:error` ? null : k));
+      }, 2000);
+    }
+  }, []);
+
+  // "Edit details and start over" for a FAILED submission. Clones
+  // the failed row's structured fields into a new draft in a single
+  // backend transaction, then navigates the user to the wizard with
+  // that draft preloaded. The old failed row is deleted as part of
+  // the same transaction so the user's dashboard doesn't carry two
+  // records of the same attempt. On a fresh prepare the user will
+  // burn a NEW 150 SYS collateral — that caveat is in the button's
+  // confirm copy, not hidden.
+  async function onStartOver() {
+    if (!submission) return;
+    if (
+      !window.confirm(
+        'Start over with these details?\n\n' +
+          'This deletes the failed submission and opens the wizard ' +
+          'with your proposal text pre-filled so you can edit and ' +
+          'resubmit. Because the old collateral burn is bound to the ' +
+          'old proposal hash by consensus, you will need to burn a ' +
+          'NEW 150 SYS collateral on the resubmitted proposal.'
+      )
+    ) {
+      return;
+    }
+    // Capture the submission id at call time so we can detect the
+    // user navigating to a different submission while the clone
+    // request is in flight. latestReqIdRef is updated on every
+    // render (see declaration above) so comparing against it on
+    // resolution tells us whether this response is still for the
+    // submission the user is looking at. A stale response would
+    // otherwise (a) push the user into a wizard draft cloned from
+    // A even though they're now on B, or (b) surface an error
+    // banner against A on B's panel. Both are cross-submission
+    // state leakage, matching the id-reset effect above.
+    // (Codex PR13 round 1 P2.)
+    const reqId = submission.id;
+    setCloneError(null);
+    setCloningDraft(true);
+    try {
+      const draft = await proposalService.cloneSubmissionToDraft(reqId);
+      if (!mountedRef.current) return;
+      if (reqId !== latestReqIdRef.current) return;
+      // Navigate to the wizard with the new draft preloaded. The
+      // wizard reads `?draft=<id>` and hydrates form state from
+      // that draft — same path used by the drafts list.
+      history.push(`/governance/new?draft=${draft.id}`);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      if (reqId !== latestReqIdRef.current) return;
+      setCloneError(err);
+    } finally {
+      // Only the live-id path owns the cloningDraft spinner. The
+      // id-reset effect already cleared it for stale-id navigations.
+      if (mountedRef.current && reqId === latestReqIdRef.current) {
+        setCloningDraft(false);
+      }
     }
   }
 
@@ -566,6 +734,11 @@ export default function ProposalStatus() {
       <PageMeta title="Proposal status" />
       <section className="page-hero">
         <div className="site-wrap">
+          <p className="page-hero__back-row">
+            <Link to="/governance" className="page-hero__back">
+              ← Back to governance
+            </Link>
+          </p>
           <p className="eyebrow">Governance</p>
           <h1>Proposal status</h1>
           <p className="page-hero__copy">
@@ -734,7 +907,13 @@ export default function ProposalStatus() {
                       SubmitStep used before /prepare redirected here —
                       kept so a reload (or a user arriving from the
                       Proposals Created panel) has full parity.
-                      (Codex PR8 round 5 P2.) */}
+                      (Codex PR8 round 5 P2.)
+
+                      A dedicated Copy button is rendered inline with
+                      the <pre> so users don't have to triple-click-
+                      select the snippet. The transient "Copied" /
+                      "Copy failed" badge next to it self-clears
+                      after ~2s via the onCopy handler. */}
                   {submission.dataHex && submission.timeUnix != null ? (
                     <details className="proposal-status__cli-block">
                       <summary>
@@ -746,54 +925,106 @@ export default function ProposalStatus() {
                         the 150 SYS burn and print the collateral TXID
                         to paste above.
                       </p>
-                      <pre
-                        className="proposal-wizard__cli"
-                        data-testid="proposal-status-cli-command"
-                      >
-                        <code>
-                          {`gobject prepare ${
-                            submission.parentHash != null
-                              ? String(submission.parentHash)
-                              : '0'
-                          } ${
-                            submission.revision != null
-                              ? String(submission.revision)
-                              : '1'
-                          } ${String(submission.timeUnix)} ${
-                            submission.dataHex
-                          }`}
-                        </code>
-                      </pre>
+                      {(() => {
+                        const cliCommand = `gobject prepare ${
+                          submission.parentHash != null
+                            ? String(submission.parentHash)
+                            : '0'
+                        } ${
+                          submission.revision != null
+                            ? String(submission.revision)
+                            : '1'
+                        } ${String(submission.timeUnix)} ${
+                          submission.dataHex
+                        }`;
+                        return (
+                          <div className="proposal-status__cli-wrap">
+                            <pre
+                              className="proposal-wizard__cli"
+                              data-testid="proposal-status-cli-command"
+                            >
+                              <code>{cliCommand}</code>
+                            </pre>
+                            <div className="proposal-status__cli-actions">
+                              <button
+                                type="button"
+                                className="button button--ghost button--small"
+                                onClick={() => onCopy('cli', cliCommand)}
+                                data-testid="proposal-status-cli-copy"
+                              >
+                                {copiedKey === 'cli'
+                                  ? 'Copied!'
+                                  : copiedKey === 'cli:error'
+                                  ? 'Copy failed'
+                                  : 'Copy'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </details>
                   ) : null}
 
-                  <label
-                    className="proposal-wizard__field"
-                    htmlFor="proposal-status-txid-input"
-                  >
-                    Collateral TXID
-                    <input
-                      id="proposal-status-txid-input"
-                      type="text"
-                      className="input"
-                      value={txidInput}
-                      onChange={(e) => setTxidInput(e.target.value)}
-                      placeholder="64-hex transaction id"
-                      spellCheck="false"
-                      autoCapitalize="off"
-                      autoCorrect="off"
+                  {/* Attach-collateral form. Previously the button
+                      was `disabled` while the input was empty, so
+                      clicking it produced zero feedback — the user
+                      thought the form was broken. Now the button is
+                      always enabled, and the same onAttachCollateral
+                      handler surfaces a specific error (`txid_empty`
+                      vs `malformed_txid`) via the auth-alert below. */}
+                  <div className="proposal-status__attach">
+                    <label
+                      className="proposal-status__attach-label"
+                      htmlFor="proposal-status-txid-input"
+                    >
+                      <span className="proposal-status__attach-label-text">
+                        Collateral TXID
+                      </span>
+                      <input
+                        id="proposal-status-txid-input"
+                        type="text"
+                        className="proposal-status__attach-input"
+                        value={txidInput}
+                        onChange={(e) => setTxidInput(e.target.value)}
+                        placeholder="64-hex transaction id"
+                        spellCheck="false"
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        disabled={attaching}
+                        aria-invalid={
+                          !!attachError &&
+                          (attachError.code === 'txid_empty' ||
+                            attachError.code === 'malformed_txid')
+                        }
+                        aria-describedby={
+                          attachError
+                            ? 'proposal-status-attach-error'
+                            : undefined
+                        }
+                        data-testid="proposal-status-txid-input"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="button button--primary proposal-status__attach-btn"
+                      onClick={onAttachCollateral}
                       disabled={attaching}
-                      data-testid="proposal-status-txid-input"
-                    />
-                  </label>
+                      data-testid="proposal-status-attach"
+                    >
+                      {attaching ? 'Attaching…' : 'Attach TXID'}
+                    </button>
+                  </div>
 
                   {attachError ? (
                     <div
                       className="auth-alert auth-alert--error"
                       role="alert"
+                      id="proposal-status-attach-error"
                       data-testid="proposal-status-attach-error"
                     >
-                      {attachError.code === 'malformed_txid'
+                      {attachError.code === 'txid_empty'
+                        ? 'Paste the collateral TXID before attaching.'
+                        : attachError.code === 'malformed_txid'
                         ? 'That does not look like a 64-character hex TXID.'
                         : attachError.code === 'opreturn_mismatch'
                         ? 'This transaction does not commit to this proposal (OP_RETURN mismatch). Double-check you used the OP_RETURN hex shown above.'
@@ -804,24 +1035,6 @@ export default function ProposalStatus() {
                         : `Could not attach TXID: ${attachError.code || 'error'}`}
                     </div>
                   ) : null}
-
-                  <div className="proposal-wizard__actions">
-                    <button
-                      type="button"
-                      className="button button--primary"
-                      onClick={onAttachCollateral}
-                      disabled={attaching || !txidInput.trim()}
-                      data-testid="proposal-status-attach"
-                    >
-                      {attaching ? 'Attaching…' : 'Attach TXID'}
-                    </button>
-                    <Link
-                      to="/governance/new"
-                      className="button button--ghost"
-                    >
-                      Open wizard
-                    </Link>
-                  </div>
                 </div>
               ) : null}
 
@@ -899,6 +1112,9 @@ export default function ProposalStatus() {
                     submission,
                     deleting,
                     onDelete,
+                    cloningDraft,
+                    cloneError,
+                    onStartOver,
                   })
                 : null}
 
