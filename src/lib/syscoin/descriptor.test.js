@@ -111,6 +111,18 @@ describe('descriptor helpers', () => {
     });
   });
 
+  test('rejects malformed key expressions instead of matching a prefix', () => {
+    const seed = new Uint8Array(32).fill(7);
+    const root = HDKey.fromMasterSeed(seed);
+    const out = validateDescriptor(
+      addDescriptorChecksum(`wpkh(${root.privateExtendedKey}/0/5abc)`)
+    );
+    expect(out).toMatchObject({
+      valid: false,
+      code: 'descriptor_key_expression_invalid',
+    });
+  });
+
   test('async validation can be cancelled mid-range scan', async () => {
     const { fixed, ranged } = fixtureDescriptors();
     const fixedOut = importFromDescriptor(fixed);

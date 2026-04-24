@@ -151,6 +151,24 @@ function supportedWrapper(cleaned) {
   return null;
 }
 
+function extractKeyExpression(cleaned, wrapper) {
+  const source = String(cleaned || '').trim();
+  const patterns = {
+    wpkh: /^wpkh\s*\(\s*([^()]*)\s*\)\s*$/i,
+    pkh: /^pkh\s*\(\s*([^()]*)\s*\)\s*$/i,
+    combo: /^combo\s*\(\s*([^()]*)\s*\)\s*$/i,
+    'sh-wpkh': /^sh\s*\(\s*wpkh\s*\(\s*([^()]*)\s*\)\s*\)\s*$/i,
+  };
+  const match = source.match(patterns[wrapper] || /^$/);
+  if (!match) {
+    throw err(
+      'descriptor_key_expression_invalid',
+      'Descriptor key expression is malformed.'
+    );
+  }
+  return match[1].trim();
+}
+
 function isDescriptorLike(value) {
   if (typeof value !== 'string') return false;
   const s = value.trim();
@@ -241,13 +259,14 @@ function parsePrivateDescriptor(descriptor, expectedNetwork) {
   // and then computing the canonical Syscoin bech32 voting address is
   // correct. Wrappers that tweak or combine keys (for example tr(...),
   // multi(...), sortedmulti(...), wsh(...)) are deliberately rejected.
-  const match = cleaned.match(
-    /(?:\[[^\]]+\])?((?:xprv|tprv)[1-9A-HJ-NP-Za-km-z]+)((?:\/(?:\*|[0-9]+(?:['hH])?))*)/
+  const keyExpression = extractKeyExpression(cleaned, wrapper);
+  const match = keyExpression.match(
+    /^(?:\[[^\]]+\])?((?:xprv|tprv)[1-9A-HJ-NP-Za-km-z]+)((?:\/(?:\*|[0-9]+(?:['hH])?))*)$/
   );
   if (!match) {
     throw err(
-      'descriptor_private_key_missing',
-      'Descriptor must contain a private xprv/tprv key expression.'
+      'descriptor_key_expression_invalid',
+      'Descriptor must contain exactly one private xprv/tprv key expression.'
     );
   }
   const xprv = match[1];
