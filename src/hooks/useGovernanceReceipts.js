@@ -116,19 +116,61 @@ export function useGovernanceReceipts({
     load();
   }, [load]);
 
+  // Keep the latest summary available to the background poll
+  // callback without re-subscribing the poll on every state change.
+  // `useBackgroundPoll` tears down its timer when the callback
+  // identity changes, so if reconcilePendingAndLoad closed over
+  // `summary` directly, each successful tick (which updates summary
+  // via load()) would rebuild the callback, reset the timer, and
+  // effectively re-anchor the 30s cadence to the last successful
+  // response instead of the last tick. Reading through a ref keeps
+  // the callback identity stable while still seeing fresh data.
+  const summaryRef = useRef(summary);
+  useEffect(() => {
+    summaryRef.current = summary;
+  }, [summary]);
+
   // Background polling for /gov/receipts/summary. Keeps per-row
   // cohort chips and the hero "Voted N of M" counts in sync with
   // backend-side reconciliation (e.g. relayed receipts flipping to
   // confirmed as Core tallies them) without forcing the user to
   // reload the page or close a modal.
   //
+  // Each tick does TWO things in order:
+  //
+  //   1. For every proposal with at least one `relayed` receipt in
+  //      the last-known summary, fire POST /gov/receipts/reconcile.
+  //      That's the only call that can flip receipts from relayed
+  //      to confirmed by issuing `gobject_getcurrentvotes`; without
+  //      it, /summary is a pure SELECT that would keep returning
+  //      stale `relayed` rows forever (until the user happened to
+  //      reopen the proposal's vote modal, which is what triggers
+  //      the modal-scoped reconcile in useOwnedMasternodes).
+  //   2. Call load() to pick up any transitions the reconciles just
+  //      wrote.
+  //
+  // Rate-limit / RPC cost notes:
+  //
+  //   * The backend's per-proposal `gobject_getcurrentvotes` cache
+  //     (2 min TTL) dedupes concurrent callers across users, so a
+  //     single 30s tick across many logged-in sessions still costs
+  //     one RPC per proposal per TTL window at most.
+  //   * /gov/receipts/reconcile also short-circuits at the route
+  //     layer when every row is confirmed inside `receiptsFreshnessMs`
+  //     (`reconciled: false` with no RPC), so proposals whose votes
+  //     have already settled don't generate work.
+  //   * `POST /gov/vote` invalidates the cache entry for the just-
+  //     voted proposal, so the first reconcile after a relay does
+  //     hit the chain (which is what we want — the cache was stale).
+  //   * Reconcile errors are swallowed per-proposal so one flaky
+  //     proposal can't stop the rest of the batch (or the follow-up
+  //     load) from running.
+  //
   // Deliberate scope:
   //
-  //   * Only /summary is polled here — it's a per-user SQL query,
-  //     cheap enough to hit every 30s. The governance feed (gobject
-  //     list) is NOT refreshed; that one drives the on-chain tally
-  //     which evolves on a longer cadence and costs Core RPC time.
-  //     A separate refresh can be added for the feed if needed.
+  //   * Only proposals the user has receipts for are polled for
+  //     reconciliation — not the whole `gobject list` feed. Feed
+  //     tallies live in /govlist which has its own refresh path.
   //   * The "Last N votes" activity card has its own identical-
   //     cadence poll — both read from receipt-rows state, so we
   //     want them to catch the same reconciliation tick.
@@ -138,7 +180,38 @@ export function useGovernanceReceipts({
   // Visibility-aware pause + catch-up semantics live in the shared
   // `useBackgroundPoll` primitive; see that file for the
   // cadence/visibility contract.
-  useBackgroundPoll(load, {
+  const reconcilePendingAndLoad = useCallback(async () => {
+    if (!enabled || !isAuthenticated) return;
+    // Pending = any summary row with at least one still-relayed
+    // receipt. Built fresh per tick from the ref so we always act
+    // on the latest snapshot even though the callback identity
+    // never changes.
+    const current = Array.isArray(summaryRef.current) ? summaryRef.current : [];
+    const pending = [];
+    for (const rowState of current) {
+      if (!rowState || typeof rowState.proposalHash !== 'string') continue;
+      const relayed = Number(rowState.relayed);
+      if (Number.isFinite(relayed) && relayed > 0) {
+        pending.push(rowState.proposalHash);
+      }
+    }
+    if (pending.length > 0 && typeof governanceService.reconcileReceipts === 'function') {
+      // Parallel fan-out is fine: the backend serialises per-proposal
+      // reconciles internally and the currentVotes cache collapses
+      // overlapping RPCs. `allSettled` keeps one failure from aborting
+      // the follow-up load.
+      await Promise.allSettled(
+        pending.map((hash) =>
+          Promise.resolve()
+            .then(() => governanceService.reconcileReceipts(hash))
+            .catch(() => null)
+        )
+      );
+    }
+    await load();
+  }, [enabled, isAuthenticated, governanceService, load]);
+
+  useBackgroundPoll(reconcilePendingAndLoad, {
     enabled: Boolean(enabled && isAuthenticated),
     intervalMs: SUMMARY_POLL_MS,
   });
