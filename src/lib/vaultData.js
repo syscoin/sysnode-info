@@ -29,7 +29,6 @@ const { validateWif } = require('./syscoin/wif');
 const {
   descriptorNeedsAddressHint,
   isDescriptorLike,
-  isAnySysVotingAddress,
   validateDescriptor,
   validateDescriptorAsync,
 } = require('./syscoin/descriptor');
@@ -122,8 +121,7 @@ function parseImportLine(line) {
   if (
     isDescriptorLike(wif) &&
     descriptorNeedsAddressHint(wif) &&
-    parts.length > 0 &&
-    isAnySysVotingAddress(parts[0])
+    parts.length > 0
   ) {
     addressHint = parts.shift() || '';
   }

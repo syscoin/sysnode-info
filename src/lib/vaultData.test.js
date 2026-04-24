@@ -158,6 +158,15 @@ describe('parseImportLine', () => {
     });
   });
 
+  test('treats the second field as the address hint for ranged descriptors even when invalid', () => {
+    const { ranged } = descriptorFixtures();
+    expect(parseImportLine(`${ranged},sys1typoedaddress,MN 1`)).toEqual({
+      wif: ranged,
+      addressHint: 'sys1typoedaddress',
+      label: 'MN 1',
+    });
+  });
+
   test('keeps address-looking labels on fixed descriptors', () => {
     const { fixed, fixedOut } = descriptorFixtures();
     expect(parseImportLine(`${fixed},${fixedOut.address}`)).toEqual({
@@ -240,6 +249,19 @@ describe('parseImportInput', () => {
       label: 'MN desc',
       address: fixedOut.address,
       wif: fixedOut.wif,
+    });
+  });
+
+  test('reports an invalid ranged descriptor address hint as invalid, not missing', () => {
+    const { ranged } = descriptorFixtures();
+    const { rows } = parseImportInput(
+      `${ranged},sys1typoedaddress,MN desc`,
+      emptyPayload()
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'invalid',
+      code: 'descriptor_address_invalid',
     });
   });
 
