@@ -76,6 +76,16 @@ function rowStatusClass(row) {
   return 'is-negative';
 }
 
+function lineBounds(text, lineNo) {
+  const lines = String(text || '').split('\n');
+  if (lineNo < 1 || lineNo > lines.length) return null;
+  let start = 0;
+  for (let i = 0; i < lineNo - 1; i += 1) {
+    start += lines[i].length + 1;
+  }
+  return { start, end: start + lines[lineNo - 1].length };
+}
+
 export default function VaultImportModal({ open, onClose }) {
   const vault = useVault();
   const { user } = useAuth();
@@ -115,6 +125,39 @@ export default function VaultImportModal({ open, onClose }) {
       setValidating(entries.some((entry) => entry.wif !== ''));
     },
     [vault.data]
+  );
+
+  const selectPasteLine = useCallback(
+    (lineNo) => {
+      const bounds = lineBounds(paste, lineNo);
+      if (!bounds || !pasteRef.current) return;
+      const textarea = pasteRef.current;
+      textarea.focus();
+      textarea.setSelectionRange(bounds.start, bounds.end);
+
+      const lineHeight =
+        parseFloat(window.getComputedStyle(textarea).lineHeight) || 20;
+      textarea.scrollTop = Math.max(
+        0,
+        (lineNo - 1) * lineHeight - textarea.clientHeight / 2
+      );
+    },
+    [paste]
+  );
+
+  const removePasteLine = useCallback(
+    (lineNo) => {
+      const lines = paste.split('\n');
+      if (lineNo < 1 || lineNo > lines.length) return;
+      lines.splice(lineNo - 1, 1);
+      const nextPaste = lines.join('\n');
+      applyPastePreview(nextPaste);
+      setPaste(nextPaste);
+      setTimeout(() => {
+        if (pasteRef.current) pasteRef.current.focus();
+      }, 0);
+    },
+    [applyPastePreview, paste]
   );
 
   const canSave =
@@ -343,36 +386,71 @@ export default function VaultImportModal({ open, onClose }) {
               ) : null}
             </div>
             <ul className="import-rows__list">
-              {rows.map((r) => (
-                <li
-                  key={`${r.lineNo}:${r.wif}`}
-                  className={`import-row import-row--${r.kind}`}
-                  data-testid="vault-import-row"
-                >
-                  <span
-                    className={`status-chip ${rowStatusClass(r)} import-row__status`}
+              {rows.map((r) => {
+                const canEditSource =
+                  r.kind === 'invalid' || r.kind === 'duplicate';
+                return (
+                  <li
+                    key={`${r.lineNo}:${r.wif}`}
+                    className={`import-row import-row--${r.kind}${
+                      canEditSource ? ' import-row--actionable' : ''
+                    }`}
+                    data-testid="vault-import-row"
+                    onClick={
+                      canEditSource ? () => selectPasteLine(r.lineNo) : undefined
+                    }
+                    onKeyDown={
+                      canEditSource
+                        ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectPasteLine(r.lineNo);
+                            }
+                          }
+                        : undefined
+                    }
+                    role={canEditSource ? 'button' : undefined}
+                    tabIndex={canEditSource ? 0 : undefined}
                   >
-                    {rowStatusLabel(r)}
-                  </span>
-                  <span className="import-row__detail">
-                    {r.kind === 'valid' ? (
-                      <>
-                        <code className="import-row__addr">{r.address}</code>
-                        {r.label ? (
-                          <span className="import-row__label">
-                            {r.label}
-                          </span>
-                        ) : null}
-                      </>
-                    ) : (
-                      <code className="import-row__addr">
-                        Line {r.lineNo}
-                        {r.label ? ` — ${r.label}` : ''}
-                      </code>
-                    )}
-                  </span>
-                </li>
-              ))}
+                    <span
+                      className={`status-chip ${rowStatusClass(r)} import-row__status`}
+                    >
+                      {rowStatusLabel(r)}
+                    </span>
+                    <span className="import-row__detail">
+                      {r.kind === 'valid' ? (
+                        <>
+                          <code className="import-row__addr">{r.address}</code>
+                          {r.label ? (
+                            <span className="import-row__label">
+                              {r.label}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <code className="import-row__addr">
+                          Line {r.lineNo}
+                          {r.label ? ` — ${r.label}` : ''}
+                        </code>
+                      )}
+                    </span>
+                    {canEditSource ? (
+                      <button
+                        type="button"
+                        className="import-row__remove"
+                        aria-label={`Remove line ${r.lineNo}`}
+                        title={`Remove line ${r.lineNo}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removePasteLine(r.lineNo);
+                        }}
+                      >
+                        x
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ) : null}

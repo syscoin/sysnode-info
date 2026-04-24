@@ -184,6 +184,37 @@ describe('VaultImportModal — paste → validate', () => {
     // Nothing is importable — Save remains disabled.
     expect(screen.getByTestId('vault-import-save')).toBeDisabled();
   });
+
+  test('clicking an invalid row selects the offending textarea line', async () => {
+    const vault = unlockedVault();
+    mount({ vault });
+    const textarea = screen.getByTestId('vault-import-paste');
+    const text = `${VALID_WIF_1},MN 1\n${INVALID_WIF},bad row`;
+    pasteInto(textarea, text);
+    await waitForValidationDone();
+
+    const invalidRow = screen.getAllByTestId('vault-import-row')[1];
+    await userEvent.click(invalidRow);
+
+    const lineStart = text.indexOf(INVALID_WIF);
+    expect(textarea.selectionStart).toBe(lineStart);
+    expect(textarea.selectionEnd).toBe(text.length);
+  });
+
+  test('remove line action deletes the offending row from the paste', async () => {
+    const vault = unlockedVault();
+    mount({ vault });
+    const textarea = screen.getByTestId('vault-import-paste');
+    pasteInto(textarea, `${VALID_WIF_1},MN 1\n${INVALID_WIF},bad row`);
+    await waitForValidationDone();
+
+    await userEvent.click(screen.getByLabelText('Remove line 2'));
+
+    expect(textarea).toHaveValue(`${VALID_WIF_1},MN 1`);
+    await waitForValidationDone();
+    expect(screen.getAllByTestId('vault-import-row')).toHaveLength(1);
+    expect(screen.getByTestId('vault-import-save')).not.toBeDisabled();
+  });
 });
 
 describe('VaultImportModal — save flow (UNLOCKED)', () => {
