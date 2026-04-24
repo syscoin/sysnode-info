@@ -277,11 +277,11 @@ describe('ProposalStatus', () => {
   });
 
   test(
-    'prepared state surfaces the gobject prepare CLI fallback when dataHex + timeUnix are available (Codex round 5 P2)',
+    'prepared state surfaces the gobject_prepare CLI fallback when dataHex + timeUnix are available (Codex round 5 P2)',
     async () => {
       // Parity with the former wizard Submit step: users who want to
       // pay collateral from Syscoin-Qt instead of a wallet that can
-      // emit an OP_RETURN need the exact `gobject prepare` argv. Now
+      // emit an OP_RETURN need the exact `gobject_prepare` argv. Now
       // that /prepare redirects here, this page has to host that
       // fallback so the manual-pay path is not regressed.
       proposalService.getSubmission.mockResolvedValueOnce({
@@ -308,7 +308,7 @@ describe('ProposalStatus', () => {
       });
       expect(
         screen.getByTestId('proposal-status-cli-command')
-      ).toHaveTextContent(/gobject prepare 0 1 1700000000 deadbeef/);
+      ).toHaveTextContent(/gobject_prepare 0 1 1700000000 deadbeef/);
     }
   );
 

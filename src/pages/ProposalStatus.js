@@ -8,7 +8,7 @@ import { COLLATERAL_FEE_SATS } from '../lib/proposalForm';
 import { proposalService, HEX64_RE } from '../lib/proposalService';
 
 // Convert a 64-char big-endian proposal hash (the canonical display
-// form, matches `gobject list` output) to the 32-byte little-endian
+// form, matches `gobject_list` output) to the 32-byte little-endian
 // hex that must be pushed inside the collateral OP_RETURN. Core
 // reverses the internal hash bytes when rendering for display, so
 // the on-chain payload is that reversal. Kept local — the backend
@@ -360,7 +360,7 @@ export default function ProposalStatus() {
   // Transient "copied!" badge for the CLI snippet copy button. Keyed
   // by snippet id so we can support multiple copy targets without
   // them fighting over a single boolean. Right now there's only the
-  // `gobject-prepare` snippet, but keeping this shape avoids the
+  // `gobject_prepare` snippet, but keeping this shape avoids the
   // rewrite if/when we add another.
   const [copiedKey, setCopiedKey] = useState(null);
   // Start-over-from-failed flow. See the "Edit details" button in
@@ -598,7 +598,7 @@ export default function ProposalStatus() {
     }
   }
 
-  // "Copy to clipboard" for the gobject-prepare CLI snippet shown in
+  // "Copy to clipboard" for the gobject_prepare CLI snippet shown in
   // the prepared panel's <details>. Best-effort: on browsers that
   // refuse clipboard writes (e.g. insecure context, permission
   // denied) we fall back to a short "Copy failed" hint. The flash
@@ -936,7 +936,7 @@ export default function ProposalStatus() {
                         to paste below.
                       </p>
                       {(() => {
-                        const cliCommand = `gobject prepare ${
+                        const cliCommand = `gobject_prepare ${
                           submission.parentHash != null
                             ? String(submission.parentHash)
                             : '0'

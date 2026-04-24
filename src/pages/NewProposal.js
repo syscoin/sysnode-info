@@ -1853,7 +1853,7 @@ function SubmitStep({
         ? String(submission.timeUnix)
         : String(Math.floor(Date.now() / 1000));
     const dataHex = submission.dataHex || '';
-    return `gobject prepare ${parent} ${revision} ${time} ${dataHex}`;
+    return `gobject_prepare ${parent} ${revision} ${time} ${dataHex}`;
   }, [submission]);
 
   if (!prepared) {

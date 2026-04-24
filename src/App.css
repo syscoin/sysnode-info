@@ -4449,7 +4449,7 @@
    overflow the viewport on narrow screens (observed on the
    awaiting_collateral card at the browser's ~400px width). Allow
    mid-string breaks only when needed; short values stay on one
-   line. Scoped to <p> (not <pre>) so the `gobject prepare` CLI
+   line. Scoped to <p> (not <pre>) so the `gobject_prepare` CLI
    snippet inside `.proposal-wizard__cli` keeps control of its own
    wrapping rules. */
 .proposal-status__section p code {
@@ -4536,7 +4536,7 @@
 
 /* CLI snippet block with an adjacent copy button.
    -----------------------------------------------
-   Lets the user grab the `gobject prepare ...` line without
+   Lets the user grab the `gobject_prepare ...` line without
    triple-click-selecting the <pre>. On mobile the copy button
    stacks under the snippet for comfortable tap targets. */
 .proposal-status__cli-wrap {
