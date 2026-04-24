@@ -56,6 +56,7 @@ import { useVault } from '../context/VaultContext';
 
 const COPY_EMPTY_TITLE = 'Import voting keys';
 const COPY_UNLOCKED_TITLE = 'Add more voting keys';
+const VALIDATION_ROW_BATCH_SIZE = 25;
 
 function rowStatusLabel(row) {
   if (row.kind === 'pending') return 'Validating…';
@@ -180,6 +181,18 @@ export default function VaultImportModal({ open, onClose }) {
     setValidating(true);
     const isValidationCancelled = () =>
       cancelled || validationGenRef.current !== myGen;
+    const rowUpdates = new Map();
+    const flushRowUpdates = () => {
+      if (rowUpdates.size === 0) return;
+      const batch = new Map(rowUpdates);
+      rowUpdates.clear();
+      setRows((prev) =>
+        prev.map((row) => {
+          const nextRow = batch.get(row.lineNo);
+          return nextRow ? { ...row, ...nextRow } : row;
+        })
+      );
+    };
 
     (async () => {
       for (let i = 0; i < pendingEntries.length; i += 1) {
@@ -187,11 +200,13 @@ export default function VaultImportModal({ open, onClose }) {
           isCancelled: isValidationCancelled,
         });
         if (cancelled || validationGenRef.current !== myGen) return;
-        setRows((prev) =>
-          prev.map((row) =>
-            row.lineNo === result.lineNo ? { ...row, ...result } : row
-          )
-        );
+        rowUpdates.set(result.lineNo, result);
+        if (
+          rowUpdates.size >= VALIDATION_ROW_BATCH_SIZE ||
+          i === pendingEntries.length - 1
+        ) {
+          flushRowUpdates();
+        }
       }
       if (!cancelled && validationGenRef.current === myGen) {
         setValidating(false);
