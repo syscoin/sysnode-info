@@ -1,9 +1,11 @@
 const { HDKey } = require('@scure/bip32');
+const { bech32 } = require('@scure/base');
 
 const {
   addDescriptorChecksum,
   descriptorNeedsAddressHint,
   isDescriptorLike,
+  isVotingAddress,
   importFromDescriptor,
   importFromDescriptorAsync,
   validateDescriptor,
@@ -35,6 +37,14 @@ describe('descriptor helpers', () => {
     expect(descriptorNeedsAddressHint(ranged)).toBe(true);
   });
 
+  test('only accepts v0 P2WPKH voting addresses', () => {
+    const p2wshLike = bech32.encode(
+      'sys',
+      [0, ...bech32.toWords(new Uint8Array(32))]
+    );
+    expect(isVotingAddress(p2wshLike, 'mainnet')).toBe(false);
+  });
+
   test('imports a fixed private descriptor into a WIF + address pair', () => {
     const { fixed } = fixtureDescriptors();
     const out = importFromDescriptor(fixed);
@@ -51,6 +61,19 @@ describe('descriptor helpers', () => {
       code: 'descriptor_address_required',
       message:
         'descriptor_address_required: Ranged descriptors need the voting address too. Paste "<descriptor>,<address>" or add a label as "<descriptor>,<address>,<label>".',
+    });
+  });
+
+  test('rejects ranged descriptor hints that are not P2WPKH voting addresses', () => {
+    const { ranged } = fixtureDescriptors();
+    const p2wshLike = bech32.encode(
+      'sys',
+      [0, ...bech32.toWords(new Uint8Array(32))]
+    );
+    const out = validateDescriptor(ranged, { addressHint: p2wshLike });
+    expect(out).toMatchObject({
+      valid: false,
+      code: 'descriptor_address_invalid',
     });
   });
 

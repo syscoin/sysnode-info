@@ -193,7 +193,11 @@ function isVotingAddress(value, expectedNetwork) {
   try {
     const network = resolveNetwork(expectedNetwork);
     const decoded = bech32.decode(value);
-    return decoded.prefix.toLowerCase() === network.bech32Hrp;
+    if (decoded.prefix.toLowerCase() !== network.bech32Hrp) return false;
+    if (!Array.isArray(decoded.words) || decoded.words.length < 2) return false;
+    if (decoded.words[0] !== 0) return false;
+    const program = bech32.fromWords(decoded.words.slice(1));
+    return program.length === 20;
   } catch (_) {
     return false;
   }
