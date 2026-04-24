@@ -274,6 +274,16 @@ describe('parseImportInput', () => {
     });
   });
 
+  test('reports unsupported WIF-backed descriptor wrappers as descriptor errors', () => {
+    const descriptor = addDescriptorChecksum(`tr(${WIF_1})`);
+    const { rows } = parseImportInput(descriptor, emptyPayload());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'invalid',
+      code: 'descriptor_wrapper_unsupported',
+    });
+  });
+
   test('reports an invalid ranged descriptor address hint as invalid, not missing', () => {
     const { ranged } = descriptorFixtures();
     const { rows } = parseImportInput(

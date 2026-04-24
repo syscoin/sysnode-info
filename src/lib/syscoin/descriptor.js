@@ -173,7 +173,7 @@ function extractKeyExpression(cleaned, wrapper) {
 function isDescriptorLike(value) {
   if (typeof value !== 'string') return false;
   const s = value.trim();
-  if (s.length === 0 || !supportedWrapper(stripChecksum(s))) return false;
+  if (s.length === 0 || !/^[a-z0-9_]+\(/i.test(stripChecksum(s))) return false;
   return /(?:xprv|tprv|[KL5c9])[1-9A-HJ-NP-Za-km-z]+/.test(s);
 }
 

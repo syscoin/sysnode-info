@@ -30,6 +30,7 @@ describe('descriptor helpers', () => {
     const { fixed } = fixtureDescriptors();
     expect(isDescriptorLike(fixed)).toBe(true);
     expect(isDescriptorLike(addDescriptorChecksum(`wpkh(${WIF_1})`))).toBe(true);
+    expect(isDescriptorLike(addDescriptorChecksum(`tr(${WIF_1})`))).toBe(true);
     expect(isDescriptorLike('KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn')).toBe(
       false
     );
