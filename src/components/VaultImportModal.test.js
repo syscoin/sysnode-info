@@ -1,10 +1,15 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HDKey } from '@scure/bip32';
 
 import VaultImportModal from './VaultImportModal';
 import * as VaultCtx from '../context/VaultContext';
 import * as AuthCtx from '../context/AuthContext';
+import {
+  addDescriptorChecksum,
+  importFromDescriptor,
+} from '../lib/syscoin/descriptor';
 
 // user-event v13 (pinned in this repo) is strict about `userEvent.paste`'s
 // signature and throws on plain textareas in jsdom, so we stub the paste
@@ -13,6 +18,14 @@ import * as AuthCtx from '../context/AuthContext';
 // more faithful `await user.paste(text)` — only needs fixing here.
 function pasteInto(el, text) {
   fireEvent.change(el, { target: { value: text } });
+}
+
+async function waitForValidationDone() {
+  await waitFor(() =>
+    expect(screen.getByTestId('vault-import-save')).not.toHaveTextContent(
+      /validating/i
+    )
+  );
 }
 
 // VaultImportModal unit tests.
@@ -28,6 +41,17 @@ const VALID_WIF_2 = 'KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4';
 // checksum failure.
 const INVALID_WIF =
   VALID_WIF_1.slice(0, -1) + (VALID_WIF_1.slice(-1) === 'A' ? 'B' : 'A');
+
+function descriptorFixtures() {
+  const seed = new Uint8Array(32).fill(7);
+  const root = HDKey.fromMasterSeed(seed);
+  const xprv = root.privateExtendedKey;
+  const descriptor = addDescriptorChecksum(`wpkh(${xprv}/0/5)`);
+  return {
+    descriptor,
+    imported: importFromDescriptor(descriptor),
+  };
+}
 
 function mount({ vault, user, onClose = jest.fn() } = {}) {
   const auth = {
@@ -118,6 +142,7 @@ describe('VaultImportModal — paste → validate', () => {
     pasteInto(textarea, text);
 
     const rowsContainer = await screen.findByTestId('vault-import-rows');
+    await waitForValidationDone();
     const rows = rowsContainer.querySelectorAll('[data-testid="vault-import-row"]');
     expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveClass('import-row--valid');
@@ -151,6 +176,7 @@ describe('VaultImportModal — paste → validate', () => {
     });
     mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await waitForValidationDone();
     const rows = screen.getAllByTestId('vault-import-row');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveClass('import-row--duplicate');
@@ -167,6 +193,9 @@ describe('VaultImportModal — save flow (UNLOCKED)', () => {
     pasteInto(
       screen.getByTestId('vault-import-paste'),
       `${VALID_WIF_1},MN 1\n${VALID_WIF_2}`
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
     );
     await userEvent.click(screen.getByTestId('vault-import-save'));
     await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
@@ -186,6 +215,29 @@ describe('VaultImportModal — save flow (UNLOCKED)', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
+  test('descriptor paste stores the derived WIF while preserving the label', async () => {
+    const vault = unlockedVault();
+    const { onClose } = mount({ vault });
+    const { descriptor, imported } = descriptorFixtures();
+    pasteInto(
+      screen.getByTestId('vault-import-paste'),
+      `${descriptor},descriptor row,`
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+    await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
+    const nextPayload = vault.save.mock.calls[0][0];
+    expect(nextPayload.keys).toHaveLength(1);
+    expect(nextPayload.keys[0]).toMatchObject({
+      label: 'descriptor row',
+      wif: imported.wif,
+      address: imported.address,
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
   test('surfaces a typed save error and leaves the modal open', async () => {
     const vault = unlockedVault({
       save: jest.fn().mockRejectedValue(
@@ -194,10 +246,27 @@ describe('VaultImportModal — save flow (UNLOCKED)', () => {
     });
     const { onClose } = mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
     await userEvent.click(screen.getByTestId('vault-import-save'));
     const banner = await screen.findByTestId('vault-import-error');
     expect(banner).toHaveTextContent(/changed in another tab/i);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('editing the paste disables Save before revalidation finishes', async () => {
+    const vault = unlockedVault();
+    mount({ vault });
+    const textarea = screen.getByTestId('vault-import-paste');
+    const saveButton = screen.getByTestId('vault-import-save');
+
+    pasteInto(textarea, VALID_WIF_1);
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+
+    pasteInto(textarea, INVALID_WIF);
+    expect(saveButton).toBeDisabled();
+    expect(saveButton).toHaveTextContent(/validating/i);
   });
 });
 
@@ -212,7 +281,9 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
       screen.getByTestId('vault-import-password'),
       'correct-horse-battery'
     );
-    expect(screen.getByTestId('vault-import-save')).not.toBeDisabled();
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
   });
 
   test('forwards {password, email} to vault.save on first write', async () => {
@@ -222,6 +293,9 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     await userEvent.type(
       screen.getByTestId('vault-import-password'),
       'my-secret'
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
     );
     await userEvent.click(screen.getByTestId('vault-import-save'));
     await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
@@ -254,6 +328,9 @@ describe('VaultImportModal — dismiss', () => {
     });
     const { onClose } = mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
     await userEvent.click(screen.getByTestId('vault-import-save'));
     // Wait until vault.save has been invoked — that's the modal's
     // `saving` window opening.

@@ -20,11 +20,18 @@
 // doesn't have to re-run secp256k1 on every render (hundreds of keys
 // = dozens of ms of CPU per render), and a future "tamper check at
 // unlock" can compare against a fresh derivation if we ever want it.
-// The address is a function of the wif, so keeping both in sync is a
-// property of the helpers below — nothing external constructs a key
-// record by hand.
+// The address is a function of the private key, so keeping both in sync
+// is a property of the helpers below — nothing external constructs a
+// key record by hand. Descriptor imports are normalised into the same
+// canonical WIF + address shape before they ever reach the vault.
 
 const { validateWif } = require('./syscoin/wif');
+const {
+  descriptorNeedsAddressHint,
+  isDescriptorLike,
+  validateDescriptor,
+  validateDescriptorAsync,
+} = require('./syscoin/descriptor');
 
 const SCHEMA_VERSION = 1;
 
@@ -80,10 +87,20 @@ function normalisePayload(payload) {
   };
 }
 
-// Split a single pasted line into (wif, label). Accepts
-//   <wif>
-//   <wif>,<label>
-//   <wif>\t<label>
+function cleanTrailingCsvLabel(label) {
+  return String(label || '')
+    .replace(/\s*,+\s*$/, '')
+    .trim();
+}
+
+// Split a single pasted line into a generic import tuple. Accepts
+//   <key>
+//   <key>,
+//   <key>,<label>
+//   <key>\t<label>
+//   <descriptor>,<address>
+//   <descriptor>,<address>,<label>
+//
 // Leading/trailing whitespace on the whole line is stripped here (NOT
 // inside parseWif — the library is strict for a reason), as is a
 // UTF-8 BOM which Windows/Excel CSV exports sometimes prepend. Blank
@@ -95,20 +112,127 @@ function parseImportLine(line) {
   // Strip trailing CR that Windows pastes leave in; the outer
   // splitter handles \n but leaves \r on each line.
   trimmed = trimmed.replace(/\r$/, '');
-  // Comma-first, then tab — mirrors both "CSV exported from Excel"
-  // and "copy-pasted from a spreadsheet" cases.
-  let sep = -1;
-  for (const s of [',', '\t']) {
-    const i = trimmed.indexOf(s);
-    if (i !== -1) {
-      sep = i;
-      break;
-    }
+  const delim = trimmed.includes('\t') ? '\t' : trimmed.includes(',') ? ',' : null;
+  if (!delim) return { wif: trimmed, label: '', addressHint: '' };
+
+  const parts = trimmed.split(delim).map((part) => part.trim());
+  const wif = parts.shift() || '';
+  let addressHint = '';
+  if (
+    isDescriptorLike(wif) &&
+    descriptorNeedsAddressHint(wif) &&
+    parts.length > 0
+  ) {
+    addressHint = parts.shift() || '';
   }
-  if (sep === -1) return { wif: trimmed, label: '' };
-  const wif = trimmed.slice(0, sep).trim();
-  const label = trimmed.slice(sep + 1).trim();
-  return { wif, label };
+  const label = cleanTrailingCsvLabel(parts.join(delim === ',' ? ', ' : delim));
+  return { wif, label, addressHint };
+}
+
+function summariseRows(rows) {
+  return {
+    total: rows.length,
+    valid: rows.filter((r) => r.kind === 'valid').length,
+    invalid: rows.filter((r) => r.kind === 'invalid').length,
+    duplicate: rows.filter((r) => r.kind === 'duplicate').length,
+    pending: rows.filter((r) => r.kind === 'pending').length,
+  };
+}
+
+function previewImportInput(text) {
+  const entries = [];
+  const rows = [];
+  const lines = String(text || '').split(/\n/);
+  lines.forEach((raw, idx) => {
+    const parsed = parseImportLine(raw);
+    if (parsed === null) return;
+    const lineNo = idx + 1;
+    const entry = { ...parsed, lineNo };
+    entries.push(entry);
+    if (parsed.wif === '') {
+      rows.push({
+        kind: 'invalid',
+        lineNo,
+        wif: '',
+        label: parsed.label,
+        code: 'wif_empty',
+        message: 'Missing WIF on this line.',
+      });
+    } else {
+      rows.push({
+        kind: 'pending',
+        lineNo,
+        wif: parsed.wif,
+        label: parsed.label,
+        message: 'Validating…',
+      });
+    }
+  });
+  return { entries, rows };
+}
+
+async function validateImportEntryAsync(entry, state, opts = {}) {
+  const { wif, label, addressHint, lineNo } = entry;
+  if (wif === '') {
+    return {
+      kind: 'invalid',
+      lineNo,
+      wif: '',
+      label,
+      code: 'wif_empty',
+      message: 'Missing WIF on this line.',
+    };
+  }
+  const v = isDescriptorLike(wif)
+    ? await validateDescriptorAsync(wif, {
+        addressHint,
+        isCancelled: opts.isCancelled,
+      })
+    : validateWif(wif);
+  if (!v.valid) {
+    return {
+      kind: 'invalid',
+      lineNo,
+      wif,
+      label,
+      code: v.code,
+      message: v.message,
+    };
+  }
+  const canonicalWif = v.wif || wif;
+  if (state.seenWif.has(canonicalWif) || state.seenAddr.has(v.address)) {
+    return {
+      kind: 'duplicate',
+      lineNo,
+      wif: canonicalWif,
+      label,
+      address: v.address,
+      reason: 'already_in_vault',
+    };
+  }
+  if (
+    state.wifSeenThisBatch.has(canonicalWif) ||
+    state.addrSeenThisBatch.has(v.address)
+  ) {
+    return {
+      kind: 'duplicate',
+      lineNo,
+      wif: canonicalWif,
+      label,
+      address: v.address,
+      reason: 'duplicate_in_paste',
+    };
+  }
+  state.wifSeenThisBatch.add(canonicalWif);
+  state.addrSeenThisBatch.add(v.address);
+  return {
+    kind: 'valid',
+    lineNo,
+    wif: canonicalWif,
+    label,
+    address: v.address,
+    compressed: v.compressed,
+  };
 }
 
 // Turn a blob of pasted text into per-row validation results. We
@@ -135,7 +259,7 @@ function parseImportInput(text, vault) {
     const parsed = parseImportLine(raw);
     if (parsed === null) return; // blank / comment-style line
     const lineNo = idx + 1;
-    const { wif, label } = parsed;
+    const { wif, label, addressHint } = parsed;
     if (wif === '') {
       rows.push({
         kind: 'invalid',
@@ -147,7 +271,9 @@ function parseImportInput(text, vault) {
       });
       return;
     }
-    const v = validateWif(wif);
+    const v = isDescriptorLike(wif)
+      ? validateDescriptor(wif, { addressHint })
+      : validateWif(wif);
     if (!v.valid) {
       rows.push({
         kind: 'invalid',
@@ -163,48 +289,42 @@ function parseImportInput(text, vault) {
     // precedence over intra-batch duplicates — UI copy is clearer
     // when we distinguish "already in your vault" from "appears
     // twice in your paste".
-    if (seenWif.has(wif) || seenAddr.has(v.address)) {
+    const canonicalWif = v.wif || wif;
+    if (seenWif.has(canonicalWif) || seenAddr.has(v.address)) {
       rows.push({
         kind: 'duplicate',
         lineNo,
-        wif,
+        wif: canonicalWif,
         label,
         address: v.address,
         reason: 'already_in_vault',
       });
       return;
     }
-    if (wifSeenThisBatch.has(wif) || addrSeenThisBatch.has(v.address)) {
+    if (wifSeenThisBatch.has(canonicalWif) || addrSeenThisBatch.has(v.address)) {
       rows.push({
         kind: 'duplicate',
         lineNo,
-        wif,
+        wif: canonicalWif,
         label,
         address: v.address,
         reason: 'duplicate_in_paste',
       });
       return;
     }
-    wifSeenThisBatch.add(wif);
+    wifSeenThisBatch.add(canonicalWif);
     addrSeenThisBatch.add(v.address);
     rows.push({
       kind: 'valid',
       lineNo,
-      wif,
+      wif: canonicalWif,
       label,
       address: v.address,
       compressed: v.compressed,
     });
   });
 
-  const summary = {
-    total: rows.length,
-    valid: rows.filter((r) => r.kind === 'valid').length,
-    invalid: rows.filter((r) => r.kind === 'invalid').length,
-    duplicate: rows.filter((r) => r.kind === 'duplicate').length,
-  };
-
-  return { rows, summary };
+  return { rows, summary: summariseRows(rows) };
 }
 
 // Extract the subset of rows we'd actually persist and turn them into
@@ -257,6 +377,9 @@ module.exports = {
   normalisePayload,
   newKeyId,
   parseImportLine,
+  summariseRows,
+  previewImportInput,
+  validateImportEntryAsync,
   parseImportInput,
   buildKeysFromValidRows,
   addKeys,

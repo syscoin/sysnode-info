@@ -9,6 +9,11 @@ const {
   removeKey,
   updateKeyLabel,
 } = require('./vaultData');
+const { HDKey } = require('@scure/bip32');
+const {
+  addDescriptorChecksum,
+  importFromDescriptor,
+} = require('./syscoin/descriptor');
 
 // Canonical fixture — the known pk=1 Syscoin mainnet WIF / bech32
 // address (pinned in syscoin/wif.test.js so any drift shows up there
@@ -26,6 +31,16 @@ const ADDR_1 = 'sys1qw508d6qejxtdg4y5r3zarvary0c5xw7kyhct58';
 const WIF_2 = 'KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4';
 // Intentionally malformed: single-char tweak to break checksum.
 const WIF_BAD_CHECKSUM = WIF_1.slice(0, -1) + (WIF_1.slice(-1) === 'A' ? 'B' : 'A');
+
+function descriptorFixtures() {
+  const seed = new Uint8Array(32).fill(7);
+  const root = HDKey.fromMasterSeed(seed);
+  const xprv = root.privateExtendedKey;
+  const fixed = addDescriptorChecksum(`wpkh(${xprv}/0/5)`);
+  const ranged = addDescriptorChecksum(`wpkh(${xprv}/0/*)`);
+  const fixedOut = importFromDescriptor(fixed);
+  return { fixed, ranged, fixedOut };
+}
 
 describe('normalisePayload', () => {
   test('maps undefined / null / non-object input to emptyPayload()', () => {
@@ -74,23 +89,46 @@ describe('parseImportLine', () => {
   });
 
   test('accepts "<wif>" with no label', () => {
-    expect(parseImportLine(WIF_1)).toEqual({ wif: WIF_1, label: '' });
+    expect(parseImportLine(WIF_1)).toEqual({
+      wif: WIF_1,
+      addressHint: '',
+      label: '',
+    });
+  });
+
+  test('accepts "<wif>," with an empty label (CSV trailing delimiter)', () => {
+    expect(parseImportLine(`${WIF_1},`)).toEqual({
+      wif: WIF_1,
+      label: '',
+      addressHint: '',
+    });
   });
 
   test('splits on the first comma and keeps commas in the label', () => {
     expect(parseImportLine(`${WIF_1},MN 1`)).toEqual({
       wif: WIF_1,
+      addressHint: '',
       label: 'MN 1',
     });
     expect(parseImportLine(`${WIF_1},home, rack B`)).toEqual({
       wif: WIF_1,
+      addressHint: '',
       label: 'home, rack B',
+    });
+  });
+
+  test('strips CSV-style trailing commas from labels', () => {
+    expect(parseImportLine(`${WIF_1},MN 1,`)).toEqual({
+      wif: WIF_1,
+      addressHint: '',
+      label: 'MN 1',
     });
   });
 
   test('accepts a tab-separated label (common from spreadsheets)', () => {
     expect(parseImportLine(`${WIF_1}\tMN 1`)).toEqual({
       wif: WIF_1,
+      addressHint: '',
       label: 'MN 1',
     });
   });
@@ -98,6 +136,7 @@ describe('parseImportLine', () => {
   test('strips a UTF-8 BOM from the start of the line (Excel exports)', () => {
     expect(parseImportLine(`\uFEFF${WIF_1},MN`)).toEqual({
       wif: WIF_1,
+      addressHint: '',
       label: 'MN',
     });
   });
@@ -105,7 +144,35 @@ describe('parseImportLine', () => {
   test('strips a trailing \\r that Windows-style input leaves behind', () => {
     expect(parseImportLine(`${WIF_1},MN\r`)).toEqual({
       wif: WIF_1,
+      addressHint: '',
       label: 'MN',
+    });
+  });
+
+  test('recognises descriptor,address,label rows', () => {
+    const { ranged, fixedOut } = descriptorFixtures();
+    expect(parseImportLine(`${ranged},${fixedOut.address},MN 1`)).toEqual({
+      wif: ranged,
+      addressHint: fixedOut.address,
+      label: 'MN 1',
+    });
+  });
+
+  test('treats the second field as the address hint for ranged descriptors even when invalid', () => {
+    const { ranged } = descriptorFixtures();
+    expect(parseImportLine(`${ranged},sys1typoedaddress,MN 1`)).toEqual({
+      wif: ranged,
+      addressHint: 'sys1typoedaddress',
+      label: 'MN 1',
+    });
+  });
+
+  test('keeps address-looking labels on fixed descriptors', () => {
+    const { fixed, fixedOut } = descriptorFixtures();
+    expect(parseImportLine(`${fixed},${fixedOut.address}`)).toEqual({
+      wif: fixed,
+      addressHint: '',
+      label: fixedOut.address,
     });
   });
 });
@@ -125,10 +192,12 @@ describe('parseImportInput', () => {
   });
 
   test('returns per-row results + summary for a mixed paste', () => {
+    const { fixed } = descriptorFixtures();
     const text = [
       '', // blank → skipped
       `${WIF_1},MN 1`,
       WIF_2,
+      `${fixed},descriptor`,
       '',
       WIF_BAD_CHECKSUM,
       `${WIF_1},duplicate paste`, // intra-batch duplicate of row 1
@@ -137,20 +206,76 @@ describe('parseImportInput', () => {
     const { rows, summary } = parseImportInput(text, emptyPayload());
 
     expect(summary).toEqual({
-      total: 4,
-      valid: 2,
+      total: 5,
+      valid: 3,
       invalid: 1,
       duplicate: 1,
+      pending: 0,
     });
 
     expect(rows[0]).toMatchObject({ kind: 'valid', label: 'MN 1' });
     expect(rows[0]).toHaveProperty('address');
     expect(rows[1]).toMatchObject({ kind: 'valid', wif: WIF_2, label: '' });
-    expect(rows[2]).toMatchObject({ kind: 'invalid' });
-    expect(rows[2].code).toMatch(/^wif_/);
-    expect(rows[3]).toMatchObject({
+    expect(rows[2]).toMatchObject({ kind: 'valid', label: 'descriptor' });
+    expect(rows[2]).toHaveProperty('address');
+    expect(rows[2].wif).toMatch(/^[KL]/);
+    expect(rows[3]).toMatchObject({ kind: 'invalid' });
+    expect(rows[3].code).toMatch(/^wif_/);
+    expect(rows[4]).toMatchObject({
       kind: 'duplicate',
       reason: 'duplicate_in_paste',
+    });
+  });
+
+  test('requires an address hint for ranged descriptors', () => {
+    const { ranged } = descriptorFixtures();
+    const { rows } = parseImportInput(ranged, emptyPayload());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'invalid',
+      code: 'descriptor_address_required',
+    });
+  });
+
+  test('accepts ranged descriptors when a voting address is supplied', () => {
+    const { ranged, fixedOut } = descriptorFixtures();
+    const { rows } = parseImportInput(
+      `${ranged},${fixedOut.address},MN desc`,
+      emptyPayload()
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'valid',
+      label: 'MN desc',
+      address: fixedOut.address,
+      wif: fixedOut.wif,
+    });
+  });
+
+  test('reports an invalid ranged descriptor address hint as invalid, not missing', () => {
+    const { ranged } = descriptorFixtures();
+    const { rows } = parseImportInput(
+      `${ranged},sys1typoedaddress,MN desc`,
+      emptyPayload()
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'invalid',
+      code: 'descriptor_address_invalid',
+    });
+  });
+
+  test('preserves address-looking labels on fixed descriptors', () => {
+    const { fixed, fixedOut } = descriptorFixtures();
+    const { rows } = parseImportInput(
+      `${fixed},${fixedOut.address}`,
+      emptyPayload()
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'valid',
+      label: fixedOut.address,
+      address: fixedOut.address,
     });
   });
 
@@ -182,23 +307,24 @@ describe('parseImportInput', () => {
   test('tolerates undefined / null text input', () => {
     expect(parseImportInput(undefined, emptyPayload())).toEqual({
       rows: [],
-      summary: { total: 0, valid: 0, invalid: 0, duplicate: 0 },
+      summary: { total: 0, valid: 0, invalid: 0, duplicate: 0, pending: 0 },
     });
     expect(parseImportInput(null, emptyPayload())).toEqual({
       rows: [],
-      summary: { total: 0, valid: 0, invalid: 0, duplicate: 0 },
+      summary: { total: 0, valid: 0, invalid: 0, duplicate: 0, pending: 0 },
     });
   });
 });
 
 describe('buildKeysFromValidRows', () => {
   test('drops invalid/duplicate rows and produces canonical records', () => {
+    const { fixed, fixedOut } = descriptorFixtures();
     const { rows } = parseImportInput(
-      `${WIF_1},MN 1\n${WIF_BAD_CHECKSUM}\n${WIF_2}`,
+      `${WIF_1},MN 1\n${WIF_BAD_CHECKSUM}\n${fixed},from descriptor\n${WIF_2}`,
       emptyPayload()
     );
     const keys = buildKeysFromValidRows(rows, 1_700_000_000_000);
-    expect(keys).toHaveLength(2);
+    expect(keys).toHaveLength(3);
     for (const k of keys) {
       expect(typeof k.id).toBe('string');
       expect(k.createdAt).toBe(1_700_000_000_000);
@@ -206,7 +332,12 @@ describe('buildKeysFromValidRows', () => {
       expect(k.address).toMatch(/^sys1q/);
     }
     expect(keys[0].label).toBe('MN 1');
-    expect(keys[1].label).toBe('');
+    expect(keys[1]).toMatchObject({
+      label: 'from descriptor',
+      wif: fixedOut.wif,
+      address: fixedOut.address,
+    });
+    expect(keys[2].label).toBe('');
   });
 
   test('gives every key a fresh id even when called twice with the same rows', () => {
