@@ -165,11 +165,13 @@ export default function VaultImportModal({ open, onClose }) {
 
     let cancelled = false;
     setValidating(true);
+    const isValidationCancelled = () =>
+      cancelled || validationGenRef.current !== myGen;
 
     (async () => {
       for (let i = 0; i < pendingEntries.length; i += 1) {
         const result = await validateImportEntryAsync(pendingEntries[i], state, {
-          isCancelled: () => cancelled || validationGenRef.current !== myGen,
+          isCancelled: isValidationCancelled,
         });
         if (cancelled || validationGenRef.current !== myGen) return;
         setRows((prev) =>
@@ -258,7 +260,7 @@ export default function VaultImportModal({ open, onClose }) {
           Paste one voting WIF or private descriptor per line. You can
           optionally add a label after a comma, for example{' '}
           <code>KwDi…,MN&nbsp;1</code>. Fixed descriptors can be pasted on
-          their own; ranged descriptors ending in <code>/*</code> also
+          their own; ranged descriptors ending in <code>{'/*'}</code> also
           need the voting address, for example{' '}
           <code>{'<descriptor>,sys1…,MN 1'}</code>. Keys are validated in
           your browser before anything is encrypted or sent — the paste
