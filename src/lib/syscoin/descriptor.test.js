@@ -1,6 +1,7 @@
 const { HDKey } = require('@scure/bip32');
 
 const {
+  descriptorNeedsAddressHint,
   isDescriptorLike,
   importFromDescriptor,
   importFromDescriptorAsync,
@@ -25,6 +26,12 @@ describe('descriptor helpers', () => {
     expect(isDescriptorLike('KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn')).toBe(
       false
     );
+  });
+
+  test('detects when a descriptor really needs an address hint', () => {
+    const { fixed, ranged } = fixtureDescriptors();
+    expect(descriptorNeedsAddressHint(fixed)).toBe(false);
+    expect(descriptorNeedsAddressHint(ranged)).toBe(true);
   });
 
   test('imports a fixed private descriptor into a WIF + address pair', () => {

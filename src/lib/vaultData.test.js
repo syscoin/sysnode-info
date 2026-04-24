@@ -154,6 +154,15 @@ describe('parseImportLine', () => {
       label: 'MN 1',
     });
   });
+
+  test('keeps address-looking labels on fixed descriptors', () => {
+    const { fixed, fixedOut } = descriptorFixtures();
+    expect(parseImportLine(`${fixed},${fixedOut.address}`)).toEqual({
+      wif: fixed,
+      addressHint: '',
+      label: fixedOut.address,
+    });
+  });
 });
 
 describe('parseImportInput', () => {
@@ -228,6 +237,20 @@ describe('parseImportInput', () => {
       label: 'MN desc',
       address: fixedOut.address,
       wif: fixedOut.wif,
+    });
+  });
+
+  test('preserves address-looking labels on fixed descriptors', () => {
+    const { fixed, fixedOut } = descriptorFixtures();
+    const { rows } = parseImportInput(
+      `${fixed},${fixedOut.address}`,
+      emptyPayload()
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'valid',
+      label: fixedOut.address,
+      address: fixedOut.address,
     });
   });
 

@@ -61,6 +61,15 @@ function isDescriptorLike(value) {
   );
 }
 
+function descriptorNeedsAddressHint(value) {
+  if (!isDescriptorLike(value)) return false;
+  try {
+    return parsePrivateDescriptor(String(value).trim()).ranged;
+  } catch (_) {
+    return false;
+  }
+}
+
 function isVotingAddress(value, expectedNetwork) {
   if (typeof value !== 'string' || value.length === 0) return false;
   try {
@@ -341,6 +350,7 @@ async function validateDescriptorAsync(descriptor, opts) {
 module.exports = {
   RANGE_SCAN_LIMIT,
   RANGE_SCAN_YIELD_EVERY,
+  descriptorNeedsAddressHint,
   isDescriptorLike,
   isVotingAddress,
   isAnySysVotingAddress,

@@ -27,6 +27,7 @@
 
 const { validateWif } = require('./syscoin/wif');
 const {
+  descriptorNeedsAddressHint,
   isDescriptorLike,
   isAnySysVotingAddress,
   validateDescriptor,
@@ -118,7 +119,12 @@ function parseImportLine(line) {
   const parts = trimmed.split(delim).map((part) => part.trim());
   const wif = parts.shift() || '';
   let addressHint = '';
-  if (isDescriptorLike(wif) && parts.length > 0 && isAnySysVotingAddress(parts[0])) {
+  if (
+    isDescriptorLike(wif) &&
+    descriptorNeedsAddressHint(wif) &&
+    parts.length > 0 &&
+    isAnySysVotingAddress(parts[0])
+  ) {
     addressHint = parts.shift() || '';
   }
   const label = cleanTrailingCsvLabel(parts.join(delim === ',' ? ', ' : delim));
