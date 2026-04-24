@@ -7,9 +7,12 @@ import React, {
 } from 'react';
 
 import {
-  parseImportInput,
   buildKeysFromValidRows,
   addKeys,
+  normalisePayload,
+  previewImportInput,
+  summariseRows,
+  validateImportEntryAsync,
 } from '../lib/vaultData';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
@@ -19,11 +22,16 @@ import { useVault } from '../context/VaultContext';
 // Two-phase import UX:
 //
 //   1. Paste → Validate
-//      User pastes one-WIF-per-line or `<wif>,<label>`. We run every
-//      line through the WIF validator and render per-row status
-//      (valid / invalid / duplicate). NOTHING persists in this phase;
-//      no network I/O happens. The user can iterate on the paste
-//      until the summary looks right.
+//      User pastes one secret per line. Supported forms:
+//        * `<wif>`
+//        * `<wif>,<label>`
+//        * `<descriptor>`
+//        * `<descriptor>,<address>`
+//        * `<descriptor>,<address>,<label>`
+//      Every line is validated locally and rendered as valid / invalid /
+//      duplicate. NOTHING persists in this phase; no network I/O
+//      happens. The user can iterate on the paste until the summary
+//      looks right.
 //
 //   2. Validate → Save
 //      Confirmed import calls vault.save() with the new combined
@@ -50,6 +58,7 @@ const COPY_EMPTY_TITLE = 'Import voting keys';
 const COPY_UNLOCKED_TITLE = 'Add more voting keys';
 
 function rowStatusLabel(row) {
+  if (row.kind === 'pending') return 'Validating…';
   if (row.kind === 'valid') return 'Ready';
   if (row.kind === 'duplicate') {
     return row.reason === 'already_in_vault'
@@ -60,6 +69,7 @@ function rowStatusLabel(row) {
 }
 
 function rowStatusClass(row) {
+  if (row.kind === 'pending') return 'is-warning';
   if (row.kind === 'valid') return 'is-positive';
   if (row.kind === 'duplicate') return 'is-warning';
   return 'is-negative';
@@ -73,8 +83,11 @@ export default function VaultImportModal({ open, onClose }) {
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [validating, setValidating] = useState(false);
 
   const pasteRef = useRef(null);
+  const validationGenRef = useRef(0);
 
   // Latest-`saving` ref. The ESC keydown handler is registered in an
   // effect keyed only on `open` so the listener isn't churned on every
@@ -88,16 +101,11 @@ export default function VaultImportModal({ open, onClose }) {
 
   const requiresPassword = vault.isEmpty;
 
-  // Validation is pure / cheap (a few thousand rows takes <10ms), so
-  // we derive it on every render. If the paste grows huge we can
-  // memoise; for now `useMemo` is overkill.
-  const { rows, summary } = useMemo(
-    () => parseImportInput(paste, vault.data || undefined),
-    [paste, vault.data]
-  );
+  const summary = useMemo(() => summariseRows(rows), [rows]);
 
   const canSave =
     !saving &&
+    !validating &&
     summary.valid > 0 &&
     (!requiresPassword || password.length > 0);
 
@@ -106,10 +114,13 @@ export default function VaultImportModal({ open, onClose }) {
   // is obvious.
   useEffect(() => {
     if (!open) {
+      validationGenRef.current += 1;
       setPaste('');
       setPassword('');
       setSaving(false);
       setError(null);
+      setRows([]);
+      setValidating(false);
       return undefined;
     }
     const t = setTimeout(() => {
@@ -128,6 +139,62 @@ export default function VaultImportModal({ open, onClose }) {
       window.removeEventListener('keydown', onKey);
     };
   }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const myGen = ++validationGenRef.current;
+    const { entries, rows: pendingRows } = previewImportInput(
+      paste,
+      vault.data || undefined
+    );
+    setRows(pendingRows);
+
+    const pendingEntries = entries.filter((e) => e.wif !== '');
+    if (pendingEntries.length === 0) {
+      setValidating(false);
+      return undefined;
+    }
+
+    const base = normalisePayload(vault.data || undefined);
+    const state = {
+      seenAddr: new Set(base.keys.map((k) => k.address)),
+      seenWif: new Set(base.keys.map((k) => k.wif)),
+      addrSeenThisBatch: new Set(),
+      wifSeenThisBatch: new Set(),
+    };
+
+    let cancelled = false;
+    setValidating(true);
+
+    (async () => {
+      for (let i = 0; i < pendingEntries.length; i += 1) {
+        const result = await validateImportEntryAsync(pendingEntries[i], state, {
+          isCancelled: () => cancelled || validationGenRef.current !== myGen,
+        });
+        if (cancelled || validationGenRef.current !== myGen) return;
+        setRows((prev) =>
+          prev.map((row) =>
+            row.lineNo === result.lineNo ? { ...row, ...result } : row
+          )
+        );
+      }
+      if (!cancelled && validationGenRef.current === myGen) {
+        setValidating(false);
+      }
+    })().catch((e) => {
+      if (
+        !cancelled &&
+        validationGenRef.current === myGen &&
+        ((e && e.code) || '') !== 'validation_cancelled'
+      ) {
+        setValidating(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, paste, vault.data]);
 
   const onSave = useCallback(
     async function onSave() {
@@ -188,10 +255,13 @@ export default function VaultImportModal({ open, onClose }) {
         </div>
 
         <p className="auth-card__hint">
-          Paste one voting WIF per line. You can optionally add a label
-          after a comma, for example{' '}
-          <code>KwDi…,MN&nbsp;1</code>. Keys are validated in your
-          browser before anything is encrypted or sent — the paste
+          Paste one voting WIF or private descriptor per line. You can
+          optionally add a label after a comma, for example{' '}
+          <code>KwDi…,MN&nbsp;1</code>. Fixed descriptors can be pasted on
+          their own; ranged descriptors ending in <code>/*</code> also
+          need the voting address, for example{' '}
+          <code>{'<descriptor>,sys1…,MN 1'}</code>. Keys are validated in
+          your browser before anything is encrypted or sent — the paste
           never leaves this tab in the clear.
         </p>
 
@@ -222,6 +292,11 @@ export default function VaultImportModal({ open, onClose }) {
               <span className="status-chip is-positive">
                 {summary.valid} ready
               </span>{' '}
+              {summary.pending > 0 ? (
+                <span className="status-chip is-warning">
+                  {summary.pending} validating
+                </span>
+              ) : null}{' '}
               {summary.duplicate > 0 ? (
                 <span className="status-chip is-warning">
                   {summary.duplicate} duplicate
@@ -324,6 +399,8 @@ export default function VaultImportModal({ open, onClose }) {
           >
             {saving
               ? 'Encrypting…'
+              : validating
+              ? 'Validating…'
               : summary.valid === 0
               ? 'Paste keys to import'
               : `Import ${summary.valid} key${summary.valid === 1 ? '' : 's'}`}
