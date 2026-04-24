@@ -1,6 +1,7 @@
 const { HDKey } = require('@scure/bip32');
 
 const {
+  addDescriptorChecksum,
   descriptorNeedsAddressHint,
   isDescriptorLike,
   importFromDescriptor,
@@ -14,8 +15,8 @@ function fixtureDescriptors() {
   const root = HDKey.fromMasterSeed(seed);
   const xprv = root.privateExtendedKey;
   return {
-    fixed: `wpkh(${xprv}/0/5)#fixture`,
-    ranged: `wpkh(${xprv}/0/*)#fixture`,
+    fixed: addDescriptorChecksum(`wpkh(${xprv}/0/5)`),
+    ranged: addDescriptorChecksum(`wpkh(${xprv}/0/*)`),
   };
 }
 
@@ -92,10 +93,21 @@ describe('descriptor helpers', () => {
   test('rejects unsupported wrappers like tr(...)', () => {
     const seed = new Uint8Array(32).fill(7);
     const root = HDKey.fromMasterSeed(seed);
-    const out = validateDescriptor(`tr(${root.privateExtendedKey}/0/5)#fixture`);
+    const out = validateDescriptor(
+      addDescriptorChecksum(`tr(${root.privateExtendedKey}/0/5)`)
+    );
     expect(out).toMatchObject({
       valid: false,
       code: 'descriptor_wrapper_unsupported',
+    });
+  });
+
+  test('rejects a descriptor with a bad checksum suffix', () => {
+    const { fixed } = fixtureDescriptors();
+    const out = validateDescriptor(`${fixed.slice(0, -1)}x`);
+    expect(out).toMatchObject({
+      valid: false,
+      code: 'descriptor_checksum_invalid',
     });
   });
 

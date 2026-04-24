@@ -6,7 +6,10 @@ import { HDKey } from '@scure/bip32';
 import VaultImportModal from './VaultImportModal';
 import * as VaultCtx from '../context/VaultContext';
 import * as AuthCtx from '../context/AuthContext';
-import { importFromDescriptor } from '../lib/syscoin/descriptor';
+import {
+  addDescriptorChecksum,
+  importFromDescriptor,
+} from '../lib/syscoin/descriptor';
 
 // user-event v13 (pinned in this repo) is strict about `userEvent.paste`'s
 // signature and throws on plain textareas in jsdom, so we stub the paste
@@ -43,7 +46,7 @@ function descriptorFixtures() {
   const seed = new Uint8Array(32).fill(7);
   const root = HDKey.fromMasterSeed(seed);
   const xprv = root.privateExtendedKey;
-  const descriptor = `wpkh(${xprv}/0/5)#fixture`;
+  const descriptor = addDescriptorChecksum(`wpkh(${xprv}/0/5)`);
   return {
     descriptor,
     imported: importFromDescriptor(descriptor),
@@ -250,6 +253,20 @@ describe('VaultImportModal — save flow (UNLOCKED)', () => {
     const banner = await screen.findByTestId('vault-import-error');
     expect(banner).toHaveTextContent(/changed in another tab/i);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('editing the paste disables Save before revalidation finishes', async () => {
+    const vault = unlockedVault();
+    mount({ vault });
+    const textarea = screen.getByTestId('vault-import-paste');
+    const saveButton = screen.getByTestId('vault-import-save');
+
+    pasteInto(textarea, VALID_WIF_1);
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+
+    pasteInto(textarea, INVALID_WIF);
+    expect(saveButton).toBeDisabled();
+    expect(saveButton).toHaveTextContent(/validating/i);
   });
 });
 

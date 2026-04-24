@@ -21,6 +21,16 @@ const { MAINNET, TESTNET, resolveNetwork } = require('./networks');
 const b58c = base58check(sha256);
 const RANGE_SCAN_LIMIT = 1000;
 const RANGE_SCAN_YIELD_EVERY = 25;
+const DESCRIPTOR_INPUT_CHARSET =
+  "0123456789()[],'/*abcdefgh@:$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#\"\\ ";
+const DESCRIPTOR_CHECKSUM_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const DESCRIPTOR_CHECKSUM_GENERATOR = Object.freeze([
+  0xf5dee51989n,
+  0xa9fdca3312n,
+  0x1bab10e32dn,
+  0x3706b1677an,
+  0x644d626ffdn,
+]);
 const BIP32_VERSIONS = Object.freeze({
   mainnet: Object.freeze({
     private: 0x0488ade4,
@@ -40,6 +50,96 @@ function err(code, detail) {
 
 function stripChecksum(descriptor) {
   return String(descriptor || '').split('#')[0];
+}
+
+function descriptorChecksumPolymod(symbols) {
+  let chk = 1n;
+  for (const value of symbols) {
+    const top = chk >> 35n;
+    chk = ((chk & 0x7ffffffffn) << 5n) ^ BigInt(value);
+    for (let i = 0; i < 5; i += 1) {
+      if (((top >> BigInt(i)) & 1n) === 1n) chk ^= DESCRIPTOR_CHECKSUM_GENERATOR[i];
+    }
+  }
+  return chk;
+}
+
+function descriptorChecksumExpand(value) {
+  const groups = [];
+  const symbols = [];
+  for (const ch of String(value || '')) {
+    const pos = DESCRIPTOR_INPUT_CHARSET.indexOf(ch);
+    if (pos === -1) return null;
+    symbols.push(pos & 31);
+    groups.push(pos >> 5);
+    if (groups.length === 3) {
+      symbols.push(groups[0] * 9 + groups[1] * 3 + groups[2]);
+      groups.length = 0;
+    }
+  }
+  if (groups.length === 1) {
+    symbols.push(groups[0]);
+  } else if (groups.length === 2) {
+    symbols.push(groups[0] * 3 + groups[1]);
+  }
+  return symbols;
+}
+
+function addDescriptorChecksum(descriptor) {
+  const bare = stripChecksum(descriptor);
+  const symbols = descriptorChecksumExpand(bare);
+  if (!symbols) {
+    throw err(
+      'descriptor_checksum_invalid',
+      'Descriptor contains characters that cannot be checksummed.'
+    );
+  }
+  const checksum =
+    descriptorChecksumPolymod(symbols.concat([0, 0, 0, 0, 0, 0, 0, 0])) ^ 1n;
+  let suffix = '';
+  for (let i = 0; i < 8; i += 1) {
+    suffix +=
+      DESCRIPTOR_CHECKSUM_CHARSET[
+        Number((checksum >> (5n * BigInt(7 - i))) & 31n)
+      ];
+  }
+  return `${bare}#${suffix}`;
+}
+
+function validateDescriptorChecksum(descriptor) {
+  const raw = String(descriptor || '');
+  if (!raw.includes('#')) return stripChecksum(raw);
+  if (!/#.{8}$/.test(raw)) {
+    throw err(
+      'descriptor_checksum_invalid',
+      'Descriptor checksum must be exactly 8 characters after "#".'
+    );
+  }
+  const bare = raw.slice(0, -9);
+  const suffix = raw.slice(-8);
+  if ([...suffix].some((ch) => !DESCRIPTOR_CHECKSUM_CHARSET.includes(ch))) {
+    throw err(
+      'descriptor_checksum_invalid',
+      'Descriptor checksum contains invalid characters.'
+    );
+  }
+  const symbols = descriptorChecksumExpand(bare);
+  if (!symbols) {
+    throw err(
+      'descriptor_checksum_invalid',
+      'Descriptor contains characters that cannot be checksummed.'
+    );
+  }
+  const expanded = symbols.concat(
+    [...suffix].map((ch) => DESCRIPTOR_CHECKSUM_CHARSET.indexOf(ch))
+  );
+  if (descriptorChecksumPolymod(expanded) !== 1n) {
+    throw err(
+      'descriptor_checksum_invalid',
+      'Descriptor checksum does not match.'
+    );
+  }
+  return bare;
 }
 
 function supportedWrapper(cleaned) {
@@ -127,7 +227,7 @@ function parsePrivateDescriptor(descriptor, expectedNetwork) {
   if (descriptor !== descriptor.trim()) {
     throw err('descriptor_whitespace', 'Descriptor has surrounding whitespace.');
   }
-  const cleaned = stripChecksum(descriptor);
+  const cleaned = validateDescriptorChecksum(descriptor);
   const wrapper = supportedWrapper(cleaned);
   if (!wrapper) {
     throw err(
@@ -350,6 +450,7 @@ async function validateDescriptorAsync(descriptor, opts) {
 module.exports = {
   RANGE_SCAN_LIMIT,
   RANGE_SCAN_YIELD_EVERY,
+  addDescriptorChecksum,
   descriptorNeedsAddressHint,
   isDescriptorLike,
   isVotingAddress,

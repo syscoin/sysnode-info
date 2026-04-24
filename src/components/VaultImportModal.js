@@ -103,6 +103,19 @@ export default function VaultImportModal({ open, onClose }) {
 
   const summary = useMemo(() => summariseRows(rows), [rows]);
 
+  const applyPastePreview = useCallback(
+    (nextPaste) => {
+      validationGenRef.current += 1;
+      const { entries, rows: pendingRows } = previewImportInput(
+        nextPaste,
+        vault.data || undefined
+      );
+      setRows(pendingRows);
+      setValidating(entries.some((entry) => entry.wif !== ''));
+    },
+    [vault.data]
+  );
+
   const canSave =
     !saving &&
     !validating &&
@@ -280,7 +293,11 @@ export default function VaultImportModal({ open, onClose }) {
             autoCapitalize="off"
             autoCorrect="off"
             value={paste}
-            onChange={(e) => setPaste(e.target.value)}
+            onChange={(e) => {
+              const nextPaste = e.target.value;
+              applyPastePreview(nextPaste);
+              setPaste(nextPaste);
+            }}
             data-testid="vault-import-paste"
           />
         </div>

@@ -10,7 +10,10 @@ const {
   updateKeyLabel,
 } = require('./vaultData');
 const { HDKey } = require('@scure/bip32');
-const { importFromDescriptor } = require('./syscoin/descriptor');
+const {
+  addDescriptorChecksum,
+  importFromDescriptor,
+} = require('./syscoin/descriptor');
 
 // Canonical fixture — the known pk=1 Syscoin mainnet WIF / bech32
 // address (pinned in syscoin/wif.test.js so any drift shows up there
@@ -33,8 +36,8 @@ function descriptorFixtures() {
   const seed = new Uint8Array(32).fill(7);
   const root = HDKey.fromMasterSeed(seed);
   const xprv = root.privateExtendedKey;
-  const fixed = `wpkh(${xprv}/0/5)#fixture`;
-  const ranged = `wpkh(${xprv}/0/*)#fixture`;
+  const fixed = addDescriptorChecksum(`wpkh(${xprv}/0/5)`);
+  const ranged = addDescriptorChecksum(`wpkh(${xprv}/0/*)`);
   const fixedOut = importFromDescriptor(fixed);
   return { fixed, ranged, fixedOut };
 }
