@@ -38,8 +38,9 @@ function descriptorFixtures() {
   const xprv = root.privateExtendedKey;
   const fixed = addDescriptorChecksum(`wpkh(${xprv}/0/5)`);
   const ranged = addDescriptorChecksum(`wpkh(${xprv}/0/*)`);
+  const wifBacked = addDescriptorChecksum(`wpkh(${WIF_1})`);
   const fixedOut = importFromDescriptor(fixed);
-  return { fixed, ranged, fixedOut };
+  return { fixed, ranged, wifBacked, fixedOut };
 }
 
 describe('normalisePayload', () => {
@@ -175,6 +176,15 @@ describe('parseImportLine', () => {
       label: fixedOut.address,
     });
   });
+
+  test('keeps labels on WIF-backed descriptors', () => {
+    const { wifBacked } = descriptorFixtures();
+    expect(parseImportLine(`${wifBacked},MN 1`)).toEqual({
+      wif: wifBacked,
+      addressHint: '',
+      label: 'MN 1',
+    });
+  });
 });
 
 describe('parseImportInput', () => {
@@ -249,6 +259,18 @@ describe('parseImportInput', () => {
       label: 'MN desc',
       address: fixedOut.address,
       wif: fixedOut.wif,
+    });
+  });
+
+  test('accepts WIF-backed descriptors', () => {
+    const { wifBacked } = descriptorFixtures();
+    const { rows } = parseImportInput(`${wifBacked},MN desc`, emptyPayload());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'valid',
+      label: 'MN desc',
+      address: ADDR_1,
+      wif: WIF_1,
     });
   });
 
