@@ -1255,8 +1255,18 @@
 }
 
 .proposal-table {
+  /* Status track (1st column) must fit the widest possible chip label
+     without overflowing into the title column. The "Passing" variant
+     is ~70px; the "Not enough votes" variant is ~150-155px at
+     0.95rem/600 weight + 24px horizontal padding. Keeping the minmax
+     narrower than that caused the warning chip to paint over
+     `proposal-row__main` on desktop (>980px; at ≤980px the row
+     flex-wraps so the overflow was invisible). Bumped to 140/168px
+     to seat the longest label cleanly, with the chip `max-width: 100%`
+     + wrap rule below as a backstop for any future label that
+     exceeds even 168px. */
   --proposal-columns:
-    minmax(104px, 116px)
+    minmax(140px, 168px)
     minmax(228px, 1.64fr)
     minmax(130px, 0.92fr)
     minmax(96px, 0.7fr)
@@ -2322,6 +2332,29 @@
    to 6+ chip-heights tall when every signal lights up at once. */
 .proposal-row__status {
   gap: 6px;
+}
+
+/* Defensive clamp: chips stacked in the status column must never
+   exceed their grid track's width. The global `.status-chip` rule
+   sets `white-space: nowrap`, which lets a chip whose natural width
+   exceeds the track render past the track edge and paint over the
+   title column to its right (observed with the "Not enough votes"
+   label at 150-155px vs. a 116px track cap before this was widened
+   to 168px). Scoping `max-width: 100%` + `white-space: normal` to
+   the status column lets long chip text wrap to a second line
+   inside the pill rather than overflow horizontally. The
+   `overflow-wrap: anywhere` + `word-break: break-word` pair handles
+   the pathological single-long-token case (e.g. a hash ever
+   displayed in a chip) without sacrificing readability for normal
+   multi-word labels. Pill shape is preserved by the existing
+   `border-radius: 999px` on `.status-chip`; the chip just grows
+   taller if the label wraps. */
+.proposal-row__status .status-chip {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: center;
 }
 
 @media (max-width: 980px) {
