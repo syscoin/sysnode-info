@@ -215,6 +215,23 @@ describe('VaultImportModal — paste → validate', () => {
     expect(screen.getAllByTestId('vault-import-row')).toHaveLength(1);
     expect(screen.getByTestId('vault-import-save')).not.toBeDisabled();
   });
+
+  test('row keyboard shortcut ignores key events from the remove button', async () => {
+    const vault = unlockedVault();
+    mount({ vault });
+    const textarea = screen.getByTestId('vault-import-paste');
+    const text = `${VALID_WIF_1},MN 1\n${INVALID_WIF},bad row`;
+    pasteInto(textarea, text);
+    await waitForValidationDone();
+
+    const removeButton = screen.getByLabelText('Remove line 2');
+    removeButton.focus();
+    fireEvent.keyDown(removeButton, { key: ' ' });
+
+    expect(document.activeElement).toBe(removeButton);
+    expect(textarea.selectionStart).toBe(text.length);
+    expect(textarea.selectionEnd).toBe(text.length);
+  });
 });
 
 describe('VaultImportModal — save flow (UNLOCKED)', () => {

@@ -402,6 +402,7 @@ export default function VaultImportModal({ open, onClose }) {
                     onKeyDown={
                       canEditSource
                         ? (e) => {
+                            if (e.target !== e.currentTarget) return;
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
                               selectPasteLine(r.lineNo);
