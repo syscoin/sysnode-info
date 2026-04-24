@@ -9,9 +9,6 @@ import React, {
 import { Link, useHistory, useLocation } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
-import PayWithPaliPanel, {
-  usePaliAvailable,
-} from '../components/PayWithPaliPanel';
 import UnsavedChangesModal from '../components/UnsavedChangesModal';
 import { useAuth } from '../context/AuthContext';
 import { fetchNetworkStats } from '../lib/api';
@@ -25,7 +22,6 @@ import {
 } from '../lib/governanceWindow';
 import { proposalService } from '../lib/proposalService';
 import {
-  COLLATERAL_FEE_SATS,
   MAX_DATA_SIZE,
   MAX_PAYMENT_COUNT,
   draftBodyFromForm,
@@ -39,13 +35,12 @@ import {
   validateBasics,
   validatePayment,
 } from '../lib/proposalForm';
-import { HEX64_RE } from '../lib/proposalService';
 
 // NewProposal wizard — /governance/new[?draft=<id>]
 // -------------------------------------------------
 // Apple-level UX goals for this page (see the product brief):
 //
-//  - Four clearly-signposted steps: Basics, Payment, Review, Submit.
+//  - Three clearly-signposted steps: Basics, Payment, Review.
 //    Users can freely move backwards without losing anything; forwards
 //    is gated on the step's validators so we never 400 the user at
 //    /prepare time for something we could have surfaced inline.
@@ -56,24 +51,27 @@ import { HEX64_RE } from '../lib/proposalService';
 //    — save draft?" flow, which is the single most-loved draft UX in
 //    the consumer web.
 //
-//  - Submit step is three lanes: "Pay with Pali" (when the extension
-//    is installed and the backend exposes the PSBT endpoint), the
-//    manual Syscoin-Qt / syscoin-cli fallback, and the generic
-//    external-wallet OP_RETURN walkthrough. The copy makes clear
-//    that 150 SYS is BURNED (not refunded) and that 6 confirmations
-//    are required before the backend auto-submits.
+//  - On successful /prepare the wizard redirects to the canonical
+//    /governance/proposal/:id status page, which hosts the
+//    "Pay with Pali" lane, the manual Syscoin-Qt / syscoin-cli
+//    fallback, and the generic external-wallet OP_RETURN walkthrough.
+//    The status page is reload-safe (hydrates from the server row) so
+//    the collateral UX survives refresh / new-tab re-entry — a
+//    local-state-only in-wizard "Submit" step would lose the prepared
+//    envelope on reload. The status page also makes clear that
+//    150 SYS is BURNED (not refunded) and that 6 confirmations are
+//    required before the backend auto-submits.
 //
 //  - All state transitions are idempotent. Reloading the page at any
 //    point picks up the draft (or the prepared submission) and lets
 //    the user continue. The prepare step is safe to double-press —
 //    the backend dedupes on (userId, proposalHash).
 
-const STEPS = ['basics', 'payment', 'review', 'submit'];
+const STEPS = ['basics', 'payment', 'review'];
 const STEP_LABELS = {
   basics: 'Basics',
   payment: 'Payment',
   review: 'Review',
-  submit: 'Submit',
 };
 
 // Reducer so the leave-guard's "Discard" path can reset dirty state
@@ -123,20 +121,6 @@ function useQueryParam(name) {
     const params = new URLSearchParams(location.search);
     return params.get(name);
   }, [location.search, name]);
-}
-
-// Human-readable SYS from sats. 150_00000000n → "150".
-function fmtSys(sats) {
-  try {
-    const n = BigInt(sats);
-    const whole = n / 100000000n;
-    const frac = n % 100000000n;
-    if (frac === 0n) return whole.toString();
-    const fs = frac.toString().padStart(8, '0').replace(/0+$/, '');
-    return `${whole.toString()}.${fs}`;
-  } catch (_e) {
-    return String(sats);
-  }
 }
 
 // Map backend error codes emitted by /gov/proposals/* into
@@ -192,11 +176,6 @@ export default function NewProposal() {
   const [preparing, setPreparing] = useState(false);
   const [prepared, setPrepared] = useState(null); // full envelope from /prepare
   const [prepareError, setPrepareError] = useState(null);
-
-  // Attach-collateral state
-  const [txidInput, setTxidInput] = useState('');
-  const [attaching, setAttaching] = useState(false);
-  const [attachError, setAttachError] = useState(null);
 
   // Save-draft state (used both by the explicit "Save draft" button
   // and by the leave-guard modal).
@@ -895,27 +874,6 @@ export default function NewProposal() {
     }
   }
 
-  async function onAttachCollateral() {
-    if (!prepared || !prepared.submission) return;
-    setAttachError(null);
-    if (!HEX64_RE.test(txidInput.trim())) {
-      setAttachError({ code: 'malformed_txid' });
-      return;
-    }
-    setAttaching(true);
-    try {
-      const updated = await proposalService.attachCollateral(
-        prepared.submission.id,
-        txidInput.trim()
-      );
-      history.push(`/governance/proposal/${updated.id}`);
-    } catch (err) {
-      setAttachError(err);
-    } finally {
-      setAttaching(false);
-    }
-  }
-
   // ---- Auth gate --------------------------------------------------------
 
   if (isBooting) {
@@ -1050,25 +1008,9 @@ export default function NewProposal() {
               onRetryStats={refreshStats}
             />
           ) : null}
-          {currentStep === 'submit' ? (
-            <SubmitStep
-              prepared={prepared}
-              txidInput={txidInput}
-              onTxidChange={setTxidInput}
-              attaching={attaching}
-              attachError={attachError}
-              onAttachCollateral={onAttachCollateral}
-              proposalServiceImpl={proposalService}
-              onPaliAttached={(txid) => {
-                if (!prepared || !prepared.submission) return;
-                history.push(`/governance/proposal/${prepared.submission.id}`);
-              }}
-            />
-          ) : null}
-
           <div className="proposal-wizard__toolbar">
             <div className="proposal-wizard__toolbar-left">
-              {stepIdx > 0 && currentStep !== 'submit' ? (
+              {stepIdx > 0 ? (
                 <button
                   type="button"
                   className="button button--ghost"
@@ -1078,35 +1020,33 @@ export default function NewProposal() {
                   Back
                 </button>
               ) : null}
-              {currentStep !== 'submit' ? (
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  // Codex PR8 round 6 P2: saveDraft() rethrows on
-                  // failure so onModalSave() (which awaits it) can
-                  // distinguish success from failure and keep the
-                  // unsaved-changes modal open on errors. A bare
-                  // `onClick={saveDraft}` binding makes this async
-                  // function's rejection an unhandled promise —
-                  // React does not attach a catch to event-handler
-                  // returns, so transient network / 4xx errors
-                  // bubble to the global `unhandledrejection`
-                  // listener (and pollute test logs / trigger any
-                  // error-reporting hook the host app installs).
-                  // Swallow here; the error is already surfaced in
-                  // `saveDraftError` state below, so user feedback
-                  // is unchanged.
-                  onClick={() => {
-                    saveDraft().catch(() => {
-                      /* already surfaced via setSaveDraftError */
-                    });
-                  }}
-                  disabled={savingDraft}
-                  data-testid="wizard-save-draft"
-                >
-                  {savingDraft ? 'Saving…' : 'Save draft'}
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="button button--ghost"
+                // Codex PR8 round 6 P2: saveDraft() rethrows on
+                // failure so onModalSave() (which awaits it) can
+                // distinguish success from failure and keep the
+                // unsaved-changes modal open on errors. A bare
+                // `onClick={saveDraft}` binding makes this async
+                // function's rejection an unhandled promise —
+                // React does not attach a catch to event-handler
+                // returns, so transient network / 4xx errors
+                // bubble to the global `unhandledrejection`
+                // listener (and pollute test logs / trigger any
+                // error-reporting hook the host app installs).
+                // Swallow here; the error is already surfaced in
+                // `saveDraftError` state below, so user feedback
+                // is unchanged.
+                onClick={() => {
+                  saveDraft().catch(() => {
+                    /* already surfaced via setSaveDraftError */
+                  });
+                }}
+                disabled={savingDraft}
+                data-testid="wizard-save-draft"
+              >
+                {savingDraft ? 'Saving…' : 'Save draft'}
+              </button>
               {/* Codex PR8 round 14 P2: the "Saved" badge is a
                   claim about the *current* form state, not about
                   history. Gate it on `!dirty` so that as soon as
@@ -1814,182 +1754,6 @@ function ReviewStep({
     </div>
   );
 }
-
-function SubmitStep({
-  prepared,
-  txidInput,
-  onTxidChange,
-  attaching,
-  attachError,
-  onAttachCollateral,
-  proposalServiceImpl,
-  onPaliAttached,
-}) {
-  // IMPORTANT: every hook must run on every render regardless of
-  // `prepared` — React's rules-of-hooks forbid conditional calls.
-  // Compute the CLI command up-front with a safe fallback and only
-  // branch the JSX below.
-  const submission = prepared && prepared.submission;
-  // Track Pali visibility at the wizard level too so the sibling
-  // "Option B/C" manual-lane headings stay numbered correctly even
-  // when PayWithPaliPanel renders nothing (no A). Uses the same
-  // installed-now / installed-later poll as the panel, so labels
-  // flip in lockstep with panel appearance. Codex PR14 P3.
-  const paliPresent = usePaliAvailable();
-  const manualOptionLabel = paliPresent ? 'Option B' : 'Option A';
-  const walletOptionLabel = paliPresent ? 'Option C' : 'Option B';
-  const cliCommand = useMemo(() => {
-    if (!submission) return '';
-    // Exactly matches the backend's hash inputs:
-    //   parent_hash = "0", revision = 1, time = timeUnix
-    // so pasting this into Syscoin-Qt produces the same proposal_hash
-    // we already committed to in submission.proposalHash.
-    const parent =
-      submission.parentHash != null ? String(submission.parentHash) : '0';
-    const revision =
-      submission.revision != null ? String(submission.revision) : '1';
-    const time =
-      submission.timeUnix != null
-        ? String(submission.timeUnix)
-        : String(Math.floor(Date.now() / 1000));
-    const dataHex = submission.dataHex || '';
-    return `gobject_prepare ${parent} ${revision} ${time} ${dataHex}`;
-  }, [submission]);
-
-  if (!prepared) {
-    return (
-      <div className="proposal-wizard__panel" data-testid="wizard-panel-submit">
-        <p>
-          No prepared submission yet. Go back to Review and prepare
-          the proposal.
-        </p>
-      </div>
-    );
-  }
-
-  const { opReturnHex, collateralFeeSats, requiredConfirmations } = prepared;
-
-  async function copy(str) {
-    try {
-      await navigator.clipboard.writeText(str);
-    } catch (_e) {
-      /* best effort */
-    }
-  }
-
-  return (
-    <div className="proposal-wizard__panel" data-testid="wizard-panel-submit">
-      <h2>Pay the 150 SYS collateral</h2>
-
-      <div className="proposal-wizard__burn-warning" role="note">
-        <strong>The 150 SYS collateral is burned, not refunded.</strong>
-        <p>
-          Syscoin consensus requires a 150 SYS burn fee to create a
-          governance object. You will not get this back. Plan
-          accordingly.
-        </p>
-      </div>
-
-      <p>
-        We committed your proposal to{' '}
-        <code data-testid="submit-gov-hash">{submission.proposalHash}</code>.
-        When the collateral transaction has{' '}
-        <strong>{requiredConfirmations} confirmations</strong>, we'll
-        automatically submit your governance object on-chain — nothing
-        more to do on your end.
-      </p>
-
-      <PayWithPaliPanel
-        submission={submission}
-        proposalServiceImpl={proposalServiceImpl}
-        onAttached={onPaliAttached}
-      />
-
-      <h3>{manualOptionLabel} — Pay manually from Syscoin-Qt or syscoin-cli</h3>
-      <ol className="proposal-wizard__steps-list">
-        <li>
-          Open Syscoin-Qt's <em>Debug console</em> (or your CLI) and
-          paste:
-          <pre
-            className="proposal-wizard__cli"
-            data-testid="submit-cli-command"
-          >
-            <code>{cliCommand}</code>
-          </pre>
-          <button
-            type="button"
-            className="button button--ghost button--small"
-            onClick={() => copy(cliCommand)}
-            data-testid="submit-copy-cli"
-          >
-            Copy command
-          </button>
-        </li>
-        <li>
-          Core will broadcast the 150 SYS burn transaction and print
-          the <strong>collateral TXID</strong>. Paste it below.
-        </li>
-      </ol>
-
-      <h3>{walletOptionLabel} — Using a different wallet?</h3>
-      <p>
-        Any wallet that can send to an address with an extra{' '}
-        <code>OP_RETURN</code> output works. Send{' '}
-        <strong>{fmtSys(collateralFeeSats || COLLATERAL_FEE_SATS)} SYS</strong>{' '}
-        to an unspendable burn output alongside an <code>OP_RETURN</code>{' '}
-        carrying the following bytes:
-      </p>
-      <pre
-        className="proposal-wizard__cli proposal-wizard__cli--mono"
-        data-testid="submit-op-return"
-      >
-        <code>{opReturnHex}</code>
-      </pre>
-      <button
-        type="button"
-        className="button button--ghost button--small"
-        onClick={() => copy(opReturnHex)}
-      >
-        Copy OP_RETURN bytes
-      </button>
-
-      <h3>Paste the collateral TXID</h3>
-      <label className="form-field">
-        <span>Collateral TXID</span>
-        <input
-          type="text"
-          value={txidInput}
-          onChange={(e) => onTxidChange(e.target.value)}
-          placeholder="64-character hex txid"
-          aria-invalid={!!attachError}
-          data-testid="submit-txid-input"
-        />
-        <small>
-          We'll watch it and auto-submit once it has{' '}
-          {requiredConfirmations} confirmations.
-        </small>
-      </label>
-      {attachError ? (
-        <div className="auth-alert auth-alert--error" role="alert">
-          {attachError.code === 'malformed_txid'
-            ? 'That does not look like a 64-character hex TXID.'
-            : `Could not attach TXID: ${attachError.code || 'unknown_error'}`}
-        </div>
-      ) : null}
-
-      <button
-        type="button"
-        className="button button--primary"
-        onClick={onAttachCollateral}
-        disabled={attaching || !txidInput}
-        data-testid="submit-attach-btn"
-      >
-        {attaching ? 'Submitting…' : 'Attach TXID & watch'}
-      </button>
-    </div>
-  );
-}
-
 
 function PayloadSizeMeter({ bytes }) {
   const pct = Math.min(100, Math.round((bytes / MAX_DATA_SIZE) * 100));
