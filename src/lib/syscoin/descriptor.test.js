@@ -12,6 +12,9 @@ const {
   validateDescriptorAsync,
 } = require('./descriptor');
 
+const WIF_1 = 'KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn';
+const ADDR_1 = 'sys1qw508d6qejxtdg4y5r3zarvary0c5xw7kyhct58';
+
 function fixtureDescriptors() {
   const seed = new Uint8Array(32).fill(7);
   const root = HDKey.fromMasterSeed(seed);
@@ -26,6 +29,8 @@ describe('descriptor helpers', () => {
   test('detects descriptor-like private keys', () => {
     const { fixed } = fixtureDescriptors();
     expect(isDescriptorLike(fixed)).toBe(true);
+    expect(isDescriptorLike(addDescriptorChecksum(`wpkh(${WIF_1})`))).toBe(true);
+    expect(isDescriptorLike(addDescriptorChecksum(`tr(${WIF_1})`))).toBe(true);
     expect(isDescriptorLike('KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn')).toBe(
       false
     );
@@ -52,6 +57,27 @@ describe('descriptor helpers', () => {
     expect(out.address).toMatch(/^sys1q/);
     expect(out.wif).toMatch(/^[KL]/);
     expect(out.compressed).toBe(true);
+  });
+
+  test('imports a WIF-backed private descriptor into a WIF + address pair', () => {
+    const descriptor = addDescriptorChecksum(`wpkh(${WIF_1})`);
+    const out = importFromDescriptor(descriptor);
+    expect(out).toMatchObject({
+      valid: true,
+      address: ADDR_1,
+      wif: WIF_1,
+      network: 'mainnet',
+      compressed: true,
+    });
+  });
+
+  test('rejects WIF-backed descriptors from the wrong network', () => {
+    const descriptor = addDescriptorChecksum(`wpkh(${WIF_1})`);
+    const out = validateDescriptor(descriptor, { expectedNetwork: 'testnet' });
+    expect(out).toMatchObject({
+      valid: false,
+      code: 'descriptor_network_mismatch',
+    });
   });
 
   test('requires an address hint for ranged descriptors', () => {

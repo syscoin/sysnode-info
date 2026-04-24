@@ -1,7 +1,7 @@
 // Descriptor helpers for Syscoin voting-key import.
 //
 // Scope is intentionally narrow:
-//   * accept private descriptors backed by xprv/tprv
+//   * accept private descriptors backed by xprv/tprv or direct WIF keys
 //   * derive the matching compressed leaf key
 //   * convert that leaf key into the same WIF/address shape the vault
 //     already persists today
@@ -17,6 +17,7 @@ const { ripemd160 } = require('@noble/hashes/ripemd160');
 const secp = require('@noble/secp256k1');
 
 const { MAINNET, TESTNET, resolveNetwork } = require('./networks');
+const { parseWif } = require('./wif');
 
 const b58c = base58check(sha256);
 const RANGE_SCAN_LIMIT = 1000;
@@ -172,11 +173,8 @@ function extractKeyExpression(cleaned, wrapper) {
 function isDescriptorLike(value) {
   if (typeof value !== 'string') return false;
   const s = value.trim();
-  return (
-    s.length > 0 &&
-    /^[a-z0-9_]+\(/i.test(s) &&
-    /(?:xprv|tprv)[1-9A-HJ-NP-Za-km-z]+/.test(s)
-  );
+  if (s.length === 0 || !/^[a-z0-9_]+\(/i.test(stripChecksum(s))) return false;
+  return /(?:xprv|tprv|[KL5c9])[1-9A-HJ-NP-Za-km-z]+/.test(s);
 }
 
 function descriptorNeedsAddressHint(value) {
@@ -242,6 +240,45 @@ function normalisePathSegments(pathSuffix) {
   return { ranged: wildcardCount === 1, baseSegments };
 }
 
+function parseWifKeyExpression(keyExpression, expectedNetwork) {
+  const match = keyExpression.match(
+    /^(?:\[[^\]]+\])?([1-9A-HJ-NP-Za-km-z]+)$/
+  );
+  if (!match) return null;
+  if (!/^[KL5c9]/.test(match[1])) return null;
+
+  try {
+    const parsed = parseWif(match[1], expectedNetwork);
+    if (!parsed.compressed) {
+      throw err(
+        'descriptor_wif_uncompressed_unsupported',
+        'Descriptor WIF key must be compressed.'
+      );
+    }
+    return {
+      keyType: 'wif',
+      network: parsed.network,
+      privateKey: parsed.privateKey,
+      ranged: false,
+      baseSegments: [],
+    };
+  } catch (e) {
+    if (
+      e.code &&
+      (e.code.startsWith('wif_') ||
+        e.code === 'descriptor_wif_uncompressed_unsupported')
+    ) {
+      throw err(
+        e.code === 'wif_network_mismatch'
+          ? 'descriptor_network_mismatch'
+          : 'descriptor_wif_invalid',
+        e.message
+      );
+    }
+    return null;
+  }
+}
+
 function parsePrivateDescriptor(descriptor, expectedNetwork) {
   if (typeof descriptor !== 'string' || descriptor.length === 0) {
     throw err('descriptor_empty', 'Descriptor is empty.');
@@ -264,6 +301,9 @@ function parsePrivateDescriptor(descriptor, expectedNetwork) {
   // correct. Wrappers that tweak or combine keys (for example tr(...),
   // multi(...), sortedmulti(...), wsh(...)) are deliberately rejected.
   const keyExpression = extractKeyExpression(cleaned, wrapper);
+  const wifParsed = parseWifKeyExpression(keyExpression, expectedNetwork);
+  if (wifParsed) return wifParsed;
+
   const match = keyExpression.match(
     /^(?:\[[^\]]+\])?((?:xprv|tprv)[1-9A-HJ-NP-Za-km-z]+)((?:\/(?:\*|[0-9]+(?:['hH])?))*)$/
   );
@@ -284,6 +324,7 @@ function parsePrivateDescriptor(descriptor, expectedNetwork) {
     );
   }
   return {
+    keyType: 'xprv',
     network,
     xprv,
     ...normalisePathSegments(pathSuffix),
@@ -339,7 +380,6 @@ function resolvedDescriptorResult(privateKey, network) {
 
 function importFromDescriptor(descriptor, { addressHint, expectedNetwork } = {}) {
   const parsed = parsePrivateDescriptor(descriptor, expectedNetwork);
-  const root = rootFromExtendedKey(parsed.xprv);
   const hint = typeof addressHint === 'string' ? addressHint.trim() : '';
 
   if (hint && !isVotingAddress(hint, parsed.network)) {
@@ -348,6 +388,19 @@ function importFromDescriptor(descriptor, { addressHint, expectedNetwork } = {})
       'Descriptor address must be a valid Syscoin voting address.'
     );
   }
+
+  if (parsed.keyType === 'wif') {
+    const out = resolvedDescriptorResult(parsed.privateKey, parsed.network);
+    if (hint && out.address.toLowerCase() !== hint.toLowerCase()) {
+      throw err(
+        'descriptor_address_mismatch',
+        'Descriptor does not derive the supplied voting address.'
+      );
+    }
+    return out;
+  }
+
+  const root = rootFromExtendedKey(parsed.xprv);
 
   if (!parsed.ranged) {
     const privateKey = deriveLeaf(root, parsed.baseSegments);
@@ -396,7 +449,6 @@ async function importFromDescriptorAsync(
   } = {}
 ) {
   const parsed = parsePrivateDescriptor(descriptor, expectedNetwork);
-  const root = rootFromExtendedKey(parsed.xprv);
   const hint = typeof addressHint === 'string' ? addressHint.trim() : '';
   const cancelled =
     typeof isCancelled === 'function' ? isCancelled : () => false;
@@ -407,6 +459,19 @@ async function importFromDescriptorAsync(
       'Descriptor address must be a valid Syscoin voting address.'
     );
   }
+
+  if (parsed.keyType === 'wif') {
+    const out = resolvedDescriptorResult(parsed.privateKey, parsed.network);
+    if (hint && out.address.toLowerCase() !== hint.toLowerCase()) {
+      throw err(
+        'descriptor_address_mismatch',
+        'Descriptor does not derive the supplied voting address.'
+      );
+    }
+    return out;
+  }
+
+  const root = rootFromExtendedKey(parsed.xprv);
 
   if (!parsed.ranged) {
     const privateKey = deriveLeaf(root, parsed.baseSegments);
