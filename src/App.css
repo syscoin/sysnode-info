@@ -1819,6 +1819,26 @@
   box-shadow: 0 0 0 3px rgba(229, 107, 85, 0.22);
 }
 
+.totp-qr {
+  align-self: flex-start;
+  min-height: 220px;
+  min-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--panel-outline);
+  border-radius: 18px;
+  background: #fff;
+  color: var(--muted);
+  padding: 12px;
+}
+
+.totp-qr img {
+  display: block;
+  width: 220px;
+  height: 220px;
+}
+
 .auth-hint {
   font-size: 0.82rem;
   color: var(--muted);

@@ -46,6 +46,14 @@ export function createAuthService(client = defaultClient) {
     return { ...res.data, master };
   }
 
+  async function completeTotpLogin({ challengeToken, code, recoveryCode }) {
+    const body = { challengeToken };
+    if (code) body.code = code;
+    if (recoveryCode) body.recoveryCode = recoveryCode;
+    const res = await client.post('/auth/login/totp', body);
+    return res.data;
+  }
+
   async function logout() {
     const res = await client.post('/auth/logout');
     return res.data;
@@ -132,6 +140,26 @@ export function createAuthService(client = defaultClient) {
     return res.data.notificationPrefs || {};
   }
 
+  async function getTotpStatus() {
+    const res = await client.get('/auth/totp');
+    return res.data;
+  }
+
+  async function beginTotpSetup() {
+    const res = await client.post('/auth/totp/setup');
+    return res.data;
+  }
+
+  async function enableTotp(code) {
+    const res = await client.post('/auth/totp/enable', { code });
+    return res.data;
+  }
+
+  async function disableTotp(code) {
+    const res = await client.post('/auth/totp/disable', { code });
+    return res.data;
+  }
+
   // ------------------------------------------------------------------
   // PR 7 — account deletion (GDPR right to erasure)
   // ------------------------------------------------------------------
@@ -159,12 +187,17 @@ export function createAuthService(client = defaultClient) {
     register,
     verifyEmail,
     login,
+    completeTotpLogin,
     logout,
     me,
     deriveChangePasswordKeys,
     changePassword,
     getPrefs,
     updatePrefs,
+    getTotpStatus,
+    beginTotpSetup,
+    enableTotp,
+    disableTotp,
     deleteAccount,
   };
 }
