@@ -71,3 +71,29 @@ test('renders a QR code for TOTP setup with manual secret fallback', async () =>
     'JBSWY3DPEHPK3PXP'
   );
 });
+
+test('allows restarting setup after the pending TOTP setup expires', async () => {
+  const authService = service({
+    enableTotp: jest.fn().mockRejectedValue(
+      Object.assign(new Error('totp_setup_not_started'), {
+        code: 'totp_setup_not_started',
+      })
+    ),
+  });
+  renderCard(authService);
+
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.click(
+    screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await screen.findByLabelText(/manual setup secret fallback/i);
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(/start setup again/i);
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: /set up two-factor authentication/i })
+    ).toBeInTheDocument()
+  );
+});

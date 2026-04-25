@@ -94,6 +94,12 @@ export default function TwoFactorCard({
         handleAuthLost();
         return;
       }
+      if (err && err.code === 'totp_setup_not_started') {
+        setSetup(null);
+        setQrDataUrl(null);
+        setCode('');
+        setStatus((s) => ({ ...s, pending: false }));
+      }
       setErrCode((err && err.code) || 'network_error');
     } finally {
       setBusy(false);
@@ -115,6 +121,12 @@ export default function TwoFactorCard({
       if (err && err.code === 'unauthorized') {
         handleAuthLost();
         return;
+      }
+      if (err && err.code === 'totp_setup_not_started') {
+        setSetup(null);
+        setQrDataUrl(null);
+        setCode('');
+        setStatus((s) => ({ ...s, pending: false }));
       }
       setErrCode((err && err.code) || 'network_error');
     } finally {
