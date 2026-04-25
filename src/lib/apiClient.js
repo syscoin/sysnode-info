@@ -182,10 +182,20 @@ export function createApiClient({
     function normalise(error) {
       const apiError = toApiError(error);
       if (apiError.status === 401 && typeof onAuthLost === 'function') {
-        // Don't fire on the auth endpoints themselves — a 401 on /login is
-        // a credential error, not a session expiry.
+        // Don't fire on auth endpoints that are expected to return
+        // credential errors, such as /auth/login. /auth/verify-password is
+        // the one exception: invalid_credentials is a local step-up failure,
+        // but any other 401 means the authenticated session is gone and the
+        // global auth-loss path should run.
         const url = (error.config && error.config.url) || '';
-        if (!url.startsWith('/auth/')) {
+        const isAuthEndpoint = url.startsWith('/auth/');
+        const isVerifyPassword = url.startsWith('/auth/verify-password');
+        const isVerifyPasswordMismatch =
+          isVerifyPassword && apiError.code === 'invalid_credentials';
+        if (
+          !isAuthEndpoint ||
+          (isVerifyPassword && !isVerifyPasswordMismatch)
+        ) {
           try {
             onAuthLost(apiError);
           } catch (_) {

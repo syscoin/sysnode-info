@@ -14,13 +14,9 @@ import {
   summariseRows,
   validateImportEntryAsync,
 } from '../lib/vaultData';
-import {
-  MIN_VAULT_PASSWORD_LENGTH,
-  validateVaultPassword,
-  VAULT_PASSWORD_HINT,
-} from '../lib/passwordPolicy';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
+import { authService as defaultAuthService } from '../lib/authService';
 
 // VaultImportModal
 // -----------------------------------------------------------------------
@@ -91,7 +87,11 @@ function lineBounds(text, lineNo) {
   return { start, end: start + lines[lineNo - 1].length };
 }
 
-export default function VaultImportModal({ open, onClose }) {
+export default function VaultImportModal({
+  open,
+  onClose,
+  authService = defaultAuthService,
+}) {
   const vault = useVault();
   const { user } = useAuth();
 
@@ -172,8 +172,25 @@ export default function VaultImportModal({ open, onClose }) {
   // focused) instead of a silently-disabled button — clicking a disabled
   // button leaves the user with no signal about which field is missing.
   const canSave = !saving && !validating && summary.valid > 0;
+  // Password-field failures: empty is a local pre-flight failure;
+  // password_mismatch is the server-side verification result for the
+  // EMPTY first-write path.
+  // A mismatch is far more likely than a network blip — so we treat
+  // it as a password-field error rather than a generic banner.
   const passwordError =
-    error === 'password_required' || error === 'password_too_short';
+    error === 'password_required' || error === 'password_mismatch';
+
+  // verifyAuthHash callback for VaultContext.save() on the EMPTY path.
+  // The vault password and the account password are the same secret;
+  // VaultContext derives an authHash from the typed password and asks
+  // us to confirm it against the server before encrypting under the
+  // matching vaultKey. authService.verifyPassword normalises a 401 to
+  // `{ code: 'invalid_credentials' }`, which VaultContext re-tags to
+  // `password_mismatch`. We pass it through unchanged.
+  const verifyAuthHash = useCallback(
+    (authHash) => authService.verifyPassword({ authHash }),
+    [authService]
+  );
 
   // ESC closes, focus lands in the textarea on open, state resets on
   // close. Done as a single effect keyed on `open` so the lifecycle
@@ -286,17 +303,11 @@ export default function VaultImportModal({ open, onClose }) {
       try {
         if (requiresPassword) {
           // Empty input gets the explicit "please enter your password"
-          // copy; a non-empty but too-weak password gets the full policy
-          // hint. Both cases pull focus into the field so the user's
-          // next keystroke lands in the right place.
+          // copy. Non-empty values are checked by /auth/verify-password:
+          // this is current-password re-auth, not a new-password policy
+          // gate, so the server is authoritative.
           if (password === '') {
             setError('password_required');
-            if (passwordRef.current) passwordRef.current.focus();
-            return;
-          }
-          const policyError = validateVaultPassword(password);
-          if (policyError) {
-            setError(policyError.code);
             if (passwordRef.current) passwordRef.current.focus();
             return;
           }
@@ -306,19 +317,42 @@ export default function VaultImportModal({ open, onClose }) {
         const basePayload = vault.data || { version: 1, keys: [] };
         const nextPayload = addKeys(basePayload, newKeys);
         const saveOpts = requiresPassword
-          ? { password, email: user && user.email }
+          ? {
+              password,
+              email: user && user.email,
+              verifyAuthHash,
+            }
           : undefined;
         await vault.save(nextPayload, saveOpts);
         setPassword('');
         setPaste('');
         onClose();
       } catch (e) {
-        setError((e && e.code) || 'save_failed');
+        const code = (e && e.code) || 'save_failed';
+        setError(code);
+        // For the password-field error class (empty / mismatch)
+        // we pull focus straight into the input so the user's next
+        // keystroke lands there rather than getting lost in the
+        // banner. The empty-string check already does this for the
+        // local pre-flight failure; this branch covers the asynchronous
+        // server-verification result.
+        if (code === 'password_mismatch' && passwordRef.current) {
+          passwordRef.current.focus();
+        }
       } finally {
         setSaving(false);
       }
     },
-    [canSave, rows, vault, requiresPassword, password, user, onClose]
+    [
+      canSave,
+      rows,
+      vault,
+      requiresPassword,
+      password,
+      user,
+      onClose,
+      verifyAuthHash,
+    ]
   );
 
   if (!open) return null;
@@ -485,7 +519,7 @@ export default function VaultImportModal({ open, onClose }) {
         {requiresPassword ? (
           <div className="auth-field">
             <label className="auth-label" htmlFor="vault-import-password">
-              Password
+              Current password
             </label>
             <input
               id="vault-import-password"
@@ -507,12 +541,12 @@ export default function VaultImportModal({ open, onClose }) {
               aria-describedby={
                 passwordError ? 'vault-import-error' : undefined
               }
-              minLength={MIN_VAULT_PASSWORD_LENGTH}
               data-testid="vault-import-password"
             />
             <span className="auth-hint">
-              {VAULT_PASSWORD_HINT} It stays on this device — the server never
-              sees it.
+              Use the password you signed in with — your account password
+              is also the key that encrypts your vault on this device.
+              It is never sent to the server.
             </span>
           </div>
         ) : null}
@@ -525,9 +559,9 @@ export default function VaultImportModal({ open, onClose }) {
             data-testid="vault-import-error"
           >
             {error === 'password_required'
-              ? 'Please enter your password.'
-              : error === 'password_too_short'
-              ? VAULT_PASSWORD_HINT
+              ? 'Please enter your current password.'
+              : error === 'password_mismatch'
+              ? "That doesn't match your account password. Enter the password you used to sign in."
               : error === 'vault_stale'
               ? 'Your vault changed in another tab. Close this dialog and try again.'
               : error === 'network_error'

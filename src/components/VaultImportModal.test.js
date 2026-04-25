@@ -53,7 +53,7 @@ function descriptorFixtures() {
   };
 }
 
-function mount({ vault, user, onClose = jest.fn() } = {}) {
+function mount({ vault, user, onClose = jest.fn(), authService } = {}) {
   const auth = {
     user: user || {
       id: 1,
@@ -64,8 +64,16 @@ function mount({ vault, user, onClose = jest.fn() } = {}) {
   };
   jest.spyOn(VaultCtx, 'useVault').mockReturnValue(vault);
   jest.spyOn(AuthCtx, 'useAuth').mockReturnValue(auth);
-  const utils = render(<VaultImportModal open={true} onClose={onClose} />);
-  return { ...utils, onClose };
+  // Default authService stub: verifyPassword resolves on every call. The
+  // EMPTY-flow tests assert the callback shape, and the
+  // mismatch test injects a rejecting stub.
+  const svc = authService || {
+    verifyPassword: jest.fn().mockResolvedValue(true),
+  };
+  const utils = render(
+    <VaultImportModal open={true} onClose={onClose} authService={svc} />
+  );
+  return { ...utils, onClose, authService: svc };
 }
 
 afterEach(() => {
@@ -331,7 +339,7 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     await userEvent.click(screen.getByTestId('vault-import-save'));
 
     const banner = await screen.findByTestId('vault-import-error');
-    expect(banner).toHaveTextContent(/please enter your password/i);
+    expect(banner).toHaveTextContent(/please enter your current password/i);
 
     const pwInput = screen.getByTestId('vault-import-password');
     expect(pwInput).toHaveClass('auth-input--error');
@@ -346,26 +354,29 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     expect(pwInput).not.toHaveClass('auth-input--error');
   });
 
-  test('rejects short first-write passwords before vault.save', async () => {
+  test('does not locally policy-reject a non-empty current password', async () => {
     const vault = emptyVault();
-    mount({ vault });
+    const { onClose } = mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
     await userEvent.type(
       screen.getByTestId('vault-import-password'),
-      'too-short'
+      'short'
     );
     await waitFor(() =>
       expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
     );
 
     await userEvent.click(screen.getByTestId('vault-import-save'));
-    const error = await screen.findByTestId('vault-import-error');
-    expect(error).toHaveTextContent(/at least 8/i);
-    expect(error).toHaveTextContent(/3 of/i);
-    expect(vault.save).not.toHaveBeenCalled();
+    await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
+    expect(vault.save.mock.calls[0][1]).toMatchObject({
+      password: 'short',
+      email: 'user@example.com',
+    });
+    expect(screen.queryByTestId('vault-import-error')).toBeNull();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
-  test('forwards {password, email} to vault.save on first write', async () => {
+  test('forwards {password, email, verifyAuthHash} to vault.save on first write', async () => {
     const vault = emptyVault();
     const { onClose } = mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), `${VALID_WIF_1},MN 1`);
@@ -378,11 +389,83 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     );
     await userEvent.click(screen.getByTestId('vault-import-save'));
     await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
-    expect(vault.save.mock.calls[0][1]).toEqual({
+    const opts = vault.save.mock.calls[0][1];
+    expect(opts).toMatchObject({
       password: 'My-secret-passphrase1',
       email: 'user@example.com',
     });
+    // The verifyAuthHash callback is the bridge that prevents password
+    // divergence on first write — it must be a function so VaultContext
+    // can hit POST /auth/verify-password before persisting the vault.
+    expect(typeof opts.verifyAuthHash).toBe('function');
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  test('verifyAuthHash callback delegates to authService.verifyPassword', async () => {
+    // We don't run the full VaultContext here — just confirm the
+    // callback the modal hands to vault.save calls into the injected
+    // authService with the exact authHash payload shape the backend
+    // expects. This protects the contract between the modal and the
+    // service layer without depending on real crypto.
+    const verifyPassword = jest.fn().mockResolvedValue(true);
+    const vault = emptyVault();
+    mount({ vault, authService: { verifyPassword } });
+    pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await userEvent.type(
+      screen.getByTestId('vault-import-password'),
+      'My-secret-passphrase1'
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+    await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
+    const { verifyAuthHash } = vault.save.mock.calls[0][1];
+    const probe = 'a'.repeat(64);
+    await verifyAuthHash(probe);
+    expect(verifyPassword).toHaveBeenCalledWith({ authHash: probe });
+  });
+
+  test('surfaces password_mismatch with corrective copy and refocuses the field', async () => {
+    const vault = emptyVault({
+      // Mirror the real VaultContext behaviour: re-throw the typed
+      // password_mismatch error from the EMPTY save path.
+      save: jest.fn().mockRejectedValue(
+        Object.assign(new Error('password_mismatch'), {
+          code: 'password_mismatch',
+        })
+      ),
+    });
+    const { onClose } = mount({ vault });
+    // The modal auto-focuses the paste textarea via setTimeout(0) on
+    // mount. Under microtask pressure (async typing + click + save
+    // rejection in the catch block), that setTimeout can fire AFTER
+    // the catch block focuses the password input, stealing focus
+    // back to the textarea. Wait for the autofocus to land before
+    // doing anything else so the catch-block focus call wins cleanly.
+    const textarea = screen.getByTestId('vault-import-paste');
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+
+    pasteInto(textarea, VALID_WIF_1);
+    const pwInput = screen.getByTestId('vault-import-password');
+    await userEvent.type(pwInput, 'Wrong-account-password1');
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+
+    const banner = await screen.findByTestId('vault-import-error');
+    expect(banner).toHaveTextContent(/account password/i);
+    expect(pwInput).toHaveClass('auth-input--error');
+    expect(pwInput).toHaveAttribute('aria-invalid', 'true');
+    await waitFor(() => expect(document.activeElement).toBe(pwInput));
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Typing a correction clears the error state, matching the
+    // password_required UX.
+    await userEvent.type(pwInput, '!');
+    expect(screen.queryByTestId('vault-import-error')).toBeNull();
+    expect(pwInput).not.toHaveClass('auth-input--error');
   });
 });
 
