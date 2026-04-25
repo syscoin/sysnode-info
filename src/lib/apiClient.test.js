@@ -4,6 +4,7 @@ import {
   createApiClient,
   parseRetryAfter,
   readCsrfCookie,
+  resolveDefaultApiBase,
   setAuthLostHandler,
   toApiError,
 } from './apiClient';
@@ -35,6 +36,29 @@ describe('readCsrfCookie', () => {
   test('url-decodes cookie values', () => {
     setCookie('csrf=abc%2Fdef');
     expect(readCsrfCookie()).toBe('abc/def');
+  });
+});
+
+describe('resolveDefaultApiBase', () => {
+  test('uses explicit REACT_APP_API_BASE override', () => {
+    expect(
+      resolveDefaultApiBase({
+        apiBase: 'https://api.example.test',
+        nodeEnv: 'production',
+      })
+    ).toBe('https://api.example.test');
+  });
+
+  test('defaults production authenticated calls to same-origin relative paths', () => {
+    expect(resolveDefaultApiBase({ apiBase: '', nodeEnv: 'production' })).toBe(
+      ''
+    );
+  });
+
+  test('keeps localhost backend default for development', () => {
+    expect(resolveDefaultApiBase({ apiBase: '', nodeEnv: 'development' })).toBe(
+      'http://localhost:3001'
+    );
   });
 });
 
