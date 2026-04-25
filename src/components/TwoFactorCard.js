@@ -21,7 +21,7 @@ export default function TwoFactorCard({
   authService = defaultAuthService,
   defaultOpen = false,
 }) {
-  const { user, refresh, handleAuthLost } = useAuth();
+  const { user, handleAuthLost } = useAuth();
   const [open, setOpen] = useState(defaultOpen);
   const [status, setStatus] = useState({
     enabled: !!(user && user.totpEnabled),
@@ -116,7 +116,6 @@ export default function TwoFactorCard({
       setSetup(null);
       setCode('');
       setStatus({ enabled: true, pending: false, recoveryCodesRemaining: 10 });
-      await refresh();
     } catch (err) {
       if (err && err.code === 'unauthorized') {
         handleAuthLost();
@@ -145,7 +144,6 @@ export default function TwoFactorCard({
       setRecoveryCodes(null);
       setStatus({ enabled: false, pending: false, recoveryCodesRemaining: 0 });
       setSuccess('Two-factor authentication is disabled.');
-      await refresh();
     } catch (err) {
       if (err && err.code === 'unauthorized') {
         handleAuthLost();
