@@ -100,6 +100,15 @@ const EMPTY = 'empty';
 const LOCKED = 'locked';
 const UNLOCKED = 'unlocked';
 const ERROR = 'error';
+const DEFAULT_IDLE_LOCK_MS = 15 * 60 * 1000;
+
+export function zeroizeDataKey(value) {
+  if (value instanceof Uint8Array) {
+    value.fill(0);
+    return true;
+  }
+  return false;
+}
 
 function blankState() {
   return {
@@ -125,6 +134,7 @@ function snapshotOf(s) {
 export function VaultProvider({
   children,
   vaultService = defaultVaultService,
+  idleLockMs = DEFAULT_IDLE_LOCK_MS,
 }) {
   const { isAuthenticated, user } = useAuth();
   const userId = user && user.id != null ? user.id : null;
@@ -217,11 +227,7 @@ export function VaultProvider({
   }, []);
 
   const wipeKeys = useCallback(() => {
-    // Clearing dkRef.current doesn't zero the Uint8Array's backing
-    // buffer — JS has no reliable way to do that, and the garbage
-    // collector will eventually reclaim it. What we CAN guarantee is
-    // that no code path inside VaultContext can reach the bytes once
-    // the ref is null: every consumer reads them through the ref.
+    zeroizeDataKey(dkRef.current);
     dkRef.current = null;
     vaultKeyRef.current = null;
   }, []);
@@ -411,6 +417,7 @@ export function VaultProvider({
         sessionGenRef.current !== startingSession ||
         myGen !== genRef.current
       ) {
+        zeroizeDataKey(decrypted.dk);
         return { status: 'stale' };
       }
       dkRef.current = decrypted.dk;
@@ -523,6 +530,7 @@ export function VaultProvider({
         let dk;
         let vaultKey;
         let ifMatch;
+        let wipeLocalDk = false;
 
         if (isEmpty) {
           if (!opts || typeof opts.password !== 'string' || !opts.password) {
@@ -548,9 +556,9 @@ export function VaultProvider({
           ifMatch = '*';
         } else {
           // UNLOCKED. Re-use cached keys.
-          dk = dkRef.current;
+          const cachedDk = dkRef.current;
           vaultKey = vaultKeyRef.current;
-          if (!dk || !vaultKey) {
+          if (!cachedDk || !vaultKey) {
             // Invariant violation: status === UNLOCKED but refs are
             // null. Only possible if reset() fired between our
             // status read and here — treat as session loss.
@@ -558,10 +566,20 @@ export function VaultProvider({
             e.code = 'vault_locked_out';
             throw e;
           }
+          // Copy the DK for this encrypt operation. lock()/reset() may
+          // zeroize dkRef.current while encryptEnvelope is mid-flight; sharing
+          // the same Uint8Array would let a lock corrupt the saved blob.
+          dk = new Uint8Array(cachedDk);
+          wipeLocalDk = true;
           ifMatch = current.etag || undefined;
         }
 
-        const blob = await encryptEnvelope(newPayload, dk, vaultKey);
+        let blob;
+        try {
+          blob = await encryptEnvelope(newPayload, dk, vaultKey);
+        } finally {
+          if (wipeLocalDk) zeroizeDataKey(dk);
+        }
 
         // Re-check session after the await train. If we logged out
         // mid-encrypt we don't want to PUT under the new user's
@@ -669,6 +687,57 @@ export function VaultProvider({
     const myGen = bumpGen();
     commit({ status: LOCKED, data: null, error: null }, myGen);
   }, [bumpGen, commit, wipeKeys]);
+
+  useEffect(() => {
+    if (state.status !== UNLOCKED) return undefined;
+    if (typeof window === 'undefined') return undefined;
+    if (!Number.isFinite(idleLockMs) || idleLockMs <= 0) return undefined;
+
+    let timer = null;
+    const lockIfUnlocked = () => {
+      if (stateRef.current.status === UNLOCKED) lock();
+    };
+    const armTimer = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(lockIfUnlocked, idleLockMs);
+    };
+    const onVisibilityChange = () => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'hidden'
+      ) {
+        lockIfUnlocked();
+        return;
+      }
+      armTimer();
+    };
+
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'hidden'
+    ) {
+      lockIfUnlocked();
+      return undefined;
+    }
+    for (const eventName of events) {
+      window.addEventListener(eventName, armTimer, { passive: true });
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    armTimer();
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      for (const eventName of events) {
+        window.removeEventListener(eventName, armTimer);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+    };
+  }, [state.status, idleLockMs, lock]);
 
   // -----------------------------------------------------------------------
   // rewrapForPasswordChange(newMaster)
@@ -884,5 +953,6 @@ export function useVault() {
 }
 
 export const __testing = {
+  DEFAULT_IDLE_LOCK_MS,
   STATUS: { IDLE, LOADING, EMPTY, LOCKED, UNLOCKED, ERROR },
 };

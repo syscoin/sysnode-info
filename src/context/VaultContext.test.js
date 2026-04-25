@@ -9,7 +9,12 @@ import { render, act, waitFor } from '@testing-library/react';
 const PBKDF2_TIMEOUT_MS = 30000;
 
 import { AuthProvider } from './AuthContext';
-import { VaultProvider, useVault, __testing } from './VaultContext';
+import {
+  VaultProvider,
+  useVault,
+  zeroizeDataKey,
+  __testing,
+} from './VaultContext';
 import {
   encryptEnvelope,
   decryptEnvelope,
@@ -76,10 +81,15 @@ function VaultObserver({ onValue }) {
   return null;
 }
 
-function renderWithProviders({ authService, vaultService, onVault }) {
+function renderWithProviders({
+  authService,
+  vaultService,
+  onVault,
+  idleLockMs,
+}) {
   return render(
     <AuthProvider authService={authService}>
-      <VaultProvider vaultService={vaultService}>
+      <VaultProvider vaultService={vaultService} idleLockMs={idleLockMs}>
         <VaultObserver onValue={onVault} />
       </VaultProvider>
     </AuthProvider>
@@ -433,6 +443,115 @@ describe('VaultProvider — lock + logout', () => {
     expect(last._hasVaultKeyForTest()).toBe(false);
   });
 
+  test('idle timeout locks an unlocked vault and wipes keys', async () => {
+    const { master, blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      idleLockMs: 10,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    await act(async () => {
+      await last.unlockWithMaster(master);
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+    await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    expect(last.data).toBeNull();
+    expect(last._hasDataKeyForTest()).toBe(false);
+    expect(last._hasVaultKeyForTest()).toBe(false);
+  });
+
+  test('backgrounding the tab locks an unlocked vault immediately', async () => {
+    const { master, blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    const originalVisibility = document.visibilityState;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      idleLockMs: 60_000,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    try {
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.UNLOCKED));
+
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: originalVisibility,
+      });
+    }
+  });
+
+  test('unlocking while the tab is already hidden locks immediately', async () => {
+    const { master, blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    const originalVisibility = document.visibilityState;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      idleLockMs: 60_000,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    try {
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      expect(last.data).toBeNull();
+      expect(last._hasDataKeyForTest()).toBe(false);
+      expect(last._hasVaultKeyForTest()).toBe(false);
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: originalVisibility,
+      });
+    }
+  });
+
   test('hard-resets and wipes state when auth transitions to anonymous', async () => {
     const { master, blob } = await makeEncryptedBlobFor({});
     const vaultService = {
@@ -474,6 +593,18 @@ describe('VaultProvider — lock + logout', () => {
     expect(last.etag).toBeNull();
     expect(last._hasDataKeyForTest()).toBe(false);
     expect(last._hasVaultKeyForTest()).toBe(false);
+  });
+});
+
+describe('VaultProvider — key zeroization', () => {
+  test('zeroizeDataKey overwrites Uint8Array contents in place', () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    expect(zeroizeDataKey(bytes)).toBe(true);
+    expect(Array.from(bytes)).toEqual([0, 0, 0, 0]);
+  });
+
+  test('zeroizeDataKey ignores non-byte-array values', () => {
+    expect(zeroizeDataKey(null)).toBe(false);
   });
 });
 
@@ -1220,6 +1351,10 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
         expect(vaultService.save).toHaveBeenCalledTimes(1)
       );
     });
+    const savedBlob = vaultService.save.mock.calls[0][0].blob;
+    const vaultKey = await deriveVaultKey(master, SALT_A);
+    const savedEnvelope = await decryptEnvelope(savedBlob, vaultKey);
+    expect(savedEnvelope.data).toEqual({ k: 1 });
     expect(last.isSaving).toBe(true);
 
     await act(async () => {
