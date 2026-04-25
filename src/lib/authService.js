@@ -46,6 +46,14 @@ export function createAuthService(client = defaultClient) {
     return { ...res.data, master };
   }
 
+  async function completeTotpLogin({ challengeToken, code, recoveryCode }) {
+    const body = { challengeToken };
+    if (code) body.code = code;
+    if (recoveryCode) body.recoveryCode = recoveryCode;
+    const res = await client.post('/auth/login/totp', body);
+    return res.data;
+  }
+
   async function logout() {
     const res = await client.post('/auth/logout');
     return res.data;
@@ -113,6 +121,12 @@ export function createAuthService(client = defaultClient) {
     return res.data;
   }
 
+  async function deriveStepUpAuthHash(password, email) {
+    const { master, authHash } = await deriveLoginKeys(password, email);
+    if (master instanceof Uint8Array) master.fill(0);
+    return authHash;
+  }
+
   // ------------------------------------------------------------------
   // PR 7 — notification preferences
   // ------------------------------------------------------------------
@@ -130,6 +144,26 @@ export function createAuthService(client = defaultClient) {
   async function updatePrefs(prefs) {
     const res = await client.put('/auth/prefs', prefs || {});
     return res.data.notificationPrefs || {};
+  }
+
+  async function getTotpStatus() {
+    const res = await client.get('/auth/totp');
+    return res.data;
+  }
+
+  async function beginTotpSetup(oldAuthHash) {
+    const res = await client.post('/auth/totp/setup', { oldAuthHash });
+    return res.data;
+  }
+
+  async function enableTotp({ code, oldAuthHash }) {
+    const res = await client.post('/auth/totp/enable', { code, oldAuthHash });
+    return res.data;
+  }
+
+  async function disableTotp(code) {
+    const res = await client.post('/auth/totp/disable', { code });
+    return res.data;
   }
 
   // ------------------------------------------------------------------
@@ -159,12 +193,18 @@ export function createAuthService(client = defaultClient) {
     register,
     verifyEmail,
     login,
+    completeTotpLogin,
     logout,
     me,
     deriveChangePasswordKeys,
+    deriveStepUpAuthHash,
     changePassword,
     getPrefs,
     updatePrefs,
+    getTotpStatus,
+    beginTotpSetup,
+    enableTotp,
+    disableTotp,
     deleteAccount,
   };
 }

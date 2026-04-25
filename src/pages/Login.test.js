@@ -48,6 +48,7 @@ function mockService(overrides = {}) {
       Object.assign(new Error('unauth'), { status: 401 })
     ),
     login: jest.fn(),
+    completeTotpLogin: jest.fn(),
     logout: jest.fn(),
     register: jest.fn(),
     verifyEmail: jest.fn(),
@@ -175,6 +176,71 @@ test('sends the user to /account on successful login', async () => {
 
   await waitFor(() => expect(screen.getByText('ACCOUNT PAGE')).toBeInTheDocument());
   expect(service.login).toHaveBeenCalledWith('a@b.com', 'hunter22a');
+});
+
+test('completes a pending TOTP login before navigating', async () => {
+  const master = new Uint8Array(32).fill(7);
+  const service = mockService({
+    login: jest.fn().mockResolvedValue({
+      mfaRequired: true,
+      challengeToken: 'a'.repeat(64),
+      expiresAt: 1,
+      master,
+    }),
+    completeTotpLogin: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'a@b.com', totpEnabled: true },
+      expiresAt: 2,
+    }),
+    me: jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('unauth'), { status: 401 })
+      )
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'a@b.com', emailVerified: true, totpEnabled: true },
+      }),
+  });
+  renderLogin(service);
+  await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
+
+  await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+  expect(await screen.findByText(/two-factor check/i)).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(screen.getByRole('button', { name: /verify and sign in/i }));
+
+  await waitFor(() => expect(screen.getByText('ACCOUNT PAGE')).toBeInTheDocument());
+  expect(service.completeTotpLogin).toHaveBeenCalledWith({
+    challengeToken: 'a'.repeat(64),
+    code: '123456',
+    recoveryCode: undefined,
+  });
+});
+
+test('clears MFA errors when returning to password sign in', async () => {
+  const service = mockService({
+    login: jest.fn().mockResolvedValue({
+      mfaRequired: true,
+      challengeToken: 'a'.repeat(64),
+      expiresAt: 1,
+      master: new Uint8Array(32),
+    }),
+  });
+  renderLogin(service);
+  await waitFor(() => expect(service.me).toHaveBeenCalled());
+
+  await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  expect(await screen.findByText(/two-factor check/i)).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /verify and sign in/i }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(/authenticator code/i);
+
+  await userEvent.click(screen.getByRole('button', { name: /back to password sign in/i }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 });
 
 test('fires vault.unlockWithMaster with the login-returned master (fire-and-forget)', async () => {

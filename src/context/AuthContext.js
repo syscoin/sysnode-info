@@ -175,6 +175,15 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       // with the pre-login gen intact, so the mount refresh still
       // lands the correct (anonymous) state.
       const res = await authService.login(email, password);
+      if (res && res.mfaRequired) {
+        const myGen = nextGen();
+        safeSet(() => {
+          setUser(null);
+          commitStatus(ANONYMOUS);
+          setSessionExpired(false);
+        }, myGen);
+        return res;
+      }
       // `master` is the PBKDF2 output for password+email. We do not
       // store it in React state — it stays on the stack, flows through
       // to the caller's return value (Login page → VaultContext
@@ -218,6 +227,45 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
         // in flight. Fall back to the shallow user from /auth/login so
         // the UI doesn't punish the user for a hiccup on a best-effort
         // hydration call.
+        safeSet(() => {
+          setUser(res.user);
+          commitStatus(AUTHENTICATED);
+          setSessionExpired(false);
+        }, myGen);
+        return { user: res.user, master };
+      }
+    },
+    [authService, safeSet, nextGen, commitStatus]
+  );
+
+  const completeTotpLogin = useCallback(
+    async ({ challengeToken, code, recoveryCode, master }) => {
+      const res = await authService.completeTotpLogin({
+        challengeToken,
+        code,
+        recoveryCode,
+      });
+      const myGen = nextGen();
+      try {
+        const me = await authService.me();
+        safeSet(() => {
+          setUser(me.user);
+          commitStatus(AUTHENTICATED);
+          setSessionExpired(false);
+        }, myGen);
+        return { ...me, master };
+      } catch (err) {
+        if (err && err.status === 401) {
+          safeSet(() => {
+            setUser(null);
+            commitStatus(ANONYMOUS);
+          }, myGen);
+          const wrapped = new Error('session_not_established');
+          wrapped.code = 'session_not_established';
+          wrapped.status = 401;
+          wrapped.cause = err;
+          throw wrapped;
+        }
         safeSet(() => {
           setUser(res.user);
           commitStatus(AUTHENTICATED);
@@ -337,6 +385,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       sessionExpired,
       dismissSessionExpired,
       login,
+      completeTotpLogin,
       register,
       verifyEmail,
       logout,
@@ -349,6 +398,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       sessionExpired,
       dismissSessionExpired,
       login,
+      completeTotpLogin,
       register,
       verifyEmail,
       logout,

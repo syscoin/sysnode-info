@@ -4,6 +4,7 @@ import { useHistory } from 'react-router-dom';
 import PageMeta from '../components/PageMeta';
 import VaultStatusCard from '../components/VaultStatusCard';
 import ChangePasswordCard from '../components/ChangePasswordCard';
+import TwoFactorCard from '../components/TwoFactorCard';
 import NotificationPreferencesCard from '../components/NotificationPreferencesCard';
 import DeleteAccountCard from '../components/DeleteAccountCard';
 import GovernanceActivityLink from '../components/GovernanceActivityLink';
@@ -109,6 +110,8 @@ export default function Account() {
            * user opts into. Delete account has its own reveal.
            */}
           <ChangePasswordCard defaultOpen={false} />
+
+          <TwoFactorCard defaultOpen={false} />
 
           <NotificationPreferencesCard defaultOpen={false} />
 
