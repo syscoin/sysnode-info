@@ -955,7 +955,7 @@ describe('VaultProvider — load() single-flight + cache (Codex round 1)', () =>
 // ---------------------------------------------------------------------------
 describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
   test('encrypts under a fresh DK, PUTs with *, installs keys, transitions UNLOCKED', async () => {
-    const password = 'correct horse battery';
+    const password = 'Correct horse battery 1';
     const email = 'new@example.com';
     const saltV = SALT_A;
     const data = { keys: [{ label: 'mn1', wif: 'KxFoo...' }] };
@@ -1092,7 +1092,7 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
       act(async () => {
         await last.save(
           { keys: [] },
-          { password: 'correct horse battery', email: 'x@y.com' }
+          { password: 'Correct horse battery 1', email: 'x@y.com' }
         );
       })
     ).rejects.toMatchObject({ code: 'missing_salt_v' });
@@ -1122,7 +1122,7 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
       try {
         await last.save(
           { k: 1 },
-          { password: 'correct horse battery', email: 'user@example.com' }
+          { password: 'Correct horse battery 1', email: 'user@example.com' }
         );
       } catch (e) {
         caught = e;
@@ -1326,7 +1326,7 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
       try {
         await last.save(
           { version: 1, keys: [] },
-          { password: 'correct horse battery' }
+          { password: 'Correct horse battery 1' }
         );
       } catch (err) {
         caught = err;

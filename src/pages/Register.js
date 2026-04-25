@@ -19,7 +19,7 @@ const ERROR_COPY = {
   server_misconfigured:
     'The sysnode server is temporarily unavailable. Please try again in a moment.',
   invalid_body:
-    'Please enter a valid email and a password of at least 16 characters.',
+    'Please enter a valid email and a password that meets the requirements.',
   // Thrown client-side from kdf.js:subtleCrypto when window.crypto.subtle
   // is missing — which in practice means the SPA is being served over
   // plain HTTP from a non-localhost origin. Give the user the actionable

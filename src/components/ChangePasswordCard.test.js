@@ -202,9 +202,9 @@ describe('ChangePasswordCard', () => {
       fireEvent.submit(screen.getByTestId('change-password-card'));
     });
 
-    expect(screen.getByTestId('change-password-local-error')).toHaveTextContent(
-      /at least 16/i
-    );
+    const error = screen.getByTestId('change-password-local-error');
+    expect(error).toHaveTextContent(/at least 8/i);
+    expect(error).toHaveTextContent(/3 of/i);
     expect(cardAuthService.deriveChangePasswordKeys).not.toHaveBeenCalled();
     expect(cardAuthService.changePassword).not.toHaveBeenCalled();
   });

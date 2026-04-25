@@ -347,9 +347,9 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     );
 
     await userEvent.click(screen.getByTestId('vault-import-save'));
-    expect(await screen.findByTestId('vault-import-error')).toHaveTextContent(
-      /at least 16/i
-    );
+    const error = await screen.findByTestId('vault-import-error');
+    expect(error).toHaveTextContent(/at least 8/i);
+    expect(error).toHaveTextContent(/3 of/i);
     expect(vault.save).not.toHaveBeenCalled();
   });
 
@@ -359,7 +359,7 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     pasteInto(screen.getByTestId('vault-import-paste'), `${VALID_WIF_1},MN 1`);
     await userEvent.type(
       screen.getByTestId('vault-import-password'),
-      'my-secret-passphrase'
+      'My-secret-passphrase1'
     );
     await waitFor(() =>
       expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
@@ -367,7 +367,7 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     await userEvent.click(screen.getByTestId('vault-import-save'));
     await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
     expect(vault.save.mock.calls[0][1]).toEqual({
-      password: 'my-secret-passphrase',
+      password: 'My-secret-passphrase1',
       email: 'user@example.com',
     });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
