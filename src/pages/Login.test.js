@@ -219,6 +219,30 @@ test('completes a pending TOTP login before navigating', async () => {
   });
 });
 
+test('clears MFA errors when returning to password sign in', async () => {
+  const service = mockService({
+    login: jest.fn().mockResolvedValue({
+      mfaRequired: true,
+      challengeToken: 'a'.repeat(64),
+      expiresAt: 1,
+      master: new Uint8Array(32),
+    }),
+  });
+  renderLogin(service);
+  await waitFor(() => expect(service.me).toHaveBeenCalled());
+
+  await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  expect(await screen.findByText(/two-factor check/i)).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /verify and sign in/i }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(/authenticator code/i);
+
+  await userEvent.click(screen.getByRole('button', { name: /back to password sign in/i }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
 test('fires vault.unlockWithMaster with the login-returned master (fire-and-forget)', async () => {
   // Contract: a successful login hands `master` from AuthContext to the
   // VaultContext via unlockWithMaster(). The Login page does NOT await

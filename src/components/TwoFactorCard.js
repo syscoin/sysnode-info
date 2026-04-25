@@ -11,6 +11,8 @@ const ERROR_COPY = {
   invalid_credentials: 'Your current password is incorrect.',
   password_required: 'Enter your current password before changing two-factor settings.',
   missing_email: 'Your account email is missing. Refresh and try again.',
+  recovery_codes_missing:
+    'Two-factor authentication changed, but recovery codes were not returned. Refresh before continuing.',
   unauthorized: 'Your session expired. Please sign in again.',
   network_error:
     "We couldn't reach the sysnode server. Check your connection and try again.",
@@ -137,11 +139,23 @@ export default function TwoFactorCard({
     try {
       const oldAuthHash = await deriveStepUpAuthHash();
       const out = await authService.enableTotp({ code, oldAuthHash });
-      setRecoveryCodes(out.recoveryCodes || []);
+      const issuedRecoveryCodes = Array.isArray(out.recoveryCodes)
+        ? out.recoveryCodes
+        : [];
+      if (issuedRecoveryCodes.length === 0) {
+        setErrCode('recovery_codes_missing');
+        await loadStatus();
+        return;
+      }
+      setRecoveryCodes(issuedRecoveryCodes);
       setSetup(null);
       setCode('');
       setCurrentPassword('');
-      setStatus({ enabled: true, pending: false, recoveryCodesRemaining: 10 });
+      setStatus({
+        enabled: true,
+        pending: false,
+        recoveryCodesRemaining: issuedRecoveryCodes.length,
+      });
     } catch (err) {
       if (err && err.code === 'unauthorized') {
         handleAuthLost();

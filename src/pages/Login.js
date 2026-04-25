@@ -102,6 +102,7 @@ export default function Login() {
     setTotpCode('');
     setRecoveryCode('');
     setUseRecoveryCode(false);
+    setError(null);
   }
 
   function clearPendingMfaStateOnly() {

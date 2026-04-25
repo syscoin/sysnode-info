@@ -112,3 +112,46 @@ test('allows restarting setup after the pending TOTP setup expires', async () =>
     ).toBeInTheDocument()
   );
 });
+
+test('uses the issued recovery code count after enabling TOTP', async () => {
+  const authService = service({
+    enableTotp: jest.fn().mockResolvedValue({
+      recoveryCodes: ['one', 'two'],
+    }),
+  });
+  renderCard(authService);
+
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
+  await userEvent.click(
+    screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await screen.findByLabelText(/manual setup secret fallback/i);
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+  expect(await screen.findByText(/recovery codes remaining: 2/i)).toBeInTheDocument();
+});
+
+test('does not finalize TOTP enable UI without recovery codes', async () => {
+  const authService = service({
+    enableTotp: jest.fn().mockResolvedValue({}),
+  });
+  renderCard(authService);
+
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
+  await userEvent.click(
+    screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await screen.findByLabelText(/manual setup secret fallback/i);
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(/recovery codes/i);
+  expect(
+    screen.queryByText(/recovery codes remaining:/i)
+  ).not.toBeInTheDocument();
+});
