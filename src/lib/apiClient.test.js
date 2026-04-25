@@ -40,13 +40,13 @@ describe('readCsrfCookie', () => {
 });
 
 describe('resolveDefaultApiBase', () => {
-  test('uses explicit REACT_APP_API_BASE override', () => {
+  test('keeps production authenticated calls same-origin even with an override', () => {
     expect(
       resolveDefaultApiBase({
         apiBase: 'https://api.example.test',
         nodeEnv: 'production',
       })
-    ).toBe('https://api.example.test');
+    ).toBe('');
   });
 
   test('defaults production authenticated calls to same-origin relative paths', () => {
@@ -59,6 +59,15 @@ describe('resolveDefaultApiBase', () => {
     expect(resolveDefaultApiBase({ apiBase: '', nodeEnv: 'development' })).toBe(
       'http://localhost:3001'
     );
+  });
+
+  test('uses explicit REACT_APP_API_BASE override outside production', () => {
+    expect(
+      resolveDefaultApiBase({
+        apiBase: 'https://api.example.test',
+        nodeEnv: 'development',
+      })
+    ).toBe('https://api.example.test');
   });
 });
 
