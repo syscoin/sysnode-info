@@ -155,3 +155,32 @@ test('does not finalize TOTP enable UI without recovery codes', async () => {
     screen.queryByText(/recovery codes remaining:/i)
   ).not.toBeInTheDocument();
 });
+
+test('clears stale TOTP errors after a successful status refresh', async () => {
+  const authService = service({
+    getTotpStatus: jest
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('network'), { code: 'network_error' }))
+      .mockResolvedValueOnce({
+        enabled: false,
+        pending: false,
+        recoveryCodesRemaining: 0,
+      }),
+  });
+  renderCard(authService);
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(/couldn't reach/i);
+  await userEvent.click(
+    screen.getByRole('button', {
+      name: /collapse two-factor authentication settings/i,
+    })
+  );
+  await userEvent.click(
+    screen.getByRole('button', {
+      name: /expand two-factor authentication settings/i,
+    })
+  );
+
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+});

@@ -46,6 +46,7 @@ export default function TwoFactorCard({
     try {
       const next = await authService.getTotpStatus();
       setStatus(next);
+      setErrCode(null);
     } catch (err) {
       if (err && err.code === 'unauthorized') {
         handleAuthLost();
@@ -143,8 +144,8 @@ export default function TwoFactorCard({
         ? out.recoveryCodes
         : [];
       if (issuedRecoveryCodes.length === 0) {
-        setErrCode('recovery_codes_missing');
         await loadStatus();
+        setErrCode('recovery_codes_missing');
         return;
       }
       setRecoveryCodes(issuedRecoveryCodes);
