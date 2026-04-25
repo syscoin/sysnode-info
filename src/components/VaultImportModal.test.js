@@ -334,13 +334,32 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     );
   });
 
+  test('rejects short first-write passwords before vault.save', async () => {
+    const vault = emptyVault();
+    mount({ vault });
+    pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
+    await userEvent.type(
+      screen.getByTestId('vault-import-password'),
+      'too-short'
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
+    );
+
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+    expect(await screen.findByTestId('vault-import-error')).toHaveTextContent(
+      /at least 16/i
+    );
+    expect(vault.save).not.toHaveBeenCalled();
+  });
+
   test('forwards {password, email} to vault.save on first write', async () => {
     const vault = emptyVault();
     const { onClose } = mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), `${VALID_WIF_1},MN 1`);
     await userEvent.type(
       screen.getByTestId('vault-import-password'),
-      'my-secret'
+      'my-secret-passphrase'
     );
     await waitFor(() =>
       expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
@@ -348,7 +367,7 @@ describe('VaultImportModal — save flow (EMPTY, first write)', () => {
     await userEvent.click(screen.getByTestId('vault-import-save'));
     await waitFor(() => expect(vault.save).toHaveBeenCalledTimes(1));
     expect(vault.save.mock.calls[0][1]).toEqual({
-      password: 'my-secret',
+      password: 'my-secret-passphrase',
       email: 'user@example.com',
     });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));

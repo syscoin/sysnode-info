@@ -4,16 +4,22 @@ import { Link } from 'react-router-dom';
 import PageMeta from '../components/PageMeta';
 import { useAuth } from '../context/AuthContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
+import {
+  MIN_VAULT_PASSWORD_LENGTH,
+  validateVaultPassword,
+  VAULT_PASSWORD_HINT,
+} from '../lib/passwordPolicy';
 
 const ERROR_COPY = {
   invalid_email: 'That email address doesn\'t look right — please check and try again.',
-  password_too_short: 'Password must be at least 8 characters.',
+  password_too_short: VAULT_PASSWORD_HINT,
   password_mismatch: 'The passwords you entered don\'t match.',
   network_error:
     'We couldn\'t reach the sysnode server. Check your connection and try again.',
   server_misconfigured:
     'The sysnode server is temporarily unavailable. Please try again in a moment.',
-  invalid_body: 'Please enter a valid email and a password of at least 8 characters.',
+  invalid_body:
+    'Please enter a valid email and a password of at least 16 characters.',
   // Thrown client-side from kdf.js:subtleCrypto when window.crypto.subtle
   // is missing — which in practice means the SPA is being served over
   // plain HTTP from a non-localhost origin. Give the user the actionable
@@ -52,13 +58,6 @@ function inputClass(fields, name) {
   return fields.includes(name) ? 'auth-input auth-input--error' : 'auth-input';
 }
 
-// We intentionally enforce only a length floor on the client. The server
-// never sees the password directly — it only receives the PBKDF2+HKDF
-// output — so enforcing arbitrary character-class rules would add friction
-// without buying anything. Users who want stronger passwords are welcome
-// to use longer ones; the KDF work factor cushions the rest.
-const MIN_PASSWORD_LEN = 8;
-
 export default function Register() {
   const { register } = useAuth();
 
@@ -81,10 +80,11 @@ export default function Register() {
       });
       return;
     }
-    if (password.length < MIN_PASSWORD_LEN) {
+    const passwordError = validateVaultPassword(password);
+    if (passwordError) {
       setError({
-        code: 'password_too_short',
-        message: errorToCopy('password_too_short'),
+        code: passwordError.code,
+        message: passwordError.message,
       });
       return;
     }
@@ -174,8 +174,8 @@ export default function Register() {
           <h1>Create your account</h1>
           <p className="page-hero__copy">
             Your password derives a key in your browser — Sysnode never sees
-            or stores it. Choose something you'll remember, because a lost
-            password means a lost voting vault.
+            or stores it. Choose a long passphrase you'll remember, because a
+            lost password means a lost voting vault.
           </p>
         </div>
       </section>
@@ -218,13 +218,14 @@ export default function Register() {
                 onChange={function onPasswordChange(e) {
                   setPassword(e.target.value);
                 }}
+                minLength={MIN_VAULT_PASSWORD_LENGTH}
                 aria-invalid={errorFields.includes('password') || undefined}
                 aria-describedby={
                   errorFields.includes('password') ? 'register-alert' : undefined
                 }
                 required
               />
-              <span className="auth-hint">At least 8 characters.</span>
+              <span className="auth-hint">{VAULT_PASSWORD_HINT}</span>
             </div>
 
             <div className="auth-field">
@@ -240,6 +241,7 @@ export default function Register() {
                 onChange={function onConfirmChange(e) {
                   setConfirm(e.target.value);
                 }}
+                minLength={MIN_VAULT_PASSWORD_LENGTH}
                 aria-invalid={errorFields.includes('confirm') || undefined}
                 aria-describedby={
                   errorFields.includes('confirm') ? 'register-alert' : undefined

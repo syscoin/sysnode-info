@@ -955,7 +955,7 @@ describe('VaultProvider — load() single-flight + cache (Codex round 1)', () =>
 // ---------------------------------------------------------------------------
 describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
   test('encrypts under a fresh DK, PUTs with *, installs keys, transitions UNLOCKED', async () => {
-    const password = 'hunter22a';
+    const password = 'correct horse battery';
     const email = 'new@example.com';
     const saltV = SALT_A;
     const data = { keys: [{ label: 'mn1', wif: 'KxFoo...' }] };
@@ -1035,6 +1035,33 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     expect(last._hasDataKeyForTest()).toBe(false);
   });
 
+  test('first write rejects weak passwords before encrypting', async () => {
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+
+    await expect(
+      act(async () => {
+        await last.save(
+          { keys: [] },
+          { password: 'short-password', email: 'x@y.com' }
+        );
+      })
+    ).rejects.toMatchObject({ code: 'password_too_short' });
+    expect(vaultService.save).not.toHaveBeenCalled();
+    expect(last.status).toBe(STATUS.EMPTY);
+  });
+
   test('first write rejects when user has no saltV on their identity', async () => {
     const vaultService = {
       load: jest.fn().mockResolvedValue({ empty: true }),
@@ -1063,7 +1090,10 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
 
     await expect(
       act(async () => {
-        await last.save({ keys: [] }, { password: 'pw', email: 'x@y.com' });
+        await last.save(
+          { keys: [] },
+          { password: 'correct horse battery', email: 'x@y.com' }
+        );
       })
     ).rejects.toMatchObject({ code: 'missing_salt_v' });
     expect(vaultService.save).not.toHaveBeenCalled();
@@ -1090,7 +1120,10 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     let caught;
     await act(async () => {
       try {
-        await last.save({ k: 1 }, { password: 'pw', email: 'user@example.com' });
+        await last.save(
+          { k: 1 },
+          { password: 'correct horse battery', email: 'user@example.com' }
+        );
       } catch (e) {
         caught = e;
       }

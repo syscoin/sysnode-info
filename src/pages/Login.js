@@ -8,7 +8,7 @@ import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 
 const ERROR_COPY = {
   invalid_email: 'That email address doesn\'t look right — please check and try again.',
-  password_too_short: 'Passwords are at least 8 characters.',
+  password_too_short: 'Enter your account password.',
   invalid_credentials:
     "We couldn't sign you in with that email and password. Double-check for typos and try again.",
   email_not_verified:
