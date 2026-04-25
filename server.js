@@ -22,11 +22,27 @@ function explicitConnectSources(value) {
   );
 }
 
+function connectSourceFromUrl(value) {
+  if (!value || String(value).startsWith('/')) return null;
+  try {
+    return new URL(value).origin;
+  } catch (_err) {
+    return null;
+  }
+}
+
+const defaultPublicApiBase =
+  process.env.REACT_APP_API_BASE ||
+  (process.env.NODE_ENV === 'production'
+    ? 'https://syscoin.dev'
+    : 'http://localhost:3001');
+
 const connectSrc = uniqueSources([
   "'self'",
   // Key-custody pages must not allow arbitrary HTTPS exfiltration. Keep
-  // production same-origin by default; deployments that truly need another
-  // endpoint can add exact origins via SYSNODE_CSP_CONNECT_SRC.
+  // production same-origin by default while preserving the exact anonymous
+  // public API origin used by src/lib/api.js.
+  connectSourceFromUrl(defaultPublicApiBase),
   ...explicitConnectSources(process.env.SYSNODE_CSP_CONNECT_SRC),
 ]);
 

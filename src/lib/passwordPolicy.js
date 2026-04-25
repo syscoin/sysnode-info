@@ -15,9 +15,23 @@ export const PASSWORD_STRENGTH_LABELS = [
 ];
 
 function normalizeUserInputs(userInputs) {
-  return (Array.isArray(userInputs) ? userInputs : [])
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
+  const tokens = [];
+  for (const value of Array.isArray(userInputs) ? userInputs : []) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) continue;
+
+    tokens.push(normalized);
+
+    const [localPart, domain] = normalized.split('@');
+    if (localPart && domain) {
+      tokens.push(localPart, domain);
+      tokens.push(...domain.split('.'));
+    }
+
+    tokens.push(...normalized.split(/[^a-z0-9]+/));
+  }
+
+  return [...new Set(tokens.filter((token) => token.length >= 3))];
 }
 
 export function estimateVaultPasswordStrength(password, userInputs = []) {

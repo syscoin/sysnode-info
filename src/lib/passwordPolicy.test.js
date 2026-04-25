@@ -30,9 +30,14 @@ test('feeds user inputs into the strength estimator', () => {
   const withoutEmail = estimateVaultPasswordStrength(password);
   const withEmail = estimateVaultPasswordStrength(password, [
     `${emailLocalPart}@example.com`,
-    emailLocalPart,
   ]);
 
   expect(password.length).toBeGreaterThanOrEqual(MIN_VAULT_PASSWORD_LENGTH);
-  expect(withEmail.guesses).toBeLessThanOrEqual(withoutEmail.guesses);
+  expect(withEmail.guesses).toBeLessThan(withoutEmail.guesses);
+});
+
+test('rejects passwords built from the email local part', () => {
+  expect(
+    validateVaultPassword('sentryoperator2026!', ['sentryoperator@example.com'])
+  ).toMatchObject({ code: 'password_too_weak' });
 });
