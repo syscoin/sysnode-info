@@ -36,14 +36,17 @@ https://sysnode.info/        -> SPA
 https://sysnode.info/auth/*  -> backend
 https://sysnode.info/vault/* -> backend
 https://sysnode.info/gov/*   -> backend
+https://sysnode.info/mnStats -> backend
+https://sysnode.info/mnCount -> backend
+https://sysnode.info/govlist -> backend
 ```
 
 The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. For a fork or private production deployment, keep the same-origin shape and point the reverse proxy at that deployment's backend. This keeps the CSP `connect-src` policy, host-only cookies, and CSRF model in lockstep.
 
-For local or non-production testing, you can override the API base URL at build time:
+For local or non-production testing, you can override the API base URL while running the dev server:
 
 ```bash
-REACT_APP_API_BASE=https://your-backend.example npm run build
+REACT_APP_API_BASE=https://your-backend.example npm start
 ```
 
 The value is read at build time by both `src/lib/apiClient.js` (authenticated surface) and `src/lib/api.js` (anonymous surface — superblock timing, governance feed, masternode stats) outside production. Without it, development requests use `http://localhost:3001`; production requests use same-origin relative paths. Keeping the API under the SPA origin preserves host-only `Secure; SameSite=Lax` cookies and lets the SPA mirror the CSRF cookie into `X-CSRF-Token` without cross-site credentialed fetches.
