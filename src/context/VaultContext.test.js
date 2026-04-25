@@ -1312,6 +1312,10 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
         expect(vaultService.save).toHaveBeenCalledTimes(1)
       );
     });
+    const savedBlob = vaultService.save.mock.calls[0][0].blob;
+    const vaultKey = await deriveVaultKey(master, SALT_A);
+    const savedEnvelope = await decryptEnvelope(savedBlob, vaultKey);
+    expect(savedEnvelope.data).toEqual({ k: 1 });
     expect(last.isSaving).toBe(true);
 
     await act(async () => {

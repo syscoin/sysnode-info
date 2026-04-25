@@ -530,6 +530,7 @@ export function VaultProvider({
         let dk;
         let vaultKey;
         let ifMatch;
+        let wipeLocalDk = false;
 
         if (isEmpty) {
           if (!opts || typeof opts.password !== 'string' || !opts.password) {
@@ -555,9 +556,9 @@ export function VaultProvider({
           ifMatch = '*';
         } else {
           // UNLOCKED. Re-use cached keys.
-          dk = dkRef.current;
+          const cachedDk = dkRef.current;
           vaultKey = vaultKeyRef.current;
-          if (!dk || !vaultKey) {
+          if (!cachedDk || !vaultKey) {
             // Invariant violation: status === UNLOCKED but refs are
             // null. Only possible if reset() fired between our
             // status read and here — treat as session loss.
@@ -565,10 +566,20 @@ export function VaultProvider({
             e.code = 'vault_locked_out';
             throw e;
           }
+          // Copy the DK for this encrypt operation. lock()/reset() may
+          // zeroize dkRef.current while encryptEnvelope is mid-flight; sharing
+          // the same Uint8Array would let a lock corrupt the saved blob.
+          dk = new Uint8Array(cachedDk);
+          wipeLocalDk = true;
           ifMatch = current.etag || undefined;
         }
 
-        const blob = await encryptEnvelope(newPayload, dk, vaultKey);
+        let blob;
+        try {
+          blob = await encryptEnvelope(newPayload, dk, vaultKey);
+        } finally {
+          if (wipeLocalDk) zeroizeDataKey(dk);
+        }
 
         // Re-check session after the await train. If we logged out
         // mid-encrypt we don't want to PUT under the new user's
