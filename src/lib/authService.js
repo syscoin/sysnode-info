@@ -141,8 +141,9 @@ export function createAuthService(client = defaultClient) {
   // Returns:
   //   true  on 204
   // Throws:
-  //   { code: 'invalid_credentials' } on 401
-  //   the original axios error otherwise (server misconfig, network…)
+  //   { code: 'invalid_credentials' } when the backend explicitly says
+  //     the password hash mismatched
+  //   the original API error otherwise (expired session, network…)
   // ------------------------------------------------------------------
   async function verifyPassword({ authHash }) {
     if (typeof authHash !== 'string' || authHash.length === 0) {
@@ -152,10 +153,19 @@ export function createAuthService(client = defaultClient) {
       await client.post('/auth/verify-password', { authHash });
       return true;
     } catch (err) {
-      const status = err && err.response && err.response.status;
-      if (status === 401) {
+      const status =
+        (err && err.status) || (err && err.response && err.response.status);
+      const responseData = err && err.response && err.response.data;
+      const code =
+        (err && err.code) ||
+        (responseData &&
+          typeof responseData === 'object' &&
+          (responseData.error || responseData.code));
+      if (status === 401 && code === 'invalid_credentials') {
         const e = new Error('invalid_credentials');
         e.code = 'invalid_credentials';
+        e.status = status;
+        e.response = err.response;
         throw e;
       }
       throw err;

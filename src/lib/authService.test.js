@@ -135,6 +135,53 @@ describe('authService.me / logout', () => {
   });
 });
 
+describe('authService.verifyPassword', () => {
+  const AUTH_HASH =
+    'a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4';
+
+  test('posts authHash and resolves true on 204', async () => {
+    const { service, adapter } = makeService();
+    let captured;
+    adapter.onPost('/auth/verify-password').reply((config) => {
+      captured = JSON.parse(config.data);
+      return [204];
+    });
+
+    await expect(service.verifyPassword({ authHash: AUTH_HASH })).resolves.toBe(
+      true
+    );
+    expect(captured).toEqual({ authHash: AUTH_HASH });
+  });
+
+  test('preserves explicit invalid_credentials from the backend', async () => {
+    const { service, adapter } = makeService();
+    adapter
+      .onPost('/auth/verify-password')
+      .reply(401, { error: 'invalid_credentials' });
+
+    await expect(
+      service.verifyPassword({ authHash: AUTH_HASH })
+    ).rejects.toMatchObject({
+      code: 'invalid_credentials',
+      status: 401,
+    });
+  });
+
+  test('does not rewrite session 401s into password mismatch errors', async () => {
+    const { service, adapter } = makeService();
+    adapter
+      .onPost('/auth/verify-password')
+      .reply(401, { error: 'unauthorized' });
+
+    await expect(
+      service.verifyPassword({ authHash: AUTH_HASH })
+    ).rejects.toMatchObject({
+      code: 'unauthorized',
+      status: 401,
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // PR 7 — deriveChangePasswordKeys + changePassword
 // ---------------------------------------------------------------------------
