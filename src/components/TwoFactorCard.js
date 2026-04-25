@@ -179,7 +179,8 @@ export default function TwoFactorCard({
     setErrCode(null);
     setSuccess(null);
     try {
-      await authService.disableTotp(code);
+      const oldAuthHash = await deriveStepUpAuthHash();
+      await authService.disableTotp({ code, oldAuthHash });
       setSetup(null);
       setCode('');
       setCurrentPassword('');
@@ -290,7 +291,7 @@ export default function TwoFactorCard({
             </div>
           ) : null}
 
-          {!status.enabled ? (
+          {!setup ? (
             <div className="auth-field">
               <label className="auth-label" htmlFor="totp-current-password">
                 Current password

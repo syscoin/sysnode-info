@@ -375,6 +375,32 @@ describe('authService.updatePrefs', () => {
   });
 });
 
+describe('authService.disableTotp', () => {
+  const AUTH =
+    'a4f8b3c1d9e7f2a5b1c6d8e4f7a9b2c5d1e8f4a7b3c9d5e1f6a2b8c4d7e3f5a9';
+
+  test('posts authenticator code and current-password proof', async () => {
+    const { service, adapter } = makeService();
+    let captured;
+    adapter.onPost('/auth/totp/disable').reply((config) => {
+      captured = JSON.parse(config.data);
+      return [200, { status: 'disabled' }];
+    });
+
+    await expect(
+      service.disableTotp({ code: '123456', oldAuthHash: AUTH })
+    ).resolves.toEqual({ status: 'disabled' });
+    expect(captured).toEqual({ code: '123456', oldAuthHash: AUTH });
+  });
+
+  test('rejects client-side when oldAuthHash is missing', async () => {
+    const { service } = makeService();
+    await expect(service.disableTotp({ code: '123456' })).rejects.toThrow(
+      /oldAuthHash required/
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // PR 7 — deleteAccount (GDPR right to erasure)
 // ---------------------------------------------------------------------------

@@ -206,8 +206,11 @@ export function createAuthService(client = defaultClient) {
     return res.data;
   }
 
-  async function disableTotp(code) {
-    const res = await client.post('/auth/totp/disable', { code });
+  async function disableTotp({ code, oldAuthHash }) {
+    if (typeof oldAuthHash !== 'string' || oldAuthHash.length === 0) {
+      throw new Error('disableTotp: oldAuthHash required');
+    }
+    const res = await client.post('/auth/totp/disable', { code, oldAuthHash });
     return res.data;
   }
 

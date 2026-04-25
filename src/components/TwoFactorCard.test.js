@@ -156,6 +156,38 @@ test('does not finalize TOTP enable UI without recovery codes', async () => {
   ).not.toBeInTheDocument();
 });
 
+test('requires current password step-up when disabling TOTP', async () => {
+  const authService = service({
+    getTotpStatus: jest.fn().mockResolvedValue({
+      enabled: true,
+      pending: false,
+      recoveryCodesRemaining: 9,
+    }),
+    disableTotp: jest.fn().mockResolvedValue({ status: 'disabled' }),
+  });
+  renderCard(authService);
+
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  expect(await screen.findByText('Enabled')).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(
+    screen.getByRole('button', { name: /disable two-factor authentication/i })
+  );
+
+  await waitFor(() =>
+    expect(authService.disableTotp).toHaveBeenCalledWith({
+      code: '123456',
+      oldAuthHash: 'a'.repeat(64),
+    })
+  );
+  expect(authService.deriveStepUpAuthHash).toHaveBeenCalledWith(
+    'Correct1!',
+    'user@example.com'
+  );
+});
+
 test('clears stale TOTP errors after a successful status refresh', async () => {
   const authService = service({
     getTotpStatus: jest
