@@ -172,6 +172,48 @@ describe('createApiClient — 401 handling', () => {
     expect(onAuthLost).not.toHaveBeenCalled();
   });
 
+  test('invokes onAuthLost for non-credential /auth/verify-password 401s', async () => {
+    const onAuthLost = jest.fn();
+    const client = createApiClient({
+      baseURL: 'http://test',
+      readCsrf: () => null,
+      onAuthLost,
+    });
+    const adapter = new MockAdapter(client);
+    adapter
+      .onPost('/auth/verify-password')
+      .reply(401, { error: 'unauthorized' });
+
+    await expect(
+      client.post('/auth/verify-password', {})
+    ).rejects.toMatchObject({
+      code: 'unauthorized',
+      status: 401,
+    });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+  });
+
+  test('does NOT invoke onAuthLost for verify-password password mismatches', async () => {
+    const onAuthLost = jest.fn();
+    const client = createApiClient({
+      baseURL: 'http://test',
+      readCsrf: () => null,
+      onAuthLost,
+    });
+    const adapter = new MockAdapter(client);
+    adapter
+      .onPost('/auth/verify-password')
+      .reply(401, { error: 'invalid_credentials' });
+
+    await expect(
+      client.post('/auth/verify-password', {})
+    ).rejects.toMatchObject({
+      code: 'invalid_credentials',
+      status: 401,
+    });
+    expect(onAuthLost).not.toHaveBeenCalled();
+  });
+
   test('onAuthLost exception does not crash the error path', async () => {
     const client = createApiClient({
       baseURL: 'http://test',
