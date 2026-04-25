@@ -4,6 +4,34 @@ const path = require('path');
 const app = express();
 app.disable('x-powered-by');
 
+function originFromUrl(value) {
+  if (!value) return null;
+  try {
+    return new URL(value).origin;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function splitCspSources(value) {
+  if (!value) return [];
+  return value
+    .split(/[\s,]+/)
+    .map((source) => source.trim())
+    .filter(Boolean);
+}
+
+function uniqueSources(sources) {
+  return [...new Set(sources.filter(Boolean))];
+}
+
+const connectSrc = uniqueSources([
+  "'self'",
+  'https://syscoin.dev',
+  originFromUrl(process.env.REACT_APP_API_BASE),
+  ...splitCspSources(process.env.SYSNODE_CSP_CONNECT_SRC),
+]);
+
 const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
@@ -11,8 +39,8 @@ const SECURITY_HEADERS = {
     "object-src 'none'",
     "frame-ancestors 'none'",
     "script-src 'self'",
-    "connect-src 'self'",
-    "img-src 'self' data:",
+    `connect-src ${connectSrc.join(' ')}`,
+    "img-src 'self' data: https://coin-images.coingecko.com",
     "font-src 'self'",
     "style-src 'self' 'unsafe-inline'",
   ].join('; '),
