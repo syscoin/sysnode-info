@@ -291,7 +291,7 @@ export default function TwoFactorCard({
             </div>
           ) : null}
 
-          {!setup ? (
+          {!recoveryCodes ? (
             <div className="auth-field">
               <label className="auth-label" htmlFor="totp-current-password">
                 Current password

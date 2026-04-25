@@ -188,6 +188,24 @@ test('requires current password step-up when disabling TOTP', async () => {
   );
 });
 
+test('keeps current password editable during active TOTP setup', async () => {
+  const authService = renderCard();
+
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'OldPass1!');
+  await userEvent.click(
+    screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await screen.findByLabelText(/manual setup secret fallback/i);
+
+  const password = screen.getByLabelText(/current password/i);
+  expect(password).toBeInTheDocument();
+  await userEvent.clear(password);
+  await userEvent.type(password, 'NewPass1!');
+  expect(password).toHaveValue('NewPass1!');
+});
+
 test('clears stale TOTP errors after a successful status refresh', async () => {
   const authService = service({
     getTotpStatus: jest
