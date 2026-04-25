@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Base URL for the anonymous public sysnode-backend endpoints
-// (`/mnStats`, `/mnCount`, `/govlist`). Kept in lockstep with the
+// (`/mnstats`, `/mncount`, `/govlist`). Kept in lockstep with the
 // authenticated client in `./apiClient.js` so a single build-time
 // override (`REACT_APP_API_BASE`) retargets BOTH surfaces at once.
 //
@@ -33,12 +33,12 @@ const client = axios.create({
 });
 
 export async function fetchNetworkStats() {
-  const response = await client.get('/mnStats');
+  const response = await client.get('/mnstats');
   return response.data;
 }
 
 export async function fetchNodeHistory() {
-  const response = await client.get('/mnCount');
+  const response = await client.get('/mncount');
   return response.data;
 }
 

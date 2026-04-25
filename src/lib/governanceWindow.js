@@ -278,7 +278,7 @@ export function computeProposalWindow({
   return { startEpoch, endEpoch, anchor, padding };
 }
 
-// Extract the next-superblock epoch (seconds) from the /mnStats
+// Extract the next-superblock epoch (seconds) from the /mnstats
 // response. The backend exposes a numeric `superblock_next_epoch_sec`
 // field (see sysnode-backend services/calculations.js). We never
 // parse the human-readable `superblock_date` string — it's formatted

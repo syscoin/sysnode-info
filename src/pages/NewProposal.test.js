@@ -71,7 +71,7 @@ import { proposalService } from '../lib/proposalService';
 /* eslint-enable import/first */
 
 // Stable next-superblock anchor captured fresh per-test in beforeEach
-// (see below). The wizard now fetches /mnStats BOTH on mount AND at
+// (see below). The wizard now fetches /mnstats BOTH on mount AND at
 // Prepare time and compares the two — if they differ it assumes the
 // chain advanced a cycle while the wizard was open and forces a
 // re-review instead of submitting. A mock that recomputes
@@ -170,7 +170,7 @@ describe('NewProposal wizard', () => {
     jest.clearAllMocks();
     // Snapshot a stable next-SB anchor at test start so both the
     // mount-time and prepare-time fetchNetworkStats calls return
-    // the same value (same rationale as in production: /mnStats
+    // the same value (same rationale as in production: /mnstats
     // reports the same pre-computed SB epoch across rapid calls).
     currentStableNextSb = Math.floor(Date.now() / 1000) + 30 * 86400;
     fetchNetworkStats.mockImplementation(defaultNetworkStatsResolver);
@@ -780,7 +780,7 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Prepare fails closed when the pre-submit /mnStats refresh throws (Codex round 2 P2)',
+    'Prepare fails closed when the pre-submit /mnstats refresh throws (Codex round 2 P2)',
     async () => {
       // The wizard refreshes the next-SB anchor right before
       // submitting. If that fetch errors out, we must NOT fall
@@ -799,7 +799,7 @@ describe('NewProposal wizard', () => {
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
-      // Now break the /mnStats endpoint for the prepare-time
+      // Now break the /mnstats endpoint for the prepare-time
       // refresh. The mount-time fetch already succeeded with the
       // stable anchor from beforeEach.
       fetchNetworkStats.mockRejectedValueOnce(
@@ -829,10 +829,10 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Prepare fails closed when the pre-submit /mnStats refresh returns a stale (past) anchor',
+    'Prepare fails closed when the pre-submit /mnstats refresh returns a stale (past) anchor',
     async () => {
       // Same fail-closed behaviour as the throw case: a lagging
-      // /mnStats feed that still returns a positive but past
+      // /mnstats feed that still returns a positive but past
       // timestamp must not let us submit. The mount fetch used
       // the stable future anchor from beforeEach; we corrupt only
       // the prepare-time refresh.
@@ -869,12 +869,12 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Prepare fails closed when /mnStats resolves across the SB boundary (anchor future at pre-await, past at post-await) (Codex round 3 P2)',
+    'Prepare fails closed when /mnstats resolves across the SB boundary (anchor future at pre-await, past at post-await) (Codex round 3 P2)',
     async () => {
       // Codex PR20 round 3 P2: the previous implementation captured
       // `nowSec = Math.floor(Date.now() / 1000)` BEFORE awaiting
       // fetchNetworkStats() and reused it to validate the refreshed
-      // anchor. /mnStats is a real network RTT and can straddle
+      // anchor. /mnstats is a real network RTT and can straddle
       // wall-clock boundaries — including, at a SB transition, the
       // actual superblock. In that case an anchor that was strictly
       // future at pre-await time is already in the past by the time
@@ -992,7 +992,7 @@ describe('NewProposal wizard', () => {
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
-      // Next /mnStats call returns a DIFFERENT future anchor (one
+      // Next /mnstats call returns a DIFFERENT future anchor (one
       // superblock past the cached one). Subsequent calls return
       // the same drifted value so the retry click sees a stable
       // state.
@@ -1074,7 +1074,7 @@ describe('NewProposal wizard', () => {
       fireEvent.click(screen.getByTestId('wizard-next'));
       expect(screen.getByTestId('wizard-panel-review')).toBeInTheDocument();
 
-      // Next /mnStats call returns a slightly drifted anchor
+      // Next /mnstats call returns a slightly drifted anchor
       // (60 s forward). Well within the cycle/2 tolerance, so
       // the wizard must treat it as "same SB, just a fresher
       // estimate" and proceed to prepare.
@@ -1117,7 +1117,7 @@ describe('NewProposal wizard', () => {
   );
 
   test(
-    'Review step suppresses the projected schedule when /mnStats anchor is unavailable (Codex round 5 P2)',
+    'Review step suppresses the projected schedule when /mnstats anchor is unavailable (Codex round 5 P2)',
     async () => {
       // Regression: computeProposalWindow has an internal
       // "stale anchor" fallback (anchor = now + cycle) so that
@@ -1132,7 +1132,7 @@ describe('NewProposal wizard', () => {
       // in lockstep with WindowPreview and only render when we
       // have a real live anchor.
       //
-      // Setup: stub /mnStats to return a response that
+      // Setup: stub /mnstats to return a response that
       // nextSuperblockEpochSecFromStats rejects (missing
       // superblock_next_epoch_sec field). Wizard state lands at
       // `nextSuperblockSec = null, statsError != null`. 3-month
