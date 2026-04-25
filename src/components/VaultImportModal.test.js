@@ -319,19 +319,31 @@ describe('VaultImportModal — save flow (UNLOCKED)', () => {
 });
 
 describe('VaultImportModal — save flow (EMPTY, first write)', () => {
-  test('requires a password field before Save is enabled', async () => {
-    mount({ vault: emptyVault() });
+  test('clicking Save with an empty password surfaces an explicit error and outlines the field', async () => {
+    const vault = emptyVault();
+    mount({ vault });
     pasteInto(screen.getByTestId('vault-import-paste'), VALID_WIF_1);
-    // Save is disabled until the password field has content, even
-    // though we have a valid row.
-    expect(screen.getByTestId('vault-import-save')).toBeDisabled();
-    await userEvent.type(
-      screen.getByTestId('vault-import-password'),
-      'correct-horse-battery'
-    );
+    // With valid rows the button stays enabled — we want a click to
+    // produce *feedback* about the missing password, not silence.
     await waitFor(() =>
       expect(screen.getByTestId('vault-import-save')).not.toBeDisabled()
     );
+    await userEvent.click(screen.getByTestId('vault-import-save'));
+
+    const banner = await screen.findByTestId('vault-import-error');
+    expect(banner).toHaveTextContent(/please enter your password/i);
+
+    const pwInput = screen.getByTestId('vault-import-password');
+    expect(pwInput).toHaveClass('auth-input--error');
+    expect(pwInput).toHaveAttribute('aria-invalid', 'true');
+    expect(document.activeElement).toBe(pwInput);
+    expect(vault.save).not.toHaveBeenCalled();
+
+    // Typing into the field clears the password-specific error state so
+    // the user is not left staring at a stale red outline.
+    await userEvent.type(pwInput, 'a');
+    expect(screen.queryByTestId('vault-import-error')).toBeNull();
+    expect(pwInput).not.toHaveClass('auth-input--error');
   });
 
   test('rejects short first-write passwords before vault.save', async () => {

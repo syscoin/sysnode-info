@@ -103,6 +103,7 @@ export default function VaultImportModal({ open, onClose }) {
   const [validating, setValidating] = useState(false);
 
   const pasteRef = useRef(null);
+  const passwordRef = useRef(null);
   const validationGenRef = useRef(0);
 
   // Latest-`saving` ref. The ESC keydown handler is registered in an
@@ -165,11 +166,14 @@ export default function VaultImportModal({ open, onClose }) {
     [applyPastePreview, paste]
   );
 
-  const canSave =
-    !saving &&
-    !validating &&
-    summary.valid > 0 &&
-    (!requiresPassword || password.length > 0);
+  // Save is enabled whenever there's something importable. The password
+  // requirement is enforced inside onSave so the user gets an explicit
+  // "please enter your password" error (with the input outlined red and
+  // focused) instead of a silently-disabled button — clicking a disabled
+  // button leaves the user with no signal about which field is missing.
+  const canSave = !saving && !validating && summary.valid > 0;
+  const passwordError =
+    error === 'password_required' || error === 'password_too_short';
 
   // ESC closes, focus lands in the textarea on open, state resets on
   // close. Done as a single effect keyed on `open` so the lifecycle
@@ -281,9 +285,19 @@ export default function VaultImportModal({ open, onClose }) {
       setError(null);
       try {
         if (requiresPassword) {
-          const passwordError = validateVaultPassword(password);
-          if (passwordError) {
-            setError(passwordError.code);
+          // Empty input gets the explicit "please enter your password"
+          // copy; a non-empty but too-weak password gets the full policy
+          // hint. Both cases pull focus into the field so the user's
+          // next keystroke lands in the right place.
+          if (password === '') {
+            setError('password_required');
+            if (passwordRef.current) passwordRef.current.focus();
+            return;
+          }
+          const policyError = validateVaultPassword(password);
+          if (policyError) {
+            setError(policyError.code);
+            if (passwordRef.current) passwordRef.current.focus();
             return;
           }
         }
@@ -475,11 +489,24 @@ export default function VaultImportModal({ open, onClose }) {
             </label>
             <input
               id="vault-import-password"
+              ref={passwordRef}
               type="password"
               autoComplete="current-password"
-              className="auth-input"
+              className={`auth-input${
+                passwordError ? ' auth-input--error' : ''
+              }`}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                // Drop the password-specific error as soon as the user
+                // starts typing so the red outline + banner clear; we
+                // leave unrelated errors (e.g. vault_stale) in place.
+                if (passwordError) setError(null);
+              }}
+              aria-invalid={passwordError ? 'true' : undefined}
+              aria-describedby={
+                passwordError ? 'vault-import-error' : undefined
+              }
               minLength={MIN_VAULT_PASSWORD_LENGTH}
               data-testid="vault-import-password"
             />
@@ -492,6 +519,7 @@ export default function VaultImportModal({ open, onClose }) {
 
         {error ? (
           <div
+            id="vault-import-error"
             className="auth-alert auth-alert--error"
             role="alert"
             data-testid="vault-import-error"
