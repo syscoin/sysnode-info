@@ -176,6 +176,12 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
       // lands the correct (anonymous) state.
       const res = await authService.login(email, password);
       if (res && res.mfaRequired) {
+        const myGen = nextGen();
+        safeSet(() => {
+          setUser(null);
+          commitStatus(ANONYMOUS);
+          setSessionExpired(false);
+        }, myGen);
         return res;
       }
       // `master` is the PBKDF2 output for password+email. We do not

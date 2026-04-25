@@ -127,6 +127,37 @@ test('login transitions anonymous -> authenticated', async () => {
   expect(service.login).toHaveBeenCalledWith('a@b.com', 'pw');
 });
 
+test('login that requires MFA clears any previous authenticated state', async () => {
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({
+      user: { id: 1, email: 'old@example.com', emailVerified: true },
+    }),
+    login: jest.fn().mockResolvedValue({
+      mfaRequired: true,
+      challengeToken: 'a'.repeat(64),
+      expiresAt: 1,
+    }),
+  });
+  render(
+    <AuthProvider authService={service}>
+      <HookProbe />
+    </AuthProvider>
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated')
+  );
+
+  await act(async () => {
+    screen.getByText('login').click();
+    await flush();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId('status')).toHaveTextContent('anonymous')
+  );
+  expect(screen.getByTestId('email')).toHaveTextContent('none');
+});
+
 test('logout: server success clears local state (happy path)', async () => {
   const service = makeService({
     me: jest.fn().mockResolvedValue({
