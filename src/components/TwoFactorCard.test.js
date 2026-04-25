@@ -206,6 +206,31 @@ test('keeps current password editable during active TOTP setup', async () => {
   expect(password).toHaveValue('NewPass1!');
 });
 
+test('keeps current password editable while recovery codes are displayed', async () => {
+  const authService = service({
+    enableTotp: jest.fn().mockResolvedValue({
+      recoveryCodes: ['one', 'two'],
+    }),
+  });
+  renderCard(authService);
+
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
+  await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
+  await userEvent.click(
+    screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await screen.findByLabelText(/manual setup secret fallback/i);
+  await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
+  await userEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+  expect(await screen.findByText(/save these recovery codes/i)).toBeInTheDocument();
+  const password = screen.getByLabelText(/current password/i);
+  expect(password).toBeInTheDocument();
+  await userEvent.type(password, 'DisablePass1!');
+  expect(password).toHaveValue('DisablePass1!');
+});
+
 test('clears stale TOTP errors after a successful status refresh', async () => {
   const authService = service({
     getTotpStatus: jest

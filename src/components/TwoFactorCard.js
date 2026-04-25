@@ -291,21 +291,19 @@ export default function TwoFactorCard({
             </div>
           ) : null}
 
-          {!recoveryCodes ? (
-            <div className="auth-field">
-              <label className="auth-label" htmlFor="totp-current-password">
-                Current password
-              </label>
-              <input
-                id="totp-current-password"
-                className="auth-input"
-                type="password"
-                autoComplete="current-password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-              />
-            </div>
-          ) : null}
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="totp-current-password">
+              Current password
+            </label>
+            <input
+              id="totp-current-password"
+              className="auth-input"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+            />
+          </div>
 
           {setup || status.enabled ? (
             <div className="auth-field">
