@@ -121,6 +121,12 @@ export function createAuthService(client = defaultClient) {
     return res.data;
   }
 
+  async function deriveStepUpAuthHash(password, email) {
+    const { master, authHash } = await deriveLoginKeys(password, email);
+    if (master instanceof Uint8Array) master.fill(0);
+    return authHash;
+  }
+
   // ------------------------------------------------------------------
   // PR 7 — notification preferences
   // ------------------------------------------------------------------
@@ -145,13 +151,13 @@ export function createAuthService(client = defaultClient) {
     return res.data;
   }
 
-  async function beginTotpSetup() {
-    const res = await client.post('/auth/totp/setup');
+  async function beginTotpSetup(oldAuthHash) {
+    const res = await client.post('/auth/totp/setup', { oldAuthHash });
     return res.data;
   }
 
-  async function enableTotp(code) {
-    const res = await client.post('/auth/totp/enable', { code });
+  async function enableTotp({ code, oldAuthHash }) {
+    const res = await client.post('/auth/totp/enable', { code, oldAuthHash });
     return res.data;
   }
 
@@ -191,6 +197,7 @@ export function createAuthService(client = defaultClient) {
     logout,
     me,
     deriveChangePasswordKeys,
+    deriveStepUpAuthHash,
     changePassword,
     getPrefs,
     updatePrefs,

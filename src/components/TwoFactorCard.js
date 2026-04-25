@@ -8,6 +8,9 @@ const ERROR_COPY = {
   invalid_totp_code: "That authenticator code didn't work. Check the current code and try again.",
   totp_setup_not_started: 'Start setup again, then enter the new code.',
   totp_not_enabled: 'Two-factor authentication is not enabled for this account.',
+  invalid_credentials: 'Your current password is incorrect.',
+  password_required: 'Enter your current password before changing two-factor settings.',
+  missing_email: 'Your account email is missing. Refresh and try again.',
   unauthorized: 'Your session expired. Please sign in again.',
   network_error:
     "We couldn't reach the sysnode server. Check your connection and try again.",
@@ -30,6 +33,7 @@ export default function TwoFactorCard({
   });
   const [setup, setSetup] = useState(null);
   const [qrDataUrl, setQrDataUrl] = useState(null);
+  const [currentPassword, setCurrentPassword] = useState('');
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -80,13 +84,33 @@ export default function TwoFactorCard({
     };
   }, [setup]);
 
+  async function deriveStepUpAuthHash() {
+    let email = user && user.email;
+    if (!email) {
+      const me = await authService.me();
+      email = me && me.user && me.user.email;
+    }
+    if (!email) {
+      const e = new Error('missing_email');
+      e.code = 'missing_email';
+      throw e;
+    }
+    if (currentPassword.length === 0) {
+      const e = new Error('password_required');
+      e.code = 'password_required';
+      throw e;
+    }
+    return authService.deriveStepUpAuthHash(currentPassword, email);
+  }
+
   async function startSetup() {
     setBusy(true);
     setErrCode(null);
     setSuccess(null);
     setRecoveryCodes(null);
     try {
-      const nextSetup = await authService.beginTotpSetup();
+      const oldAuthHash = await deriveStepUpAuthHash();
+      const nextSetup = await authService.beginTotpSetup(oldAuthHash);
       setSetup(nextSetup);
       setStatus((s) => ({ ...s, pending: true }));
     } catch (err) {
@@ -111,10 +135,12 @@ export default function TwoFactorCard({
     setErrCode(null);
     setSuccess(null);
     try {
-      const out = await authService.enableTotp(code);
+      const oldAuthHash = await deriveStepUpAuthHash();
+      const out = await authService.enableTotp({ code, oldAuthHash });
       setRecoveryCodes(out.recoveryCodes || []);
       setSetup(null);
       setCode('');
+      setCurrentPassword('');
       setStatus({ enabled: true, pending: false, recoveryCodesRemaining: 10 });
     } catch (err) {
       if (err && err.code === 'unauthorized') {
@@ -141,6 +167,7 @@ export default function TwoFactorCard({
       await authService.disableTotp(code);
       setSetup(null);
       setCode('');
+      setCurrentPassword('');
       setRecoveryCodes(null);
       setStatus({ enabled: false, pending: false, recoveryCodesRemaining: 0 });
       setSuccess('Two-factor authentication is disabled.');
@@ -245,6 +272,22 @@ export default function TwoFactorCard({
           {success ? (
             <div className="auth-alert auth-alert--success" role="status">
               {success}
+            </div>
+          ) : null}
+
+          {!status.enabled ? (
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="totp-current-password">
+                Current password
+              </label>
+              <input
+                id="totp-current-password"
+                className="auth-input"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+              />
             </div>
           ) : null}
 

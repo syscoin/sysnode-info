@@ -27,6 +27,7 @@ function service(overrides = {}) {
     logout: jest.fn(),
     register: jest.fn(),
     verifyEmail: jest.fn(),
+    deriveStepUpAuthHash: jest.fn().mockResolvedValue('a'.repeat(64)),
     getTotpStatus: jest.fn().mockResolvedValue({
       enabled: false,
       pending: false,
@@ -55,9 +56,14 @@ function renderCard(authService = service()) {
 test('renders a QR code for TOTP setup with manual secret fallback', async () => {
   const authService = renderCard();
 
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
   await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
   await userEvent.click(
     screen.getByRole('button', { name: /set up two-factor authentication/i })
+  );
+  await waitFor(() =>
+    expect(authService.beginTotpSetup).toHaveBeenCalledWith('a'.repeat(64))
   );
 
   await waitFor(() =>
@@ -82,13 +88,22 @@ test('allows restarting setup after the pending TOTP setup expires', async () =>
   });
   renderCard(authService);
 
+  await waitFor(() => expect(authService.me).toHaveBeenCalled());
   await waitFor(() => expect(authService.getTotpStatus).toHaveBeenCalled());
+  await userEvent.type(screen.getByLabelText(/current password/i), 'Correct1!');
   await userEvent.click(
     screen.getByRole('button', { name: /set up two-factor authentication/i })
   );
   await screen.findByLabelText(/manual setup secret fallback/i);
   await userEvent.type(screen.getByLabelText(/authenticator code/i), '123456');
   await userEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+  await waitFor(() =>
+    expect(authService.enableTotp).toHaveBeenCalledWith({
+      code: '123456',
+      oldAuthHash: 'a'.repeat(64),
+    })
+  );
 
   expect(await screen.findByRole('alert')).toHaveTextContent(/start setup again/i);
   await waitFor(() =>
