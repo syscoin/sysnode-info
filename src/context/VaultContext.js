@@ -713,6 +713,13 @@ export function VaultProvider({
     };
 
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'hidden'
+    ) {
+      lockIfUnlocked();
+      return undefined;
+    }
     for (const eventName of events) {
       window.addEventListener(eventName, armTimer, { passive: true });
     }

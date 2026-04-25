@@ -513,6 +513,45 @@ describe('VaultProvider — lock + logout', () => {
     }
   });
 
+  test('unlocking while the tab is already hidden locks immediately', async () => {
+    const { master, blob } = await makeEncryptedBlobFor({});
+    const vaultService = {
+      load: jest
+        .fn()
+        .mockResolvedValue({ empty: false, blob, etag: 'E' }),
+      save: jest.fn(),
+    };
+    let last;
+    const originalVisibility = document.visibilityState;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      idleLockMs: 60_000,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    try {
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      await act(async () => {
+        await last.unlockWithMaster(master);
+      });
+      await waitFor(() => expect(last.status).toBe(STATUS.LOCKED));
+      expect(last.data).toBeNull();
+      expect(last._hasDataKeyForTest()).toBe(false);
+      expect(last._hasVaultKeyForTest()).toBe(false);
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: originalVisibility,
+      });
+    }
+  });
+
   test('hard-resets and wipes state when auth transitions to anonymous', async () => {
     const { master, blob } = await makeEncryptedBlobFor({});
     const vaultService = {
