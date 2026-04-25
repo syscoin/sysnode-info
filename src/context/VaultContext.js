@@ -10,14 +10,13 @@ import React, {
 
 import { useAuth } from './AuthContext';
 import { vaultService as defaultVaultService } from '../lib/vaultService';
-import { deriveVaultKey, deriveMaster } from '../lib/crypto/kdf';
+import { deriveVaultKey, deriveMaster, deriveAuthHash } from '../lib/crypto/kdf';
 import {
   decryptEnvelope,
   encryptEnvelope,
   generateDataKey,
   rewrapEnvelope,
 } from '../lib/crypto/envelope';
-import { validateVaultPassword } from '../lib/passwordPolicy';
 
 // ---------------------------------------------------------------------------
 // VaultContext
@@ -473,11 +472,19 @@ export function VaultProvider({
   //   - UNLOCKED path: re-encrypt under the cached (dk, vaultKey). No
   //     password prompt; no KDF; just AES-GCM + one PUT. Uses the
   //     current etag for optimistic concurrency.
-  //   - EMPTY path: requires opts.password + opts.email (both strings).
-  //     Derive master → vaultKey (from user.saltV) → generate a fresh
-  //     DK → encrypt → PUT with If-Match: '*'. On success, install dk
-  //     and vaultKey in refs and transition EMPTY → UNLOCKED in one
-  //     shot.
+  //   - EMPTY path: requires opts.password + opts.email + opts.verifyAuthHash.
+  //     Derive master → derive authHash → call verifyAuthHash(authHash)
+  //     to confirm the typed password is the user's CURRENT account
+  //     password — without this step the same password also derives a
+  //     vaultKey, and a typo would silently lock the vault under a
+  //     credential that diverges from the account password (the user
+  //     could still log in with their real password but never unlock
+  //     their vault). On verification success: derive vaultKey (from
+  //     user.saltV) → generate a fresh DK → encrypt → PUT with
+  //     If-Match: '*' → install dk + vaultKey in refs → transition
+  //     EMPTY → UNLOCKED. verifyAuthHash MUST throw `invalid_credentials`
+  //     on mismatch (we re-tag it as `password_mismatch` so the import
+  //     UI can render dedicated copy).
   //   - Any other status: throws 'vault_not_ready'.
   //
   // Errors are NEVER committed to state.error — save() is a foreground
@@ -539,10 +546,19 @@ export function VaultProvider({
             e.code = 'password_required';
             throw e;
           }
-          const passwordError = validateVaultPassword(opts.password);
-          if (passwordError) {
-            const e = new Error(passwordError.code);
-            e.code = passwordError.code;
+          // verifyAuthHash is REQUIRED on the EMPTY path. The vault
+          // password and the account password are the same secret —
+          // they go through the same PBKDF2 → HKDF chain. Skipping
+          // this check means a typo silently creates a vaultKey
+          // derived from a password that doesn't match the user's
+          // stored credential; the next session lands LOCKED and
+          // every unlock attempt with the real account password
+          // fails with envelope_decrypt_failed. We surface that as
+          // a programmer error (not a runtime guard) so callers
+          // are forced to wire it up at compile time.
+          if (typeof opts.verifyAuthHash !== 'function') {
+            const e = new Error('verify_required');
+            e.code = 'verify_required';
             throw e;
           }
           const email = opts.email || userEmailRef.current;
@@ -558,6 +574,25 @@ export function VaultProvider({
             throw e;
           }
           const master = await deriveMaster(opts.password, email);
+          // Derive the authHash and verify it against the server's
+          // stored credential BEFORE we derive vaultKey or generate a
+          // DK. If it doesn't match we have nothing to roll back —
+          // no PUT has happened, no keys are installed, no state is
+          // mutated. Re-tag the server's `invalid_credentials` as
+          // `password_mismatch` so the import modal can render copy
+          // tailored to the "this isn't your account password"
+          // case rather than a generic auth error.
+          const authHash = await deriveAuthHash(master);
+          try {
+            await opts.verifyAuthHash(authHash);
+          } catch (err) {
+            if (err && err.code === 'invalid_credentials') {
+              const e = new Error('password_mismatch');
+              e.code = 'password_mismatch';
+              throw e;
+            }
+            throw err;
+          }
           vaultKey = await deriveVaultKey(master, saltV);
           dk = generateDataKey();
           ifMatch = '*';

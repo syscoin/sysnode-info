@@ -953,7 +953,19 @@ describe('VaultProvider — load() single-flight + cache (Codex round 1)', () =>
 //                            rejects with vault_stale if someone else
 //                            wrote in between.
 // ---------------------------------------------------------------------------
+// Fixture helper: a verifyAuthHash callback that always accepts the
+// supplied authHash. The vast majority of first-write tests are
+// concerned with downstream behavior (encryption, etag, key install,
+// reconciliation) and not with the verification ceremony itself —
+// they need a "yes, the password matches" stub. Tests that
+// specifically exercise verification supply their own.
+const acceptVerify = jest.fn().mockResolvedValue(true);
+
 describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
+  beforeEach(() => {
+    acceptVerify.mockClear();
+  });
+
   test('encrypts under a fresh DK, PUTs with *, installs keys, transitions UNLOCKED', async () => {
     const password = 'Correct horse battery 1';
     const email = 'new@example.com';
@@ -982,10 +994,23 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
 
     await act(async () => {
-      const out = await last.save(data, { password, email });
+      const out = await last.save(data, {
+        password,
+        email,
+        verifyAuthHash: acceptVerify,
+      });
       expect(out.status).toBe(STATUS.UNLOCKED);
       expect(out.etag).toBe('NEW_ETAG');
     });
+
+    // The verification step ran exactly once, with a 64-char hex
+    // authHash that matches what /login would have submitted for
+    // this (password, email) pair. This is the linchpin of the
+    // anti-divergence guarantee — callers that wire it up know the
+    // typed password was confirmed against the server credential
+    // BEFORE we encrypted under a key derived from the same secret.
+    expect(acceptVerify).toHaveBeenCalledTimes(1);
+    expect(acceptVerify).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f]{64}$/));
 
     // After first-write we MUST be UNLOCKED with the payload available
     // — no intermediate LOCKED state that would force the user to
@@ -1035,10 +1060,10 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     expect(last._hasDataKeyForTest()).toBe(false);
   });
 
-  test('first write rejects weak passwords before encrypting', async () => {
+  test('first write accepts any non-empty current password after server verification', async () => {
     const vaultService = {
       load: jest.fn().mockResolvedValue({ empty: true }),
-      save: jest.fn(),
+      save: jest.fn().mockResolvedValue({ etag: 'NEW_ETAG' }),
     };
     let last;
     renderWithProviders({
@@ -1050,16 +1075,21 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     });
     await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
 
-    await expect(
-      act(async () => {
-        await last.save(
-          { keys: [] },
-          { password: 'short-password', email: 'x@y.com' }
-        );
-      })
-    ).rejects.toMatchObject({ code: 'password_too_short' });
-    expect(vaultService.save).not.toHaveBeenCalled();
-    expect(last.status).toBe(STATUS.EMPTY);
+    await act(async () => {
+      const out = await last.save(
+        { keys: [] },
+        {
+          password: 'short',
+          email: 'x@y.com',
+          verifyAuthHash: acceptVerify,
+        }
+      );
+      expect(out.status).toBe(STATUS.UNLOCKED);
+    });
+
+    expect(acceptVerify).toHaveBeenCalledTimes(1);
+    expect(vaultService.save).toHaveBeenCalledTimes(1);
+    expect(last.status).toBe(STATUS.UNLOCKED);
   });
 
   test('first write rejects when user has no saltV on their identity', async () => {
@@ -1092,7 +1122,11 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
       act(async () => {
         await last.save(
           { keys: [] },
-          { password: 'Correct horse battery 1', email: 'x@y.com' }
+          {
+            password: 'Correct horse battery 1',
+            email: 'x@y.com',
+            verifyAuthHash: acceptVerify,
+          }
         );
       })
     ).rejects.toMatchObject({ code: 'missing_salt_v' });
@@ -1122,7 +1156,11 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
       try {
         await last.save(
           { k: 1 },
-          { password: 'Correct horse battery 1', email: 'user@example.com' }
+          {
+            password: 'Correct horse battery 1',
+            email: 'user@example.com',
+            verifyAuthHash: acceptVerify,
+          }
         );
       } catch (e) {
         caught = e;
@@ -1137,6 +1175,159 @@ describe('VaultProvider — save() first write (EMPTY → UNLOCKED)', () => {
     expect(last._hasDataKeyForTest()).toBe(false);
     expect(last._hasVaultKeyForTest()).toBe(false);
     expect(last.isSaving).toBe(false);
+  }, PBKDF2_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------
+  // Anti-divergence guard. The vault password and the account password
+  // are the same secret feeding two different KDF outputs (authHash for
+  // the server, vaultKey client-side). If we don't verify the typed
+  // password against the server BEFORE encrypting, a typo at first
+  // import locks the vault under a key that doesn't match the user's
+  // actual account credential — every subsequent unlock with the real
+  // password fails forever. (Apr 2026 prod bug.)
+  // ---------------------------------------------------------------------
+
+  test('first write requires a verifyAuthHash callback (programmer-error guard)', async () => {
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+
+    // Good password but no verifyAuthHash — must NOT silently proceed.
+    let caught;
+    await act(async () => {
+      try {
+        await last.save(
+          { keys: [] },
+          {
+            password: 'Correct horse battery 1',
+            email: 'user@example.com',
+          }
+        );
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeTruthy();
+    expect(caught.code).toBe('verify_required');
+    expect(vaultService.save).not.toHaveBeenCalled();
+    // No state change: still EMPTY, no keys installed.
+    expect(last.status).toBe(STATUS.EMPTY);
+    expect(last._hasDataKeyForTest()).toBe(false);
+    expect(last._hasVaultKeyForTest()).toBe(false);
+  });
+
+  test('first write surfaces password_mismatch when verifyAuthHash rejects with invalid_credentials', async () => {
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+
+    let verifyCalls = 0;
+    const verifyReject = async () => {
+      verifyCalls += 1;
+      const e = new Error('invalid_credentials');
+      e.code = 'invalid_credentials';
+      throw e;
+    };
+
+    // Use an explicit try/catch inside act() instead of
+    // `expect(act(...)).rejects` — the latter pattern flushes act's
+    // pending-state reconciliation differently and the assertion
+    // can land before save's outer catch finishes its `finish()`
+    // commit. The existing "PUT failure" test uses this same shape.
+    let caught;
+    await act(async () => {
+      try {
+        await last.save(
+          { keys: [] },
+          {
+            password: 'Wrong but well-formed password 1',
+            email: 'user@example.com',
+            verifyAuthHash: verifyReject,
+          }
+        );
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeTruthy();
+    expect(caught.code).toBe('password_mismatch');
+    expect(verifyCalls).toBe(1);
+
+    // The PUT must NOT have happened. The whole point of the
+    // verification step is to catch a divergent password BEFORE we
+    // commit ciphertext under a divergent key.
+    expect(vaultService.save).not.toHaveBeenCalled();
+    expect(last.status).toBe(STATUS.EMPTY);
+    expect(last._hasDataKeyForTest()).toBe(false);
+    expect(last._hasVaultKeyForTest()).toBe(false);
+    expect(last.isSaving).toBe(false);
+  }, PBKDF2_TIMEOUT_MS);
+
+  test('first write propagates non-credentials errors from verifyAuthHash unchanged', async () => {
+    const vaultService = {
+      load: jest.fn().mockResolvedValue({ empty: true }),
+      save: jest.fn(),
+    };
+    let last;
+    renderWithProviders({
+      authService: authedAuthService(),
+      vaultService,
+      onVault: (v) => {
+        last = v;
+      },
+    });
+    await waitFor(() => expect(last.status).toBe(STATUS.EMPTY));
+
+    // Network / 5xx: must not be silently swallowed as a password
+    // mismatch. The caller surfaces a "couldn't reach server" toast,
+    // not a wrong-password message.
+    const networkErr = Object.assign(new Error('network_unavailable'), {
+      code: 'network_unavailable',
+    });
+    const verifyNetworkFail = async () => {
+      throw networkErr;
+    };
+
+    let caught;
+    await act(async () => {
+      try {
+        await last.save(
+          { keys: [] },
+          {
+            password: 'Correct horse battery 1',
+            email: 'user@example.com',
+            verifyAuthHash: verifyNetworkFail,
+          }
+        );
+      } catch (e) {
+        caught = e;
+      }
+    });
+    expect(caught).toBeTruthy();
+    expect(caught.code).toBe('network_unavailable');
+
+    expect(vaultService.save).not.toHaveBeenCalled();
+    expect(last.status).toBe(STATUS.EMPTY);
   }, PBKDF2_TIMEOUT_MS);
 });
 
@@ -1326,7 +1517,10 @@ describe('VaultProvider — save() update (UNLOCKED → UNLOCKED)', () => {
       try {
         await last.save(
           { version: 1, keys: [] },
-          { password: 'Correct horse battery 1' }
+          {
+            password: 'Correct horse battery 1',
+            verifyAuthHash: acceptVerify,
+          }
         );
       } catch (err) {
         caught = err;

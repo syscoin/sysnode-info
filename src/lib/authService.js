@@ -128,6 +128,41 @@ export function createAuthService(client = defaultClient) {
   }
 
   // ------------------------------------------------------------------
+  // verifyPassword — read-only "is this still my current password?"
+  // probe. The server returns 204 on match, 401 on mismatch.
+  //
+  // Used by callers that need to confirm a typed password matches the
+  // stored credential BEFORE acting on something derived from the same
+  // password (e.g. the vault first-write flow, where the same password
+  // also derives the client-only vaultKey, and an unverified mismatch
+  // would silently lock the vault under a credential that diverges
+  // from the account password).
+  //
+  // Returns:
+  //   true  on 204
+  // Throws:
+  //   { code: 'invalid_credentials' } on 401
+  //   the original axios error otherwise (server misconfig, network…)
+  // ------------------------------------------------------------------
+  async function verifyPassword({ authHash }) {
+    if (typeof authHash !== 'string' || authHash.length === 0) {
+      throw new Error('verifyPassword: authHash required');
+    }
+    try {
+      await client.post('/auth/verify-password', { authHash });
+      return true;
+    } catch (err) {
+      const status = err && err.response && err.response.status;
+      if (status === 401) {
+        const e = new Error('invalid_credentials');
+        e.code = 'invalid_credentials';
+        throw e;
+      }
+      throw err;
+    }
+  }
+
+  // ------------------------------------------------------------------
   // PR 7 — notification preferences
   // ------------------------------------------------------------------
 
@@ -198,6 +233,7 @@ export function createAuthService(client = defaultClient) {
     me,
     deriveChangePasswordKeys,
     deriveStepUpAuthHash,
+    verifyPassword,
     changePassword,
     getPrefs,
     updatePrefs,
