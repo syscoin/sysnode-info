@@ -180,6 +180,35 @@ describe('ChangePasswordCard', () => {
     expect(loadingVault.rewrapForPasswordChange).not.toHaveBeenCalled();
   });
 
+  test('rejects weak new passwords before derivation', async () => {
+    const authService = makeAuthService();
+    const cardAuthService = makeCardAuthService();
+
+    renderCard({ authService, cardAuthService });
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('authenticated')
+    );
+
+    fireEvent.change(screen.getByLabelText(/current password/i), {
+      target: { value: 'current-password-xyz' },
+    });
+    fireEvent.change(screen.getByLabelText(/^new password$/i), {
+      target: { value: 'short-password' },
+    });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), {
+      target: { value: 'short-password' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('change-password-card'));
+    });
+
+    expect(screen.getByTestId('change-password-local-error')).toHaveTextContent(
+      /at least 16/i
+    );
+    expect(cardAuthService.deriveChangePasswordKeys).not.toHaveBeenCalled();
+    expect(cardAuthService.changePassword).not.toHaveBeenCalled();
+  });
+
   test('non-auth failures (e.g. invalid_credentials) still render inline error and stay signed in', async () => {
     // Companion case — proves the unauthorized handling is targeted
     // and didn't silently gate ALL failures through handleAuthLost.

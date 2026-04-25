@@ -41,15 +41,15 @@ test('validates password length and mismatch client-side', async () => {
   await userEvent.type(screen.getByLabelText(/^password/i), 'short');
   await userEvent.type(screen.getByLabelText(/confirm password/i), 'short');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(/at least 8/i);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/at least 16/i);
   expect(service.register).not.toHaveBeenCalled();
 
   const pw = screen.getByLabelText(/^password/i);
   const cf = screen.getByLabelText(/confirm password/i);
   await userEvent.clear(pw);
   await userEvent.clear(cf);
-  await userEvent.type(pw, 'hunter22a');
-  await userEvent.type(cf, 'hunter22b');
+  await userEvent.type(pw, 'correct horse battery staple');
+  await userEvent.type(cf, 'correct horse battery mismatch');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   expect(await screen.findByRole('alert')).toHaveTextContent(/don'?t match/i);
   expect(service.register).not.toHaveBeenCalled();
@@ -69,8 +69,8 @@ test('flags the offending fields aria-invalid on client-side validation errors',
   // Password mismatch should flag BOTH password and confirm — we don't
   // know which one the user mistyped.
   await userEvent.type(email, 'a@b.com');
-  await userEvent.type(pw, 'hunter22a');
-  await userEvent.type(cf, 'hunter22b');
+  await userEvent.type(pw, 'correct horse battery staple');
+  await userEvent.type(cf, 'correct horse battery mismatch');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   await screen.findByRole('alert');
 
@@ -96,8 +96,14 @@ test('renders the WebCrypto-unavailable copy with an actionable fix', async () =
   renderRegister(service);
 
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/^password/i), 'hunter22a');
-  await userEvent.type(screen.getByLabelText(/confirm password/i), 'hunter22a');
+  await userEvent.type(
+    screen.getByLabelText(/^password/i),
+    'correct horse battery staple'
+  );
+  await userEvent.type(
+    screen.getByLabelText(/confirm password/i),
+    'correct horse battery staple'
+  );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
   const alert = await screen.findByRole('alert');
@@ -120,8 +126,14 @@ test('surfaces an unknown error\'s own message rather than the generic fallback'
   renderRegister(service);
 
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/^password/i), 'hunter22a');
-  await userEvent.type(screen.getByLabelText(/confirm password/i), 'hunter22a');
+  await userEvent.type(
+    screen.getByLabelText(/^password/i),
+    'correct horse battery staple'
+  );
+  await userEvent.type(
+    screen.getByLabelText(/confirm password/i),
+    'correct horse battery staple'
+  );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
   const alert = await screen.findByRole('alert');
@@ -134,12 +146,21 @@ test('shows the "check your inbox" screen on success', async () => {
   renderRegister(service);
 
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/^password/i), 'hunter22a');
-  await userEvent.type(screen.getByLabelText(/confirm password/i), 'hunter22a');
+  await userEvent.type(
+    screen.getByLabelText(/^password/i),
+    'correct horse battery staple'
+  );
+  await userEvent.type(
+    screen.getByLabelText(/confirm password/i),
+    'correct horse battery staple'
+  );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
   await waitFor(() =>
     expect(screen.getByText(/check your inbox/i)).toBeInTheDocument()
   );
-  expect(service.register).toHaveBeenCalledWith('a@b.com', 'hunter22a');
+  expect(service.register).toHaveBeenCalledWith(
+    'a@b.com',
+    'correct horse battery staple'
+  );
 });

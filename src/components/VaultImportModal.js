@@ -14,6 +14,11 @@ import {
   summariseRows,
   validateImportEntryAsync,
 } from '../lib/vaultData';
+import {
+  MIN_VAULT_PASSWORD_LENGTH,
+  validateVaultPassword,
+  VAULT_PASSWORD_HINT,
+} from '../lib/passwordPolicy';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 
@@ -275,6 +280,13 @@ export default function VaultImportModal({ open, onClose }) {
       setSaving(true);
       setError(null);
       try {
+        if (requiresPassword) {
+          const passwordError = validateVaultPassword(password);
+          if (passwordError) {
+            setError(passwordError.code);
+            return;
+          }
+        }
         const nowMs = Date.now();
         const newKeys = buildKeysFromValidRows(rows, nowMs);
         const basePayload = vault.data || { version: 1, keys: [] };
@@ -468,11 +480,12 @@ export default function VaultImportModal({ open, onClose }) {
               className="auth-input"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              minLength={MIN_VAULT_PASSWORD_LENGTH}
               data-testid="vault-import-password"
             />
             <span className="auth-hint">
-              We need your account password to derive the vault key.
-              It stays on this device — the server never sees it.
+              {VAULT_PASSWORD_HINT} It stays on this device — the server never
+              sees it.
             </span>
           </div>
         ) : null}
@@ -485,6 +498,8 @@ export default function VaultImportModal({ open, onClose }) {
           >
             {error === 'password_required'
               ? 'Please enter your password.'
+              : error === 'password_too_short'
+              ? VAULT_PASSWORD_HINT
               : error === 'vault_stale'
               ? 'Your vault changed in another tab. Close this dialog and try again.'
               : error === 'network_error'

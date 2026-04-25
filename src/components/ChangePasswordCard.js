@@ -3,6 +3,11 @@ import React, { useCallback, useState } from 'react';
 import { authService as defaultAuthService } from '../lib/authService';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
+import {
+  MIN_VAULT_PASSWORD_LENGTH,
+  validateVaultPassword,
+  VAULT_PASSWORD_HINT,
+} from '../lib/passwordPolicy';
 
 // ChangePasswordCard
 // -----------------------------------------------------------------------
@@ -53,8 +58,7 @@ import { useVault } from '../context/VaultContext';
 
 const ERROR_COPY = {
   invalid_credentials: 'Your current password is incorrect.',
-  invalid_body:
-    'We couldn\'t apply that change. Double-check your new password meets the length requirement.',
+  invalid_body: `We couldn't apply that change. ${VAULT_PASSWORD_HINT}`,
   precondition_failed:
     'Your vault was updated in another tab or device. Reload this page and try again.',
   vault_rewrap_required:
@@ -79,8 +83,6 @@ const ERROR_COPY = {
   vault_missing_saltv:
     'Your account is missing vault configuration. Please sign out and sign back in.',
 };
-
-const MIN_PASSWORD_LENGTH = 12;
 
 function errorCopy(code) {
   return ERROR_COPY[code] || 'Password change failed. Please try again.';
@@ -128,10 +130,9 @@ export default function ChangePasswordCard({
         setLocalError('Enter your current password.');
         return;
       }
-      if (newPassword.length < MIN_PASSWORD_LENGTH) {
-        setLocalError(
-          `Your new password must be at least ${MIN_PASSWORD_LENGTH} characters.`
-        );
+      const passwordError = validateVaultPassword(newPassword);
+      if (passwordError) {
+        setLocalError(passwordError.message);
         return;
       }
       if (newPassword === oldPassword) {
@@ -276,8 +277,8 @@ export default function ChangePasswordCard({
             Change password
           </h2>
           <p className="auth-card__hint">
-            Your new password re-encrypts your voting vault locally.
-            Other signed-in devices will be signed out.
+            Your new password re-encrypts your voting vault locally. Use a long
+            passphrase; other signed-in devices will be signed out.
           </p>
         </div>
         <button
@@ -327,9 +328,10 @@ export default function ChangePasswordCard({
               autoComplete="new-password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              minLength={MIN_PASSWORD_LENGTH}
+              minLength={MIN_VAULT_PASSWORD_LENGTH}
               required
             />
+            <span className="auth-hint">{VAULT_PASSWORD_HINT}</span>
           </div>
 
           <div className="auth-field">
@@ -343,7 +345,7 @@ export default function ChangePasswordCard({
               autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
-              minLength={MIN_PASSWORD_LENGTH}
+              minLength={MIN_VAULT_PASSWORD_LENGTH}
               required
             />
           </div>

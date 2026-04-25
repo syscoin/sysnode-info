@@ -17,6 +17,7 @@ import {
   generateDataKey,
   rewrapEnvelope,
 } from '../lib/crypto/envelope';
+import { validateVaultPassword } from '../lib/passwordPolicy';
 
 // ---------------------------------------------------------------------------
 // VaultContext
@@ -536,6 +537,12 @@ export function VaultProvider({
           if (!opts || typeof opts.password !== 'string' || !opts.password) {
             const e = new Error('password_required');
             e.code = 'password_required';
+            throw e;
+          }
+          const passwordError = validateVaultPassword(opts.password);
+          if (passwordError) {
+            const e = new Error(passwordError.code);
+            e.code = passwordError.code;
             throw e;
           }
           const email = opts.email || userEmailRef.current;
