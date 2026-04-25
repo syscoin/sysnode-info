@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
+import PasswordStrengthMeter from '../components/PasswordStrengthMeter';
 import { useAuth } from '../context/AuthContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 import {
@@ -13,6 +14,7 @@ import {
 const ERROR_COPY = {
   invalid_email: 'That email address doesn\'t look right — please check and try again.',
   password_too_short: VAULT_PASSWORD_HINT,
+  password_too_weak: VAULT_PASSWORD_HINT,
   password_mismatch: 'The passwords you entered don\'t match.',
   network_error:
     'We couldn\'t reach the sysnode server. Check your connection and try again.',
@@ -33,6 +35,7 @@ const ERROR_COPY = {
 const FIELDS_BY_CODE = {
   invalid_email: ['email'],
   password_too_short: ['password'],
+  password_too_weak: ['password'],
   password_mismatch: ['password', 'confirm'],
   invalid_body: ['email', 'password'],
 };
@@ -80,7 +83,7 @@ export default function Register() {
       });
       return;
     }
-    const passwordError = validateVaultPassword(password);
+    const passwordError = validateVaultPassword(password, [normalized]);
     if (passwordError) {
       setError({
         code: passwordError.code,
@@ -116,6 +119,7 @@ export default function Register() {
   }
 
   const errorFields = error ? fieldsForCode(error.code) : [];
+  const normalizedEmail = normalizeEmail(email);
 
   if (submittedTo) {
     return (
@@ -221,11 +225,18 @@ export default function Register() {
                 minLength={MIN_VAULT_PASSWORD_LENGTH}
                 aria-invalid={errorFields.includes('password') || undefined}
                 aria-describedby={
-                  errorFields.includes('password') ? 'register-alert' : undefined
+                  errorFields.includes('password')
+                    ? 'register-password-meter register-alert'
+                    : 'register-password-meter'
                 }
                 required
               />
               <span className="auth-hint">{VAULT_PASSWORD_HINT}</span>
+              <PasswordStrengthMeter
+                id="register-password-meter"
+                password={password}
+                userInputs={[normalizedEmail]}
+              />
             </div>
 
             <div className="auth-field">
