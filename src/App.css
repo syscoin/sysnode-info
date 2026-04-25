@@ -1844,6 +1844,56 @@
   color: var(--muted);
 }
 
+.password-meter {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.password-meter__topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.password-meter__topline strong {
+  color: var(--text);
+}
+
+.password-meter__track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(20, 30, 43, 0.1);
+}
+
+.password-meter__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #c63024;
+  transition: width 140ms ease, background-color 140ms ease;
+}
+
+.password-meter[data-score='1'] .password-meter__bar {
+  background: #d97826;
+}
+
+.password-meter[data-score='2'] .password-meter__bar {
+  background: #caa21d;
+}
+
+.password-meter[data-score='3'] .password-meter__bar,
+.password-meter[data-score='4'] .password-meter__bar {
+  background: #238857;
+}
+
+.password-meter__feedback {
+  margin: 0;
+}
+
 .auth-alert {
   background: rgba(229, 107, 85, 0.1);
   border: 1px solid rgba(229, 107, 85, 0.35);

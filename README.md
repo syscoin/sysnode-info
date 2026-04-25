@@ -29,22 +29,27 @@ Sysnode is designed to make that information easier to read, easier to verify, a
 
 ## Data Source
 
-The frontend reads live dashboard data from the Sysnode backend API. Anonymous public data can still be retargeted with `REACT_APP_API_BASE`, but the authenticated custody surface (`/auth`, `/vault`, `/gov`) is designed for same-origin production deployment:
+The frontend reads live dashboard data from the Sysnode backend API. Production is designed for same-origin deployment:
 
 ```text
 https://sysnode.info/        -> SPA
 https://sysnode.info/auth/*  -> backend
 https://sysnode.info/vault/* -> backend
 https://sysnode.info/gov/*   -> backend
+https://sysnode.info/mnStats -> backend
+https://sysnode.info/mnCount -> backend
+https://sysnode.info/govlist -> backend
 ```
 
-The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. For a fork or private deployment, override the API base URL at build time (no code change required):
+The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. For a fork or private production deployment, keep the same-origin shape and point the reverse proxy at that deployment's backend. This keeps the CSP `connect-src` policy, host-only cookies, and CSRF model in lockstep.
+
+For local or non-production testing, you can override the API base URL while running the dev server:
 
 ```bash
-REACT_APP_API_BASE=https://your-backend.example npm run build
+REACT_APP_API_BASE=https://your-backend.example npm start
 ```
 
-The value is read at build time by both `src/lib/apiClient.js` (authenticated surface) and `src/lib/api.js` (anonymous surface — superblock timing, governance feed, masternode stats). Without it, development authenticated requests use `http://localhost:3001`; production authenticated requests use same-origin relative paths. Keeping the authenticated API under the SPA origin preserves host-only `Secure; SameSite=Lax` cookies and lets the SPA mirror the CSRF cookie into `X-CSRF-Token` without cross-site credentialed fetches.
+The value is read at build time by both `src/lib/apiClient.js` (authenticated surface) and `src/lib/api.js` (anonymous surface — superblock timing, governance feed, masternode stats) outside production. Without it, development requests use `http://localhost:3001`; production requests use same-origin relative paths. Keeping the API under the SPA origin preserves host-only `Secure; SameSite=Lax` cookies and lets the SPA mirror the CSRF cookie into `X-CSRF-Token` without cross-site credentialed fetches.
 
 ## Getting Started
 

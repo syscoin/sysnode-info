@@ -193,18 +193,17 @@ describe('ChangePasswordCard', () => {
       target: { value: 'current-password-xyz' },
     });
     fireEvent.change(screen.getByLabelText(/^new password$/i), {
-      target: { value: 'short-password' },
+      target: { value: 'Password1!' },
     });
     fireEvent.change(screen.getByLabelText(/confirm new password/i), {
-      target: { value: 'short-password' },
+      target: { value: 'Password1!' },
     });
     await act(async () => {
       fireEvent.submit(screen.getByTestId('change-password-card'));
     });
 
     const error = screen.getByTestId('change-password-local-error');
-    expect(error).toHaveTextContent(/at least 8/i);
-    expect(error).toHaveTextContent(/3 of/i);
+    expect(error).toHaveTextContent(/common|another word/i);
     expect(cardAuthService.deriveChangePasswordKeys).not.toHaveBeenCalled();
     expect(cardAuthService.changePassword).not.toHaveBeenCalled();
   });

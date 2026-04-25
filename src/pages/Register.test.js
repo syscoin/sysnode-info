@@ -43,7 +43,6 @@ test('validates password length and mismatch client-side', async () => {
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   const weakAlert = await screen.findByRole('alert');
   expect(weakAlert).toHaveTextContent(/at least 8/i);
-  expect(weakAlert).toHaveTextContent(/3 of/i);
   expect(service.register).not.toHaveBeenCalled();
 
   const pw = screen.getByLabelText(/^password/i);
@@ -54,6 +53,23 @@ test('validates password length and mismatch client-side', async () => {
   await userEvent.type(cf, 'Correct horse battery 2');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   expect(await screen.findByRole('alert')).toHaveTextContent(/don'?t match/i);
+  expect(service.register).not.toHaveBeenCalled();
+});
+
+test('rejects common passwords and renders strength meter feedback', async () => {
+  const service = mockService();
+  renderRegister(service);
+
+  await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText(/^password/i), 'Password1!');
+  await userEvent.type(screen.getByLabelText(/confirm password/i), 'Password1!');
+
+  expect(screen.getByText(/password strength/i)).toBeInTheDocument();
+  expect(screen.getByText('Weak')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/common|another word/i);
   expect(service.register).not.toHaveBeenCalled();
 });
 

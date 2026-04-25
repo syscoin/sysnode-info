@@ -14,15 +14,14 @@ import axios from 'axios';
 // flips true. Codex PR20 round 7 P1.
 //
 // Priority (mirrors apiClient.js):
-//   1. REACT_APP_API_BASE (build-time override for bespoke deployments)
-//   2. Production builds → https://syscoin.dev (the default
-//      hosted backend, same host the authenticated client picks up)
+//   1. Production builds → same-origin relative paths. The deployment
+//      reverse-proxies these anonymous endpoints next to the SPA.
+//   2. Non-production REACT_APP_API_BASE override for local/bespoke testing.
 //   3. Development builds → http://localhost:3001 (backend dev server)
 const DEFAULT_BASE =
-  process.env.REACT_APP_API_BASE ||
   (process.env.NODE_ENV === 'production'
-    ? 'https://syscoin.dev'
-    : 'http://localhost:3001');
+    ? ''
+    : process.env.REACT_APP_API_BASE || 'http://localhost:3001');
 
 const client = axios.create({
   baseURL: DEFAULT_BASE,

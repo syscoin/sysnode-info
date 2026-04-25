@@ -16,10 +16,18 @@ function uniqueSources(sources) {
   return [...new Set(sources.filter(Boolean))];
 }
 
+function explicitConnectSources(value) {
+  return splitCspSources(value).filter(
+    (source) => !['*', 'http:', 'https:', 'ws:', 'wss:'].includes(source)
+  );
+}
+
 const connectSrc = uniqueSources([
   "'self'",
-  'https:',
-  ...splitCspSources(process.env.SYSNODE_CSP_CONNECT_SRC),
+  // Key-custody pages must not allow arbitrary HTTPS exfiltration. Production
+  // API traffic is same-origin by default; deployments that truly need another
+  // endpoint can add exact origins via SYSNODE_CSP_CONNECT_SRC.
+  ...explicitConnectSources(process.env.SYSNODE_CSP_CONNECT_SRC),
 ]);
 
 // HSTS is owned in code so any deployer (behind nginx, Caddy, a managed load

@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 
 import { authService as defaultAuthService } from '../lib/authService';
+import PasswordStrengthMeter from './PasswordStrengthMeter';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 import {
@@ -109,6 +110,7 @@ export default function ChangePasswordCard({
   const [localError, setLocalError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [open, setOpen] = useState(defaultOpen);
+  const userEmail = user && user.email ? user.email : '';
 
   const clearFeedback = useCallback(() => {
     setErrCode(null);
@@ -130,7 +132,7 @@ export default function ChangePasswordCard({
         setLocalError('Enter your current password.');
         return;
       }
-      const passwordError = validateVaultPassword(newPassword);
+      const passwordError = validateVaultPassword(newPassword, [user.email]);
       if (passwordError) {
         setLocalError(passwordError.message);
         return;
@@ -329,9 +331,15 @@ export default function ChangePasswordCard({
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               minLength={MIN_VAULT_PASSWORD_LENGTH}
+              aria-describedby="cp-new-strength"
               required
             />
             <span className="auth-hint">{VAULT_PASSWORD_HINT}</span>
+            <PasswordStrengthMeter
+              id="cp-new-strength"
+              password={newPassword}
+              userInputs={[userEmail]}
+            />
           </div>
 
           <div className="auth-field">
