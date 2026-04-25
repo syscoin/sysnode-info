@@ -4,15 +4,6 @@ const path = require('path');
 const app = express();
 app.disable('x-powered-by');
 
-function originFromUrl(value) {
-  if (!value) return null;
-  try {
-    return new URL(value).origin;
-  } catch (_err) {
-    return null;
-  }
-}
-
 function splitCspSources(value) {
   if (!value) return [];
   return value
@@ -27,8 +18,7 @@ function uniqueSources(sources) {
 
 const connectSrc = uniqueSources([
   "'self'",
-  'https://syscoin.dev',
-  originFromUrl(process.env.REACT_APP_API_BASE),
+  'https:',
   ...splitCspSources(process.env.SYSNODE_CSP_CONNECT_SRC),
 ]);
 
