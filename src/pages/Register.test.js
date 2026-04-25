@@ -41,15 +41,17 @@ test('validates password length and mismatch client-side', async () => {
   await userEvent.type(screen.getByLabelText(/^password/i), 'short');
   await userEvent.type(screen.getByLabelText(/confirm password/i), 'short');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(/at least 16/i);
+  const weakAlert = await screen.findByRole('alert');
+  expect(weakAlert).toHaveTextContent(/at least 8/i);
+  expect(weakAlert).toHaveTextContent(/3 of/i);
   expect(service.register).not.toHaveBeenCalled();
 
   const pw = screen.getByLabelText(/^password/i);
   const cf = screen.getByLabelText(/confirm password/i);
   await userEvent.clear(pw);
   await userEvent.clear(cf);
-  await userEvent.type(pw, 'correct horse battery staple');
-  await userEvent.type(cf, 'correct horse battery mismatch');
+  await userEvent.type(pw, 'Correct horse battery 1');
+  await userEvent.type(cf, 'Correct horse battery 2');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   expect(await screen.findByRole('alert')).toHaveTextContent(/don'?t match/i);
   expect(service.register).not.toHaveBeenCalled();
@@ -69,8 +71,8 @@ test('flags the offending fields aria-invalid on client-side validation errors',
   // Password mismatch should flag BOTH password and confirm — we don't
   // know which one the user mistyped.
   await userEvent.type(email, 'a@b.com');
-  await userEvent.type(pw, 'correct horse battery staple');
-  await userEvent.type(cf, 'correct horse battery mismatch');
+  await userEvent.type(pw, 'Correct horse battery 1');
+  await userEvent.type(cf, 'Correct horse battery 2');
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
   await screen.findByRole('alert');
 
@@ -98,11 +100,11 @@ test('renders the WebCrypto-unavailable copy with an actionable fix', async () =
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
   await userEvent.type(
     screen.getByLabelText(/^password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.type(
     screen.getByLabelText(/confirm password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
@@ -128,11 +130,11 @@ test('surfaces an unknown error\'s own message rather than the generic fallback'
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
   await userEvent.type(
     screen.getByLabelText(/^password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.type(
     screen.getByLabelText(/confirm password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
@@ -148,11 +150,11 @@ test('shows the "check your inbox" screen on success', async () => {
   await userEvent.type(screen.getByLabelText(/^email/i), 'a@b.com');
   await userEvent.type(
     screen.getByLabelText(/^password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.type(
     screen.getByLabelText(/confirm password/i),
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
   await userEvent.click(screen.getByRole('button', { name: /create account/i }));
 
@@ -161,6 +163,6 @@ test('shows the "check your inbox" screen on success', async () => {
   );
   expect(service.register).toHaveBeenCalledWith(
     'a@b.com',
-    'correct horse battery staple'
+    'Correct horse battery 1'
   );
 });
