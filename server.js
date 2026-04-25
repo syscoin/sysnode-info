@@ -22,6 +22,14 @@ const connectSrc = uniqueSources([
   ...splitCspSources(process.env.SYSNODE_CSP_CONNECT_SRC),
 ]);
 
+// HSTS is owned in code so any deployer (behind nginx, Caddy, a managed load
+// balancer, or directly on a TLS-terminating Node) gets it without having to
+// add a duplicate `add_header Strict-Transport-Security` at the edge. Browsers
+// ignore HSTS sent over plain HTTP per RFC 6797 §8.1, so emitting
+// unconditionally is safe for non-HTTPS local development and matches helmet's
+// behaviour on the backend (sysnode-backend uses `helmet()` defaults, which
+// emit the same `max-age=31536000; includeSubDomains`). The matching values
+// keep the SPA and API consistent for the same browser session.
 const SECURITY_HEADERS = {
   'Content-Security-Policy': [
     "default-src 'self'",
@@ -34,6 +42,7 @@ const SECURITY_HEADERS = {
     "font-src 'self'",
     "style-src 'self' 'unsafe-inline'",
   ].join('; '),
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
