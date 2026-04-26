@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
 import PasswordStrengthMeter from '../components/PasswordStrengthMeter';
+import PasswordInput from '../components/PasswordInput';
 import { useAuth } from '../context/AuthContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
 import {
@@ -213,10 +214,9 @@ export default function Register() {
               <label className="auth-label" htmlFor="register-password">
                 Password
               </label>
-              <input
+              <PasswordInput
                 id="register-password"
                 className={inputClass(errorFields, 'password')}
-                type="password"
                 autoComplete="new-password"
                 value={password}
                 onChange={function onPasswordChange(e) {
@@ -243,10 +243,9 @@ export default function Register() {
               <label className="auth-label" htmlFor="register-confirm">
                 Confirm password
               </label>
-              <input
+              <PasswordInput
                 id="register-confirm"
                 className={inputClass(errorFields, 'confirm')}
-                type="password"
                 autoComplete="new-password"
                 value={confirm}
                 onChange={function onConfirmChange(e) {

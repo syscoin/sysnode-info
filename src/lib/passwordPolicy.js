@@ -5,6 +5,8 @@ export const MIN_VAULT_PASSWORD_SCORE = 3;
 
 export const VAULT_PASSWORD_HINT =
   'Use at least 8 characters. Longer passphrases are best; weak or common passwords are rejected.';
+export const PERSONAL_INFO_PASSWORD_HINT =
+  'Do not use your email address or account identifier in your password.';
 
 export const PASSWORD_STRENGTH_LABELS = [
   'Very weak',
@@ -34,8 +36,45 @@ function normalizeUserInputs(userInputs) {
   return [...new Set(tokens.filter((token) => token.length >= 3))];
 }
 
+function personalInfoTokens(userInputs) {
+  const tokens = [];
+  for (const value of Array.isArray(userInputs) ? userInputs : []) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) continue;
+
+    const [localPart] = normalized.split('@');
+    if (localPart) {
+      tokens.push(localPart);
+      tokens.push(...localPart.split(/[^a-z0-9]+/));
+    }
+  }
+
+  return [...new Set(tokens.filter((token) => token.length >= 4))];
+}
+
+function findPersonalInfoToken(password, userInputs) {
+  const normalizedPassword = String(password || '').toLowerCase();
+  if (!normalizedPassword) return null;
+  return (
+    personalInfoTokens(userInputs).find((token) =>
+      normalizedPassword.includes(token)
+    ) || null
+  );
+}
+
 export function estimateVaultPasswordStrength(password, userInputs = []) {
-  return zxcvbn(String(password || ''), normalizeUserInputs(userInputs));
+  const result = zxcvbn(String(password || ''), normalizeUserInputs(userInputs));
+  const personalInfoToken = findPersonalInfoToken(password, userInputs);
+  if (!personalInfoToken) return result;
+  return {
+    ...result,
+    score: Math.min(result.score, 1),
+    personalInfoToken,
+    feedback: {
+      warning: PERSONAL_INFO_PASSWORD_HINT,
+      suggestions: [],
+    },
+  };
 }
 
 export function passwordStrengthLabel(score) {

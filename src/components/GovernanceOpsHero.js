@@ -5,6 +5,7 @@ import { computeOpsStats } from '../lib/governanceOps';
 import { formatNumber } from '../lib/formatters';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
+import PasswordInput from './PasswordInput';
 
 // Error copy for the inline unlock form. Kept in sync with the same
 // map in components/VaultStatusCard.js (the /account source of truth
@@ -403,10 +404,9 @@ function VaultLockedHero() {
             <label className="auth-label" htmlFor="gov-hero-vault-password">
               Password
             </label>
-            <input
+            <PasswordInput
               id="gov-hero-vault-password"
               className="auth-input"
-              type="password"
               autoComplete="current-password"
               value={password}
               onChange={function onChange(e) {
