@@ -189,7 +189,7 @@ export default function NewProposal() {
   // toast-like feedback.
   const [draftSavedAt, setDraftSavedAt] = useState(0);
 
-  // Live next-superblock anchor. We fetch the backend /mnStats feed
+  // Live next-superblock anchor. We fetch the backend /mnstats feed
   // on mount and extract `superblock_stats.superblock_next_epoch_sec`
   // so that `computeProposalWindow` can align the derived start/end
   // epochs to the real chain. Loading / error states gate the
@@ -199,7 +199,7 @@ export default function NewProposal() {
   const [nextSuperblockSec, setNextSuperblockSec] = useState(null);
   const [statsError, setStatsError] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
-  // Monotonic counter tracking the "latest issued /mnStats request".
+  // Monotonic counter tracking the "latest issued /mnstats request".
   // Each refreshStats invocation takes a snapshot of its own id and
   // only mutates anchor state if that id is still current when the
   // response resolves. Prevents out-of-order responses from clobbering
@@ -272,7 +272,7 @@ export default function NewProposal() {
     return () => clearInterval(id);
   }, []);
 
-  // True only when /mnStats gave us a future superblock anchor.
+  // True only when /mnstats gave us a future superblock anchor.
   // Used consistently by WindowPreview, the Prepare-button gate,
   // and the ReviewStep schedule so all three flip together the
   // instant the cached anchor goes stale. Mere truthiness is
@@ -712,7 +712,7 @@ export default function NewProposal() {
       //       the stats-unavailable banner, clear the cached anchor
       //       so Prepare stays disabled until refreshStats() recovers.
       //   (b) fetch returns a stale or missing anchor
-      //       (next_SB epoch <= now) → same as (a). The /mnStats
+      //       (next_SB epoch <= now) → same as (a). The /mnstats
       //       source occasionally lags a few blocks behind the tip
       //       and we refuse to submit against a backward-pointing
       //       anchor for the same reason.
@@ -735,7 +735,7 @@ export default function NewProposal() {
       //
       // Codex PR20 round 3 P2: the wall-clock cutoff used to validate
       // the refreshed anchor must be read AFTER the fetch resolves,
-      // not before. /mnStats is a real network RTT (plus jsdom /
+      // not before. /mnstats is a real network RTT (plus jsdom /
       // proxy / slow-node delays in practice) and can straddle the
       // actual superblock transition; in that window an anchor that
       // was strictly future at pre-await time can already be in the
@@ -776,7 +776,7 @@ export default function NewProposal() {
       }
       // Compare the refreshed anchor against the cached one the
       // user just reviewed. We CANNOT use strict equality — the
-      // backend's /mnStats recomputes `superblock_next_epoch_sec`
+      // backend's /mnstats recomputes `superblock_next_epoch_sec`
       // every sysMain tick (20 s) as `now + diffBlock *
       // avgBlockTime`, so the value drifts by seconds/minutes
       // between fetches even when the same upcoming superblock is
@@ -1632,7 +1632,7 @@ function ReviewStep({
     form.paymentCount
   );
   // Only render the projected schedule when we have a live next-SB
-  // anchor from /mnStats. `derivedWindow` alone is insufficient:
+  // anchor from /mnstats. `derivedWindow` alone is insufficient:
   // computeProposalWindow falls back to `now + cycle` when the anchor
   // is missing/stale, which would paint a plausible-looking list of
   // payout dates that don't match the chain. WindowPreview already

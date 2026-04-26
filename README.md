@@ -36,8 +36,8 @@ https://sysnode.info/        -> SPA
 https://sysnode.info/auth/*  -> backend
 https://sysnode.info/vault/* -> backend
 https://sysnode.info/gov/*   -> backend
-https://sysnode.info/mnStats -> backend
-https://sysnode.info/mnCount -> backend
+https://sysnode.info/mnstats -> backend
+https://sysnode.info/mncount -> backend
 https://sysnode.info/govlist -> backend
 ```
 

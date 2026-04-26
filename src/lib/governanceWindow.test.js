@@ -50,7 +50,7 @@ describe('SUPERBLOCK_CYCLE_SEC', () => {
 });
 
 // Codex PR20 round 4 P1: the prepare-time drift check must not
-// treat sub-SB /mnStats re-estimates as a superblock rotation.
+// treat sub-SB /mnstats re-estimates as a superblock rotation.
 describe('anchorsAreSameSuperblock', () => {
   const NOW = 1_800_000_000;
   const ANCHOR = NOW + 10 * 86400;
@@ -516,7 +516,7 @@ describe('nextSuperblockEpochSecFromStats', () => {
     ).toBeNull();
   });
 
-  // Codex PR20 P1: the backend's /mnStats feed can lag for a
+  // Codex PR20 P1: the backend's /mnstats feed can lag for a
   // window between the real next superblock landing and
   // sysMain.js refreshing its cache. If we were to accept that
   // stale (past) timestamp as a valid anchor, the wizard would
