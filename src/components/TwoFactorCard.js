@@ -3,6 +3,7 @@ import { toString as qrToString } from 'qrcode';
 
 import { authService as defaultAuthService } from '../lib/authService';
 import { useAuth } from '../context/AuthContext';
+import PasswordInput from './PasswordInput';
 
 const ERROR_COPY = {
   invalid_totp_code: "That authenticator code didn't work. Check the current code and try again.",
@@ -295,10 +296,9 @@ export default function TwoFactorCard({
             <label className="auth-label" htmlFor="totp-current-password">
               Current password
             </label>
-            <input
+            <PasswordInput
               id="totp-current-password"
               className="auth-input"
-              type="password"
               autoComplete="current-password"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}

@@ -62,7 +62,7 @@ test('rejects an obviously invalid email before calling the service', async () =
   await waitFor(() => expect(service.me).toHaveBeenCalled());
 
   await userEvent.type(screen.getByLabelText(/email/i), 'not-an-email');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -86,7 +86,7 @@ test('renders a friendly message when the server returns invalid_credentials', a
   await waitFor(() => expect(service.me).toHaveBeenCalled());
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -112,7 +112,7 @@ test('flags both email and password aria-invalid on invalid_credentials (anti-en
   await waitFor(() => expect(service.me).toHaveBeenCalled());
 
   const email = screen.getByLabelText(/email/i);
-  const pw = screen.getByLabelText(/password/i);
+  const pw = screen.getByLabelText('Password');
   await userEvent.type(email, 'a@b.com');
   await userEvent.type(pw, 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
@@ -140,7 +140,7 @@ test('renders the WebCrypto-unavailable copy with an actionable fix', async () =
   await waitFor(() => expect(service.me).toHaveBeenCalled());
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
   const alert = await screen.findByRole('alert');
@@ -169,7 +169,7 @@ test('sends the user to /account on successful login', async () => {
   await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await act(async () => {
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
   });
@@ -204,7 +204,7 @@ test('completes a pending TOTP login before navigating', async () => {
   await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
 
   expect(await screen.findByText(/two-factor check/i)).toBeInTheDocument();
@@ -232,7 +232,7 @@ test('clears MFA errors when returning to password sign in', async () => {
   await waitFor(() => expect(service.me).toHaveBeenCalled());
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
   expect(await screen.findByText(/two-factor check/i)).toBeInTheDocument();
 
@@ -269,7 +269,7 @@ test('fires vault.unlockWithMaster with the login-returned master (fire-and-forg
   await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await act(async () => {
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
   });
@@ -312,7 +312,7 @@ test('a vault auto-unlock failure does not prevent navigation or surface as a lo
   await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
 
   await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
-  await userEvent.type(screen.getByLabelText(/password/i), 'hunter22a');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
   await act(async () => {
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
   });

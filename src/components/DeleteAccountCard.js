@@ -4,6 +4,7 @@ import { useHistory } from 'react-router-dom';
 import { authService as defaultAuthService } from '../lib/authService';
 import { deriveLoginKeys } from '../lib/crypto/kdf';
 import { useAuth } from '../context/AuthContext';
+import PasswordInput from './PasswordInput';
 
 // DeleteAccountCard
 // -----------------------------------------------------------------------
@@ -219,10 +220,9 @@ export default function DeleteAccountCard({
         <label className="auth-label" htmlFor="del-password">
           Current password
         </label>
-        <input
+        <PasswordInput
           id="del-password"
           className="auth-input"
-          type="password"
           autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

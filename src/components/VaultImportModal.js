@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 import { authService as defaultAuthService } from '../lib/authService';
+import PasswordInput from './PasswordInput';
 
 // VaultImportModal
 // -----------------------------------------------------------------------
@@ -521,10 +522,9 @@ export default function VaultImportModal({
             <label className="auth-label" htmlFor="vault-import-password">
               Current password
             </label>
-            <input
+            <PasswordInput
               id="vault-import-password"
               ref={passwordRef}
-              type="password"
               autoComplete="current-password"
               className={`auth-input${
                 passwordError ? ' auth-input--error' : ''

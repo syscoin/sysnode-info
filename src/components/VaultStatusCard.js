@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 
 import { useVault } from '../context/VaultContext';
 import KeyManagerCard from './KeyManagerCard';
+import PasswordInput from './PasswordInput';
 import VaultImportModal from './VaultImportModal';
 
 // VaultStatusCard
@@ -174,10 +175,9 @@ export default function VaultStatusCard({ user }) {
         <label className="auth-label" htmlFor="vault-password">
           Password
         </label>
-        <input
+        <PasswordInput
           id="vault-password"
           className="auth-input"
-          type="password"
           autoComplete="current-password"
           value={password}
           onChange={function onChange(e) {

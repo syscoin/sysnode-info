@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 
 import { authService as defaultAuthService } from '../lib/authService';
 import PasswordStrengthMeter from './PasswordStrengthMeter';
+import PasswordInput from './PasswordInput';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 import {
@@ -308,10 +309,9 @@ export default function ChangePasswordCard({
             <label className="auth-label" htmlFor="cp-old">
               Current password
             </label>
-            <input
+            <PasswordInput
               id="cp-old"
               className="auth-input"
-              type="password"
               autoComplete="current-password"
               value={oldPassword}
               onChange={(e) => setOldPassword(e.target.value)}
@@ -323,10 +323,9 @@ export default function ChangePasswordCard({
             <label className="auth-label" htmlFor="cp-new">
               New password
             </label>
-            <input
+            <PasswordInput
               id="cp-new"
               className="auth-input"
-              type="password"
               autoComplete="new-password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
@@ -346,10 +345,9 @@ export default function ChangePasswordCard({
             <label className="auth-label" htmlFor="cp-confirm">
               Confirm new password
             </label>
-            <input
+            <PasswordInput
               id="cp-confirm"
               className="auth-input"
-              type="password"
               autoComplete="new-password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}

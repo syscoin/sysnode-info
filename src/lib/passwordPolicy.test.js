@@ -41,3 +41,30 @@ test('rejects passwords built from the email local part', () => {
     validateVaultPassword('sentryoperator2026!', ['sentryoperator@example.com'])
   ).toMatchObject({ code: 'password_too_weak' });
 });
+
+test('caps strength for email-like personal-info variants even when long', () => {
+  const userInputs = ['doejohn@gmail.com'];
+  const result = estimateVaultPasswordStrength(
+    'doejohn@gmail.co123456789',
+    userInputs
+  );
+
+  expect(result.score).toBeLessThan(3);
+  expect(result.feedback.warning).toMatch(/email address|account identifier/i);
+  expect(
+    validateVaultPassword('doejohn@gmail.co123456789', userInputs)
+  ).toMatchObject({
+    code: 'password_too_weak',
+  });
+});
+
+test('keeps personal-info passwords weak after adding extra numbers', () => {
+  const userInputs = ['doejohn@gmail.com'];
+
+  expect(validateVaultPassword('doejohn123!', userInputs)).toMatchObject({
+    code: 'password_too_weak',
+  });
+  expect(validateVaultPassword('doejohn123456789!', userInputs)).toMatchObject({
+    code: 'password_too_weak',
+  });
+});

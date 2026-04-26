@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useHistory, useLocation } from 'react-router-dom';
 
 import PageMeta from '../components/PageMeta';
+import PasswordInput from '../components/PasswordInput';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
 import { isValidEmailSyntax, normalizeEmail } from '../lib/crypto/normalize';
@@ -342,10 +343,9 @@ export default function Login() {
               <label className="auth-label" htmlFor="login-password">
                 Password
               </label>
-              <input
+              <PasswordInput
                 id="login-password"
                 className={inputClass(errorFields, 'password')}
-                type="password"
                 autoComplete="current-password"
                 value={password}
                 onChange={function onPasswordChange(e) {
