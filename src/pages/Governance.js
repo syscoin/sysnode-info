@@ -22,7 +22,6 @@ import {
   formatDateFromEpoch,
   formatNumber,
   formatPercent,
-  formatShortDate,
   formatUtcTime,
   getProposalDurationMonths,
   parseNumber,
@@ -125,7 +124,7 @@ function ProposalRow({
   );
 
   const proposalTitle = proposal.title || proposal.name;
-  const statusLabel = passing ? 'Passing' : 'Not enough votes';
+  const statusLabel = passing ? 'Passing' : 'Not Enough Votes';
 
   async function copyCommand(direction) {
     try {
@@ -238,10 +237,9 @@ function ProposalRow({
         <h3>{proposalTitle}</h3>
         <div className="proposal-row__meta-line">
           <span className="proposal-row__sponsor">{proposal.name}</span>
-          <span className="proposal-row__meta-separator" aria-hidden="true">
-            •
+          <span className="proposal-row__created">
+            Created {formatDateFromEpoch(proposal.CreationTime)}
           </span>
-          <span>Created {formatDateFromEpoch(proposal.CreationTime)}</span>
         </div>
       </div>
 
@@ -565,7 +563,7 @@ export default function Governance() {
         <div className="site-wrap page-hero__layout page-hero__layout--governance">
           <div>
             <p className="eyebrow">Syscoin Governance</p>
-            <h1>Keep up with governance.</h1>
+            <h1>Keeping up with Governance.</h1>
             <p className="page-hero__copy">
               See what is up for vote, how much has been requested, when voting closes, and when the next superblock lands.
             </p>
@@ -592,7 +590,7 @@ export default function Governance() {
             <div className="governance-summary__item">
               <span>Voting Deadline</span>
               <strong>
-                {superblockStats ? formatShortDate(superblockStats.voting_deadline) : 'Loading...'}
+                {superblockStats ? formatDayMonth(superblockStats.voting_deadline) : 'Loading...'}
               </strong>
               <small>
                 {superblockStats
@@ -630,8 +628,8 @@ export default function Governance() {
               <p>
                 <strong>Vote in one click.</strong>{' '}
                 <Link to="/login">Log in</Link> and import your
-                sentry node voting keys on the{' '}
-                <Link to="/account">Account page</Link> to vote
+                Sentry Node voting keys on the{' '}
+                <Link to="/account">Account Page</Link> to vote
                 without leaving the browser — no CLI needed.
               </p>
             </div>
