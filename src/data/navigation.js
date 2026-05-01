@@ -7,10 +7,10 @@ export const NAV_LINKS = [
 ];
 
 export const EXTERNAL_LINKS = {
-  docs: 'https://docs.syscoin.org/docs/guides/sentrynode_setup/',
+  docs: 'https://github.com/syscoin/Masternode-Install-Script',
   support: 'https://support.syscoin.org/',
   github: 'https://github.com/syscoin/sysnode-info',
-  discord: 'https://discord.gg/d73qTF9',
+  discord: 'https://discord.com/invite/syscoin',
   sentryNodeDocs: 'https://docs.syscoin.org/docs/tech/sentrynodes/',
   syscoin: 'https://syscoin.org/',
   wallets: 'https://syscoin.org/get-sys#wallets',

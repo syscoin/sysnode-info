@@ -23,7 +23,7 @@ export const PRE_FLIGHT = [
   'Prepare exactly 100,000 SYS for each Sentry Node you want to register.',
   'If you are preserving an existing node seniority position, lock the current collateral output instead of moving funds to a new transaction.',
   'Keep owner, voting, payout, and fee addresses organized before you start the registration flow.',
-  'For self-hosted nodes, deploy a fresh Ubuntu VPS and match the current official guide before choosing an image.',
+  'For self-hosted nodes, deploy a fresh Ubuntu 24.04 LTS VPS and match the current official guide before choosing an image.',
 ];
 
 export const HOSTING_MODEL = [
