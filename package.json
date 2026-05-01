@@ -12,9 +12,6 @@
     "@noble/secp256k1": "^2.3.0",
     "@scure/base": "^1.2.6",
     "@scure/bip32": "^2.2.0",
-    "@testing-library/jest-dom": "^5.16.5",
-    "@testing-library/react": "^13.4.0",
-    "@testing-library/user-event": "^13.5.0",
     "axios": "^1.4.0",
     "chart.js": "^4.3.0",
     "express": "^4.17.1",
@@ -23,7 +20,6 @@
     "react-chartjs-2": "^5.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^5.3.4",
-    "react-scripts": "5.0.1",
     "zxcvbn": "^4.4.2"
   },
   "scripts": {
@@ -58,6 +54,10 @@
     ]
   },
   "devDependencies": {
-    "axios-mock-adapter": "^2.1.0"
+    "@testing-library/jest-dom": "^5.16.5",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^13.5.0",
+    "axios-mock-adapter": "^2.1.0",
+    "react-scripts": "5.0.1"
   }
 }
