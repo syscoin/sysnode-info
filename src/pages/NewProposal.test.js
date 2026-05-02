@@ -16,6 +16,7 @@ jest.mock('../lib/crypto/kdf', () => ({
   deriveMaster: jest.fn(),
   deriveAuthHash: jest.fn(),
   deriveVaultKey: jest.fn(),
+  zeroizeBytes: jest.fn(),
 }));
 
 // Mock the network-stats fetcher that the wizard uses to anchor its

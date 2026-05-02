@@ -10,6 +10,7 @@ import React, {
 
 import { authService as defaultAuthService } from '../lib/authService';
 import { setAuthLostHandler } from '../lib/apiClient';
+import { zeroizeBytes } from '../lib/crypto/kdf';
 
 // AuthContext shape:
 //
@@ -216,6 +217,7 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
             setUser(null);
             commitStatus(ANONYMOUS);
           }, myGen);
+          zeroizeBytes(master);
           const wrapped = new Error('session_not_established');
           wrapped.code = 'session_not_established';
           wrapped.status = 401;

@@ -26,6 +26,13 @@ jest.mock('../lib/crypto/kdf', () => ({
   deriveMaster: jest.fn(),
   deriveAuthHash: jest.fn(),
   deriveVaultKey: jest.fn(),
+  zeroizeBytes: jest.fn((value) => {
+    if (value instanceof Uint8Array) {
+      value.fill(0);
+      return true;
+    }
+    return false;
+  }),
 }));
 
 // eslint-disable-next-line import/first
@@ -33,7 +40,7 @@ import DeleteAccountCard from './DeleteAccountCard';
 // eslint-disable-next-line import/first
 import { AuthProvider } from '../context/AuthContext';
 // eslint-disable-next-line import/first
-import { deriveLoginKeys } from '../lib/crypto/kdf';
+import { deriveLoginKeys, zeroizeBytes } from '../lib/crypto/kdf';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -118,6 +125,13 @@ describe('DeleteAccountCard', () => {
         authHash: 'a'.repeat(64),
       })
     );
+    zeroizeBytes.mockImplementation((value) => {
+      if (value instanceof Uint8Array) {
+        value.fill(0);
+        return true;
+      }
+      return false;
+    });
   });
 
   test('renders the collapsed danger entry by default', async () => {
@@ -215,6 +229,36 @@ describe('DeleteAccountCard', () => {
     );
     const body = cardAuthService.deleteAccount.mock.calls[0][0];
     expect(body.oldAuthHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('zeroes the derived master after account deletion proof', async () => {
+    const authService = makeAuthService();
+    const deletionMaster = new Uint8Array(32).fill(0x42);
+    deriveLoginKeys.mockResolvedValueOnce({
+      master: deletionMaster,
+      authHash: 'b'.repeat(64),
+    });
+    const cardAuthService = {
+      deleteAccount: jest.fn().mockResolvedValue(true),
+    };
+
+    renderCard({ authService, cardAuthService });
+    await waitForUserHydrated();
+    await expandForm();
+    fireEvent.change(screen.getByTestId('delete-account-email'), {
+      target: { value: 'alice@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('delete-account-password'), {
+      target: { value: 'hunter22a' },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId('delete-account-card'));
+    });
+
+    await waitFor(() =>
+      expect(cardAuthService.deleteAccount).toHaveBeenCalledTimes(1)
+    );
+    expect(Array.from(deletionMaster)).toEqual(new Array(32).fill(0));
   });
 
   test('refuses to submit when the password field is empty', async () => {

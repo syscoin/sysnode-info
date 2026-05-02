@@ -67,14 +67,14 @@ function makeAuthService() {
 
 // A minimal authService for the card itself — overrides only what
 // the card calls, with fast stubs.
-function makeCardAuthService({ changePasswordImpl } = {}) {
+function makeCardAuthService({ changePasswordImpl, newMaster } = {}) {
   return {
     deriveChangePasswordKeys: jest.fn().mockResolvedValue({
       oldAuthHash: 'a'.repeat(64),
       newAuthHash: 'b'.repeat(64),
       // `master` is only used to call vault.rewrapForPasswordChange,
       // which our mocked useVault treats as a no-op (returns null).
-      newMaster: new Uint8Array(32),
+      newMaster: newMaster || new Uint8Array(32),
     }),
     changePassword: changePasswordImpl || jest.fn().mockResolvedValue({}),
   };
@@ -234,5 +234,23 @@ describe('ChangePasswordCard', () => {
     expect(screen.getByTestId('auth-probe')).toHaveTextContent(
       'authenticated'
     );
+  });
+
+  test('zeroes the derived new master after password-change orchestration', async () => {
+    const authService = makeAuthService();
+    const newMaster = new Uint8Array(32).fill(0x42);
+    const cardAuthService = makeCardAuthService({ newMaster });
+
+    renderCard({ authService, cardAuthService });
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-probe')).toHaveTextContent('authenticated')
+    );
+
+    await fillAndSubmit();
+
+    await waitFor(() =>
+      expect(cardAuthService.changePassword).toHaveBeenCalledTimes(1)
+    );
+    expect(Array.from(newMaster)).toEqual(new Array(32).fill(0));
   });
 });

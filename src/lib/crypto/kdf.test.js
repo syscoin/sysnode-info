@@ -3,6 +3,7 @@ import {
   deriveAuthHash,
   deriveVaultKey,
   deriveLoginKeys,
+  zeroizeBytes,
   __internals,
 } from './kdf';
 
@@ -74,6 +75,13 @@ describe('kdf.deriveMaster / deriveAuthHash — cross-check vs Node crypto', () 
     const direct = await deriveAuthHash(master);
     expect(authHash).toBe(direct);
   }, 20000);
+
+  test('zeroizeBytes overwrites Uint8Array key material in place', () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    expect(zeroizeBytes(bytes)).toBe(true);
+    expect(Array.from(bytes)).toEqual([0, 0, 0, 0]);
+    expect(zeroizeBytes(null)).toBe(false);
+  });
 
   test('email case and padding do not affect the derived master (normalization)', async () => {
     const a = await nodePbkdf2(password, '  USER@example.COM  ');

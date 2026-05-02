@@ -55,12 +55,20 @@ function encodeUtf8(text) {
 }
 
 function toHex(buffer) {
-  const bytes = new Uint8Array(buffer);
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let out = '';
   for (let i = 0; i < bytes.length; i += 1) {
     out += bytes[i].toString(16).padStart(2, '0');
   }
   return out;
+}
+
+export function zeroizeBytes(value) {
+  if (value instanceof Uint8Array) {
+    value.fill(0);
+    return true;
+  }
+  return false;
 }
 
 // Strict hex-to-bytes. `parseInt(x, 16)` tolerates partial parses — e.g.
@@ -143,7 +151,11 @@ async function hkdfBytes(master, info, salt = new Uint8Array(0), length = SUBKEY
 
 export async function deriveAuthHash(master) {
   const bytes = await hkdfBytes(master, AUTH_INFO);
-  return toHex(bytes);
+  try {
+    return toHex(bytes);
+  } finally {
+    zeroizeBytes(bytes);
+  }
 }
 
 // Returns a raw AES-GCM CryptoKey ready for encrypt/decrypt. The raw bytes
@@ -153,13 +165,17 @@ export async function deriveVaultKey(master, saltV) {
   const salt = typeof saltV === 'string' ? fromHex(saltV) : saltV;
   const rawKey = await hkdfBytes(master, VAULT_INFO, salt, 32);
   const subtle = subtleCrypto();
-  return subtle.importKey(
-    'raw',
-    rawKey,
-    { name: 'AES-GCM' },
-    false, // non-extractable
-    ['encrypt', 'decrypt']
-  );
+  try {
+    return await subtle.importKey(
+      'raw',
+      rawKey,
+      { name: 'AES-GCM' },
+      false, // non-extractable
+      ['encrypt', 'decrypt']
+    );
+  } finally {
+    zeroizeBytes(rawKey);
+  }
 }
 
 // Convenience: register/login flow. Returns both the hex authHash and the
@@ -167,8 +183,14 @@ export async function deriveVaultKey(master, saltV) {
 // without re-running the expensive PBKDF2).
 export async function deriveLoginKeys(password, email) {
   const master = await deriveMaster(password, email);
-  const authHash = await deriveAuthHash(master);
-  return { master, authHash };
+  let handoffMaster = false;
+  try {
+    const authHash = await deriveAuthHash(master);
+    handoffMaster = true;
+    return { master, authHash };
+  } finally {
+    if (!handoffMaster) zeroizeBytes(master);
+  }
 }
 
 export const __internals = {

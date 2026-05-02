@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { useHistory } from 'react-router-dom';
 
 import { authService as defaultAuthService } from '../lib/authService';
-import { deriveLoginKeys } from '../lib/crypto/kdf';
+import { deriveLoginKeys, zeroizeBytes } from '../lib/crypto/kdf';
 import { useAuth } from '../context/AuthContext';
 import PasswordInput from './PasswordInput';
 
@@ -104,13 +104,16 @@ export default function DeleteAccountCard({
       }
 
       setSubmitting(true);
+      let master;
       try {
         // Re-derive authHash the same way /login does — the server
         // treats this as proof that the caller knows the password.
         // We do NOT store or surface `master`; account deletion
         // has no use for the master key (there's no vault to
         // unlock, and we're about to erase any vault state).
-        const { authHash } = await deriveLoginKeys(password, user.email);
+        const keys = await deriveLoginKeys(password, user.email);
+        const { authHash } = keys;
+        master = keys.master;
 
         try {
           await authService.deleteAccount({ oldAuthHash: authHash });
@@ -141,6 +144,7 @@ export default function DeleteAccountCard({
         handleAuthLost();
         history.replace('/');
       } finally {
+        zeroizeBytes(master);
         setSubmitting(false);
       }
     },

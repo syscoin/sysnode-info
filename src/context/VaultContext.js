@@ -460,7 +460,11 @@ export function VaultProvider({
         throw e;
       }
       const master = await deriveMaster(password, email);
-      return unlockWithMaster(master);
+      try {
+        return await unlockWithMaster(master);
+      } finally {
+        zeroizeDataKey(master);
+      }
     },
     [unlockWithMaster]
   );
@@ -574,26 +578,30 @@ export function VaultProvider({
             throw e;
           }
           const master = await deriveMaster(opts.password, email);
-          // Derive the authHash and verify it against the server's
-          // stored credential BEFORE we derive vaultKey or generate a
-          // DK. If it doesn't match we have nothing to roll back —
-          // no PUT has happened, no keys are installed, no state is
-          // mutated. Re-tag the server's `invalid_credentials` as
-          // `password_mismatch` so the import modal can render copy
-          // tailored to the "this isn't your account password"
-          // case rather than a generic auth error.
-          const authHash = await deriveAuthHash(master);
           try {
-            await opts.verifyAuthHash(authHash);
-          } catch (err) {
-            if (err && err.code === 'invalid_credentials') {
-              const e = new Error('password_mismatch');
-              e.code = 'password_mismatch';
-              throw e;
+            // Derive the authHash and verify it against the server's
+            // stored credential BEFORE we derive vaultKey or generate a
+            // DK. If it doesn't match we have nothing to roll back —
+            // no PUT has happened, no keys are installed, no state is
+            // mutated. Re-tag the server's `invalid_credentials` as
+            // `password_mismatch` so the import modal can render copy
+            // tailored to the "this isn't your account password"
+            // case rather than a generic auth error.
+            const authHash = await deriveAuthHash(master);
+            try {
+              await opts.verifyAuthHash(authHash);
+            } catch (err) {
+              if (err && err.code === 'invalid_credentials') {
+                const e = new Error('password_mismatch');
+                e.code = 'password_mismatch';
+                throw e;
+              }
+              throw err;
             }
-            throw err;
+            vaultKey = await deriveVaultKey(master, saltV);
+          } finally {
+            zeroizeDataKey(master);
           }
-          vaultKey = await deriveVaultKey(master, saltV);
           dk = generateDataKey();
           ifMatch = '*';
         } else {
@@ -845,9 +853,9 @@ export function VaultProvider({
         err.code = 'vault_missing_saltv';
         throw err;
       }
-      // Derive the NEW vaultKey from the new master. We do this here
-      // (not in the caller) to keep all raw key material inside the
-      // vault module — callers only ever see the envelope output.
+      // Derive the NEW vaultKey from the new master. The caller owns
+      // and wipes the raw PBKDF2 bytes after this returns; VaultContext
+      // only retains the non-extractable CryptoKey on successful commit.
       const newVaultKey = await deriveVaultKey(newMaster, saltV);
 
       // rewrapEnvelope preserves the payload bytes, so `data` is

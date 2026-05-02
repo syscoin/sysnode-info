@@ -1,5 +1,10 @@
 import { apiClient as defaultClient } from './apiClient';
-import { deriveLoginKeys, deriveMaster, deriveAuthHash } from './crypto/kdf';
+import {
+  deriveLoginKeys,
+  deriveMaster,
+  deriveAuthHash,
+  zeroizeBytes,
+} from './crypto/kdf';
 
 // High-level façade for the auth surface.
 //
@@ -14,12 +19,16 @@ import { deriveLoginKeys, deriveMaster, deriveAuthHash } from './crypto/kdf';
 
 export function createAuthService(client = defaultClient) {
   async function register(email, password) {
-    const { authHash } = await deriveLoginKeys(password, email);
-    const res = await client.post('/auth/register', {
-      email: email.trim(),
-      authHash,
-    });
-    return res.data;
+    const { authHash, master } = await deriveLoginKeys(password, email);
+    try {
+      const res = await client.post('/auth/register', {
+        email: email.trim(),
+        authHash,
+      });
+      return res.data;
+    } finally {
+      zeroizeBytes(master);
+    }
   }
 
   async function verifyEmail(token) {
@@ -39,11 +48,18 @@ export function createAuthService(client = defaultClient) {
     // NEVER log or JSON-stringify the returned object into anything
     // persistent — it contains raw key material until it's been consumed.
     const { authHash, master } = await deriveLoginKeys(password, email);
-    const res = await client.post('/auth/login', {
-      email: email.trim(),
-      authHash,
-    });
-    return { ...res.data, master };
+    let handoffMaster = false;
+    try {
+      const res = await client.post('/auth/login', {
+        email: email.trim(),
+        authHash,
+      });
+      const out = { ...res.data, master };
+      handoffMaster = true;
+      return out;
+    } finally {
+      if (!handoffMaster) zeroizeBytes(master);
+    }
   }
 
   async function completeTotpLogin({ challengeToken, code, recoveryCode }) {
@@ -91,13 +107,21 @@ export function createAuthService(client = defaultClient) {
   // is documented in sysnode-backend/routes/auth.js:ChangePasswordSchema.
   async function deriveChangePasswordKeys(oldPassword, newPassword, email) {
     const oldKeys = await deriveLoginKeys(oldPassword, email);
-    const newMaster = await deriveMaster(newPassword, email);
-    const newAuthHash = await deriveAuthHash(newMaster);
-    return {
-      oldAuthHash: oldKeys.authHash,
-      newAuthHash,
-      newMaster,
-    };
+    let newMaster;
+    let handoffNewMaster = false;
+    try {
+      newMaster = await deriveMaster(newPassword, email);
+      const newAuthHash = await deriveAuthHash(newMaster);
+      handoffNewMaster = true;
+      return {
+        oldAuthHash: oldKeys.authHash,
+        newAuthHash,
+        newMaster,
+      };
+    } finally {
+      zeroizeBytes(oldKeys.master);
+      if (!handoffNewMaster) zeroizeBytes(newMaster);
+    }
   }
 
   async function changePassword({ oldAuthHash, newAuthHash, vault }) {
@@ -123,7 +147,7 @@ export function createAuthService(client = defaultClient) {
 
   async function deriveStepUpAuthHash(password, email) {
     const { master, authHash } = await deriveLoginKeys(password, email);
-    if (master instanceof Uint8Array) master.fill(0);
+    zeroizeBytes(master);
     return authHash;
   }
 
