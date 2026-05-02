@@ -5,6 +5,7 @@ import PasswordStrengthMeter from './PasswordStrengthMeter';
 import PasswordInput from './PasswordInput';
 import { useAuth } from '../context/AuthContext';
 import { useVault } from '../context/VaultContext';
+import { zeroizeBytes } from '../lib/crypto/kdf';
 import {
   MIN_VAULT_PASSWORD_LENGTH,
   validateVaultPassword,
@@ -170,17 +171,19 @@ export default function ChangePasswordCard({
       }
 
       setSubmitting(true);
+      let newMaster;
       try {
         // 1. Derive keys up-front. This runs PBKDF2(600k) twice
         //    (once for the old authHash, once for the new master)
         //    so it's the most expensive part of the flow — do it
         //    before touching any state.
-        const { oldAuthHash, newAuthHash, newMaster } =
+        const { oldAuthHash, newAuthHash, newMaster: derivedNewMaster } =
           await authService.deriveChangePasswordKeys(
             oldPassword,
             newPassword,
             user.email
           );
+        newMaster = derivedNewMaster;
 
         // 2. Ask the vault to rewrap. `rewrap` is null iff the user
         //    has no vault row at all — the POST will then run as a
@@ -249,6 +252,7 @@ export default function ChangePasswordCard({
         setConfirmPassword('');
         setSuccess(true);
       } finally {
+        zeroizeBytes(newMaster);
         setSubmitting(false);
       }
     },

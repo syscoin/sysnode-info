@@ -8,6 +8,7 @@ jest.mock('../lib/crypto/kdf', () => ({
   deriveMaster: jest.fn(),
   deriveAuthHash: jest.fn(),
   deriveVaultKey: jest.fn(),
+  zeroizeBytes: jest.fn(),
 }));
 
 jest.mock('../lib/proposalService', () => {
