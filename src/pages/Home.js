@@ -191,7 +191,7 @@ export default function Home() {
         <section className="page-section page-section--tight">
           <div className="site-wrap dashboard-grid dashboard-grid--feature">
             <TrendChart
-              defaultRange="7d"
+              defaultRange="all"
               eyebrow="Sentry Node Trend"
               title="Sentry Nodes Over Time"
               historyData={history}
