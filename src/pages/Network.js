@@ -199,7 +199,7 @@ export default function Network() {
         <section className="page-section page-section--tight">
           <div className="site-wrap dashboard-grid dashboard-grid--feature">
             <TrendChart
-              defaultRange="7d"
+              defaultRange="all"
               eyebrow="Sentry Nodes Over Time"
               title="Node count trend"
               historyData={history}
