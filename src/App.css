@@ -866,6 +866,11 @@
   white-space: nowrap;
 }
 
+.country-list__flag {
+  display: inline-block;
+  margin-right: 8px;
+}
+
 .country-list__bar {
   height: 12px;
   overflow: hidden;

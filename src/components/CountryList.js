@@ -1,6 +1,11 @@
 import React from 'react';
 
-import { formatNumber, formatPercent, getCountryName } from '../lib/formatters';
+import {
+  formatNumber,
+  formatPercent,
+  getCountryFlag,
+  getCountryName,
+} from '../lib/formatters';
 
 export default function CountryList(props) {
   return (
@@ -10,12 +15,20 @@ export default function CountryList(props) {
         const count = Number(entry[1].masternodes || 0);
         const share = props.enabledCount ? (count / props.enabledCount) * 100 : 0;
         const minimumWidth = props.minimumWidth === undefined ? 4 : props.minimumWidth;
+        const flag = getCountryFlag(code);
 
         return (
           <div key={code} className="country-list__row">
             <div className="country-list__label">
               <span className="country-list__count">{formatNumber(count)} nodes</span>
-              <strong>{getCountryName(code)}</strong>
+              <strong>
+                {flag ? (
+                  <span className="country-list__flag" aria-hidden="true">
+                    {flag}
+                  </span>
+                ) : null}
+                {getCountryName(code)}
+              </strong>
             </div>
             <div className="country-list__bar">
               <span style={{ width: `${Math.max(share, minimumWidth)}%` }} />
