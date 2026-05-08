@@ -1,4 +1,5 @@
 const COUNTRY_NAMES = {
+  ARE: 'United Arab Emirates',
   AUT: 'Austria',
   BGR: 'Bulgaria',
   BRA: 'Brazil',
@@ -10,7 +11,7 @@ const COUNTRY_NAMES = {
   FRA: 'France',
   GBR: 'United Kingdom',
   IND: 'India',
-  IRN: 'Iran',
+  IRN: 'Middle East',
   ITA: 'Italy',
   JPN: 'Japan',
   LTU: 'Lithuania',
