@@ -2,6 +2,7 @@ import {
   formatDayMonth,
   formatShortDate,
   formatUtcTime,
+  getCountryFlag,
   getCountryName,
 } from './formatters';
 
@@ -22,5 +23,12 @@ describe('country formatters', () => {
   test('uses a regional Middle East label for IRN', () => {
     expect(getCountryName('ARE')).toBe('United Arab Emirates');
     expect(getCountryName('IRN')).toBe('Middle East');
+  });
+
+  test('formats country flags from alpha-3 country codes', () => {
+    expect(getCountryFlag('ARE')).toBe('🇦🇪');
+    expect(getCountryFlag('DEU')).toBe('🇩🇪');
+    expect(getCountryFlag('IRN')).toBe('🌐');
+    expect(getCountryFlag('UNKNOWN')).toBe('');
   });
 });

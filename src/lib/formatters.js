@@ -24,6 +24,31 @@ const COUNTRY_NAMES = {
   USA: 'United States',
 };
 
+const COUNTRY_FLAG_ALPHA2 = {
+  ARE: 'AE',
+  AUT: 'AT',
+  BGR: 'BG',
+  BRA: 'BR',
+  CAN: 'CA',
+  CYP: 'CY',
+  DEU: 'DE',
+  DNK: 'DK',
+  FIN: 'FI',
+  FRA: 'FR',
+  GBR: 'GB',
+  IND: 'IN',
+  ITA: 'IT',
+  JPN: 'JP',
+  LTU: 'LT',
+  NLD: 'NL',
+  NOR: 'NO',
+  POL: 'PL',
+  SGP: 'SG',
+  SWE: 'SE',
+  TUR: 'TR',
+  USA: 'US',
+};
+
 export function parseNumber(value) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : 0;
@@ -220,6 +245,22 @@ export function formatDateFromEpoch(epoch) {
 
 export function getCountryName(code) {
   return COUNTRY_NAMES[code] || code;
+}
+
+export function getCountryFlag(code) {
+  if (code === 'IRN') {
+    return '🌐';
+  }
+
+  const alpha2 = COUNTRY_FLAG_ALPHA2[code];
+  if (!alpha2) {
+    return '';
+  }
+
+  return alpha2
+    .split('')
+    .map((letter) => String.fromCodePoint(127397 + letter.charCodeAt(0)))
+    .join('');
 }
 
 export function getProposalDurationMonths(startEpoch, endEpoch) {
