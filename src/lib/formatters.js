@@ -1,4 +1,5 @@
 const COUNTRY_NAMES = {
+  ARE: 'UAE',
   AUT: 'Austria',
   BGR: 'Bulgaria',
   BRA: 'Brazil',
@@ -20,6 +21,7 @@ const COUNTRY_NAMES = {
   SGP: 'Singapore',
   SWE: 'Sweden',
   TUR: 'Turkey',
+  UAE: 'UAE',
   USA: 'United States',
 };
 

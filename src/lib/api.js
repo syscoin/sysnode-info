@@ -1,4 +1,10 @@
 import axios from 'axios';
+import {
+  getMockGovernanceFeed,
+  getMockNetworkStats,
+  getMockNodeHistory,
+  MOCK_API_LATENCY_MS,
+} from '../data/mockApi';
 
 // Base URL for the anonymous public sysnode-backend endpoints
 // (`/mnstats`, `/mncount`, `/govlist`). Kept in lockstep with the
@@ -23,6 +29,10 @@ const DEFAULT_BASE =
     ? ''
     : process.env.REACT_APP_API_BASE || 'http://localhost:3001');
 
+const USE_MOCK_DATA = /^(1|true|yes)$/i.test(
+  process.env.REACT_APP_USE_MOCK_DATA || ''
+);
+
 const client = axios.create({
   baseURL: DEFAULT_BASE,
   headers: {
@@ -32,17 +42,37 @@ const client = axios.create({
   timeout: 15000,
 });
 
+function respondWithMockData(factory) {
+  return new Promise(function resolveMock(resolve) {
+    globalThis.setTimeout(function sendMockData() {
+      resolve(factory());
+    }, MOCK_API_LATENCY_MS);
+  });
+}
+
 export async function fetchNetworkStats() {
+  if (USE_MOCK_DATA) {
+    return respondWithMockData(getMockNetworkStats);
+  }
+
   const response = await client.get('/mnstats');
   return response.data;
 }
 
 export async function fetchNodeHistory() {
+  if (USE_MOCK_DATA) {
+    return respondWithMockData(getMockNodeHistory);
+  }
+
   const response = await client.get('/mncount');
   return response.data;
 }
 
 export async function fetchGovernanceFeed() {
+  if (USE_MOCK_DATA) {
+    return respondWithMockData(getMockGovernanceFeed);
+  }
+
   const response = await client.post('/govlist', []);
   return response.data;
 }
