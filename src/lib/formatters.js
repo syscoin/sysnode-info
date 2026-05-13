@@ -1,5 +1,5 @@
 const COUNTRY_NAMES = {
-  ARE: 'United Arab Emirates',
+  ARE: 'UAE',
   AUT: 'Austria',
   BGR: 'Bulgaria',
   BRA: 'Brazil',
@@ -21,6 +21,7 @@ const COUNTRY_NAMES = {
   SGP: 'Singapore',
   SWE: 'Sweden',
   TUR: 'Turkey',
+  UAE: 'UAE',
   USA: 'United States',
 };
 
@@ -46,6 +47,7 @@ const COUNTRY_FLAG_ALPHA2 = {
   SGP: 'SG',
   SWE: 'SE',
   TUR: 'TR',
+  UAE: 'AE',
   USA: 'US',
 };
 
