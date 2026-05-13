@@ -1,8 +1,13 @@
 const SYS_EXCHANGES = [
   {
-    name: 'Pionex',
-    logo: 'https://coin-images.coingecko.com/markets/images/1026/small/pionex.png?1706865056',
-    href: 'https://www.pionex.com/en/trade/SYS_USDT',
+    name: 'Gate',
+    logo: 'https://coin-images.coingecko.com/markets/images/60/small/Frame_1.png?1747795534',
+    href: 'https://www.gate.com/trade/SYS_USDT',
+  },
+  {
+    name: 'HTX',
+    logo: 'https://coin-images.coingecko.com/markets/images/25/small/htx.png?1721712842',
+    href: 'https://www.htx.com/trade/sys_usdt',
   },
   {
     name: 'MEXC',
@@ -15,14 +20,14 @@ const SYS_EXCHANGES = [
     href: 'https://www.bitget.com/spot/SYSUSDT',
   },
   {
-    name: 'Phemex',
-    logo: 'https://coin-images.coingecko.com/markets/images/564/small/phemex-exchange-new-logo.png?1763018222',
-    href: 'https://phemex.com/spot/trade/SYSUSDT',
+    name: 'CoinEx',
+    logo: 'https://coin-images.coingecko.com/markets/images/135/small/coinex.jpg?1706864305',
+    href: 'https://www.coinex.com/en/exchange/sys-usdt',
   },
   {
-    name: 'XT.COM',
-    logo: 'https://coin-images.coingecko.com/markets/images/404/small/xt_logo_%E7%BB%BF.png?1761205934',
-    href: 'https://www.xt.com/en/trade/sys_usdt',
+    name: 'KuCoin',
+    logo: 'https://coin-images.coingecko.com/markets/images/61/small/kucoin.png?1706864282',
+    href: 'https://www.kucoin.com/trade/SYS-USDT',
   },
 ];
 
