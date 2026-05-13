@@ -1,10 +1,5 @@
 const SYS_EXCHANGES = [
   {
-    name: 'Binance',
-    logo: 'https://coin-images.coingecko.com/markets/images/52/small/binance.jpg?1706864274',
-    href: 'https://www.binance.com/en/trade/SYS_USDT',
-  },
-  {
     name: 'Pionex',
     logo: 'https://coin-images.coingecko.com/markets/images/1026/small/pionex.png?1706865056',
     href: 'https://www.pionex.com/en/trade/SYS_USDT',
