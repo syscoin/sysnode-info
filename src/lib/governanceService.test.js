@@ -146,6 +146,54 @@ describe('governanceService.submitVote', () => {
     });
   });
 
+  test('preserves successful chunks when a later chunk request fails', async () => {
+    const { service, adapter } = makeService();
+    const entries = Array.from({ length: 513 }, (_, i) => ({
+      collateralHash: H64(i >= 256 ? 'c' : 'b'),
+      collateralIndex: i,
+      voteSig: SIG,
+    }));
+    let requestCount = 0;
+    adapter.onPost('/gov/vote').reply((config) => {
+      requestCount += 1;
+      const body = JSON.parse(config.data);
+      if (requestCount === 2) {
+        return [429, { error: 'too_many_vote_requests' }];
+      }
+      const results = body.entries.map((entry) => ({
+        collateralHash: entry.collateralHash,
+        collateralIndex: entry.collateralIndex,
+        ok: true,
+      }));
+      return [
+        200,
+        {
+          accepted: results.length,
+          rejected: 0,
+          results,
+        },
+      ];
+    });
+
+    const out = await service.submitVote(validVoteBody({ entries }));
+
+    expect(adapter.history.post).toHaveLength(2);
+    expect(out.accepted).toBe(256);
+    expect(out.rejected).toBe(257);
+    expect(out.results).toHaveLength(513);
+    expect(out.results[255]).toMatchObject({ collateralIndex: 255, ok: true });
+    expect(out.results[256]).toMatchObject({
+      collateralIndex: 256,
+      ok: false,
+      error: 'rate_limited',
+    });
+    expect(out.results[512]).toMatchObject({
+      collateralIndex: 512,
+      ok: false,
+      error: 'rate_limited',
+    });
+  });
+
   test('maps 429 too_many_vote_requests to rate_limited', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/gov/vote').reply(429, { error: 'too_many_vote_requests' });
