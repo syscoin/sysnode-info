@@ -66,6 +66,7 @@ const RECEIPTS_RECONCILE_PATH = '/gov/receipts/reconcile';
 const RECEIPTS_SUMMARY_PATH = '/gov/receipts/summary';
 const RECEIPTS_RECENT_PATH = '/gov/receipts/recent';
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
+const MAX_VOTE_ENTRIES_PER_REQUEST = 256;
 
 function govError(code, status, cause) {
   const e = new Error(code);
@@ -83,6 +84,52 @@ function govError(code, status, cause) {
     }
   }
   return e;
+}
+
+function chunkArray(values, size) {
+  const chunks = [];
+  for (let i = 0; i < values.length; i += size) {
+    chunks.push(values.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function normalizeSubmitError(err) {
+  if (!err || !err.code) {
+    return govError('network_error', 0, err);
+  }
+  switch (err.code) {
+    case 'too_many_vote_requests':
+      return govError('rate_limited', err.status, err);
+    case 'unsupported_vote_signal':
+    case 'invalid_vote_outcome':
+    case 'invalid_proposal_hash':
+    case 'no_entries':
+    case 'too_many_entries':
+    case 'time_in_future':
+    case 'time_too_old':
+      return err; // already canonical
+    default:
+      // Collapse transient 5xx responses into a single `server_error`
+      // code so retry descriptors don't need to enumerate every
+      // possible upstream failure mode. Keep 4xx codes verbatim.
+      if (Number.isInteger(err.status) && err.status >= 500) {
+        return govError('server_error', err.status, err);
+      }
+      return err;
+  }
+}
+
+function failedVoteResults(chunks, startIndex, code) {
+  return chunks
+    .slice(startIndex)
+    .flat()
+    .map((entry) => ({
+      collateralHash: entry.collateralHash,
+      collateralIndex: entry.collateralIndex,
+      ok: false,
+      error: code,
+    }));
 }
 
 export function createGovernanceService(client = defaultClient) {
@@ -110,9 +157,12 @@ export function createGovernanceService(client = defaultClient) {
 
   // Submit a batch of per-MN signed votes for one proposal. The
   // backend validates request shape, then fans out `voteraw` RPC
-  // calls with bounded concurrency. A per-entry `ok: false` does NOT
-  // fail the whole request: the promise resolves with a full
-  // `results` array so the UI can render per-row success/error.
+  // calls with bounded concurrency. The backend also caps one POST at
+  // 256 entries, so large operators are split into sequential chunks
+  // here and merged back into the same response shape. A per-entry
+  // `ok: false` does NOT fail the whole request: the promise resolves
+  // with a full `results` array so the UI can render per-row
+  // success/error.
   //
   // Throws only on:
   //   - request-shape validation failures (400)
@@ -120,6 +170,11 @@ export function createGovernanceService(client = defaultClient) {
   //   - auth loss (401 is propagated to the shared AuthContext
   //     handler through the apiClient interceptor)
   //   - network / 5xx errors
+  //
+  // Once any chunk succeeds, a later request failure is converted into
+  // per-entry failures for the current and remaining chunks. That
+  // preserves already-relayed votes in the DONE view and lets "Retry
+  // failed" target only the rows that did not receive a response.
   async function submitVote({
     proposalHash,
     voteOutcome,
@@ -145,52 +200,46 @@ export function createGovernanceService(client = defaultClient) {
     if (!Array.isArray(entries) || entries.length === 0) {
       throw govError('no_entries', 0);
     }
-    try {
-      const res = await client.post(VOTE_PATH, {
-        proposalHash,
-        voteOutcome,
-        voteSignal,
-        time,
-        entries,
-      });
-      const data = res.data || {};
-      return {
-        accepted: Number.isInteger(data.accepted) ? data.accepted : 0,
-        rejected: Number.isInteger(data.rejected) ? data.rejected : 0,
-        results: Array.isArray(data.results) ? data.results : [],
-      };
-    } catch (err) {
-      if (!err || !err.code) {
-        throw govError('network_error', 0, err);
-      }
-      // Map a handful of common backend codes to UI-stable aliases.
-      // Everything else is passed through verbatim so exhaustive
-      // UI error tables don't need periodic re-syncing.
-      switch (err.code) {
-        case 'too_many_vote_requests':
-          throw govError('rate_limited', err.status, err);
-        case 'unsupported_vote_signal':
-        case 'invalid_vote_outcome':
-        case 'invalid_proposal_hash':
-        case 'no_entries':
-        case 'too_many_entries':
-        case 'time_in_future':
-        case 'time_too_old':
-          throw err; // already canonical
-        default:
-          // Collapse transient 5xx responses into a single
-          // `server_error` code so the UI auto-retry descriptor
-          // knows to kick in without having to enumerate every
-          // possible upstream failure mode. Keep 4xx codes
-          // verbatim — those are actionable-by-user states
-          // (missing csrf, malformed body, etc.) that should
-          // surface their original code.
-          if (Number.isInteger(err.status) && err.status >= 500) {
-            throw govError('server_error', err.status, err);
-          }
-          throw err;
+    const chunks = chunkArray(entries, MAX_VOTE_ENTRIES_PER_REQUEST);
+    const merged = { accepted: 0, rejected: 0, results: [] };
+    let completedChunks = 0;
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      const chunk = chunks[chunkIndex];
+      try {
+        const res = await client.post(VOTE_PATH, {
+          proposalHash,
+          voteOutcome,
+          voteSignal,
+          time,
+          entries: chunk,
+        });
+        const data = res.data || {};
+        merged.accepted += Number.isInteger(data.accepted)
+          ? data.accepted
+          : 0;
+        merged.rejected += Number.isInteger(data.rejected)
+          ? data.rejected
+          : 0;
+        if (Array.isArray(data.results)) {
+          merged.results.push(...data.results);
+        }
+        completedChunks += 1;
+      } catch (err) {
+        const normalized = normalizeSubmitError(err);
+        if (completedChunks === 0) {
+          throw normalized;
+        }
+        const failures = failedVoteResults(
+          chunks,
+          chunkIndex,
+          normalized.code || 'submit_failed'
+        );
+        merged.rejected += failures.length;
+        merged.results.push(...failures);
+        return merged;
       }
     }
+    return merged;
   }
 
   // Fetch the caller's stored vote receipts for a single proposal.
