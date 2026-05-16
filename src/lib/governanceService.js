@@ -66,6 +66,7 @@ const RECEIPTS_RECONCILE_PATH = '/gov/receipts/reconcile';
 const RECEIPTS_SUMMARY_PATH = '/gov/receipts/summary';
 const RECEIPTS_RECENT_PATH = '/gov/receipts/recent';
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
+const MAX_VOTE_ENTRIES_PER_REQUEST = 256;
 
 function govError(code, status, cause) {
   const e = new Error(code);
@@ -83,6 +84,14 @@ function govError(code, status, cause) {
     }
   }
   return e;
+}
+
+function chunkArray(values, size) {
+  const chunks = [];
+  for (let i = 0; i < values.length; i += size) {
+    chunks.push(values.slice(i, i + size));
+  }
+  return chunks;
 }
 
 export function createGovernanceService(client = defaultClient) {
@@ -110,9 +119,12 @@ export function createGovernanceService(client = defaultClient) {
 
   // Submit a batch of per-MN signed votes for one proposal. The
   // backend validates request shape, then fans out `voteraw` RPC
-  // calls with bounded concurrency. A per-entry `ok: false` does NOT
-  // fail the whole request: the promise resolves with a full
-  // `results` array so the UI can render per-row success/error.
+  // calls with bounded concurrency. The backend also caps one POST at
+  // 256 entries, so large operators are split into sequential chunks
+  // here and merged back into the same response shape. A per-entry
+  // `ok: false` does NOT fail the whole request: the promise resolves
+  // with a full `results` array so the UI can render per-row
+  // success/error.
   //
   // Throws only on:
   //   - request-shape validation failures (400)
@@ -146,19 +158,28 @@ export function createGovernanceService(client = defaultClient) {
       throw govError('no_entries', 0);
     }
     try {
-      const res = await client.post(VOTE_PATH, {
-        proposalHash,
-        voteOutcome,
-        voteSignal,
-        time,
-        entries,
-      });
-      const data = res.data || {};
-      return {
-        accepted: Number.isInteger(data.accepted) ? data.accepted : 0,
-        rejected: Number.isInteger(data.rejected) ? data.rejected : 0,
-        results: Array.isArray(data.results) ? data.results : [],
-      };
+      const chunks = chunkArray(entries, MAX_VOTE_ENTRIES_PER_REQUEST);
+      const merged = { accepted: 0, rejected: 0, results: [] };
+      for (const chunk of chunks) {
+        const res = await client.post(VOTE_PATH, {
+          proposalHash,
+          voteOutcome,
+          voteSignal,
+          time,
+          entries: chunk,
+        });
+        const data = res.data || {};
+        merged.accepted += Number.isInteger(data.accepted)
+          ? data.accepted
+          : 0;
+        merged.rejected += Number.isInteger(data.rejected)
+          ? data.rejected
+          : 0;
+        if (Array.isArray(data.results)) {
+          merged.results.push(...data.results);
+        }
+      }
+      return merged;
     } catch (err) {
       if (!err || !err.code) {
         throw govError('network_error', 0, err);

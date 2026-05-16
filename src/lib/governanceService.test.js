@@ -103,6 +103,49 @@ describe('governanceService.submitVote', () => {
     expect(adapter.history.post[0].headers['X-CSRF-Token']).toBe('tok');
   });
 
+  test('splits vote submissions above the backend per-request cap and merges results', async () => {
+    const { service, adapter } = makeService();
+    const entries = Array.from({ length: 257 }, (_, i) => ({
+      collateralHash: H64(i === 256 ? 'c' : 'b'),
+      collateralIndex: i,
+      voteSig: SIG,
+    }));
+    adapter.onPost('/gov/vote').reply((config) => {
+      const body = JSON.parse(config.data);
+      const results = body.entries.map((entry) => ({
+        collateralHash: entry.collateralHash,
+        collateralIndex: entry.collateralIndex,
+        ok: entry.collateralIndex !== 256,
+        error: entry.collateralIndex === 256 ? 'vote_too_often' : undefined,
+      }));
+      return [
+        200,
+        {
+          accepted: results.filter((r) => r.ok).length,
+          rejected: results.filter((r) => !r.ok).length,
+          results,
+        },
+      ];
+    });
+
+    const out = await service.submitVote(validVoteBody({ entries }));
+
+    expect(adapter.history.post).toHaveLength(2);
+    const firstBody = JSON.parse(adapter.history.post[0].data);
+    const secondBody = JSON.parse(adapter.history.post[1].data);
+    expect(firstBody.entries).toHaveLength(256);
+    expect(secondBody.entries).toHaveLength(1);
+    expect(out.accepted).toBe(256);
+    expect(out.rejected).toBe(1);
+    expect(out.results).toHaveLength(257);
+    expect(out.results[256]).toMatchObject({
+      collateralHash: H64('c'),
+      collateralIndex: 256,
+      ok: false,
+      error: 'vote_too_often',
+    });
+  });
+
   test('maps 429 too_many_vote_requests to rate_limited', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/gov/vote').reply(429, { error: 'too_many_vote_requests' });
