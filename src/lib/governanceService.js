@@ -202,6 +202,7 @@ export function createGovernanceService(client = defaultClient) {
     }
     const chunks = chunkArray(entries, MAX_VOTE_ENTRIES_PER_REQUEST);
     const merged = { accepted: 0, rejected: 0, results: [] };
+    let completedChunks = 0;
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
       const chunk = chunks[chunkIndex];
       try {
@@ -222,9 +223,10 @@ export function createGovernanceService(client = defaultClient) {
         if (Array.isArray(data.results)) {
           merged.results.push(...data.results);
         }
+        completedChunks += 1;
       } catch (err) {
         const normalized = normalizeSubmitError(err);
-        if (merged.results.length === 0) {
+        if (completedChunks === 0) {
           throw normalized;
         }
         const failures = failedVoteResults(

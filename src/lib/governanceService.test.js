@@ -194,6 +194,37 @@ describe('governanceService.submitVote', () => {
     });
   });
 
+  test('tracks successful chunks even if a success body omits results', async () => {
+    const { service, adapter } = makeService();
+    const entries = Array.from({ length: 257 }, (_, i) => ({
+      collateralHash: H64(i >= 256 ? 'c' : 'b'),
+      collateralIndex: i,
+      voteSig: SIG,
+    }));
+    let requestCount = 0;
+    adapter.onPost('/gov/vote').reply(() => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return [200, { accepted: 256, rejected: 0 }];
+      }
+      return [429, { error: 'too_many_vote_requests' }];
+    });
+
+    const out = await service.submitVote(validVoteBody({ entries }));
+
+    expect(adapter.history.post).toHaveLength(2);
+    expect(out.accepted).toBe(256);
+    expect(out.rejected).toBe(1);
+    expect(out.results).toEqual([
+      {
+        collateralHash: H64('c'),
+        collateralIndex: 256,
+        ok: false,
+        error: 'rate_limited',
+      },
+    ]);
+  });
+
   test('maps 429 too_many_vote_requests to rate_limited', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/gov/vote').reply(429, { error: 'too_many_vote_requests' });
