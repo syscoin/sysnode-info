@@ -112,7 +112,7 @@ export default function Home() {
     <main className="page-main">
       <PageMeta
         title="Overview"
-        description="Track Syscoin Sentry Node count, locked supply, rewards, proposals, locations, and SYS market context in one clean dashboard."
+        description="Live Syscoin Sentry Node stats, governance proposals, rewards, setup guidance, and market data."
       />
 
       <section className="hero">
