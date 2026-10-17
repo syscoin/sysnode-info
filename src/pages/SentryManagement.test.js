@@ -114,3 +114,45 @@ test('registration collects public fields only and completes multiple approvals 
   expect(service.signOperation.mock.calls[1][0].transactionHex).toBe('partly-signed');
   expect(service.signFees).toHaveBeenCalledTimes(1);
 });
+
+async function editRevocation(service) {
+  service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['revoke'] });
+  service.walletCapabilities.mockResolvedValue({ operations: ['revoke'] });
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole('button', { name: /My test node/ }));
+  await screen.findByRole('heading', { name: 'My test node' });
+  fireEvent.click(screen.getByText('Registration and authority management'));
+  fireEvent.change(screen.getByLabelText('Operation'), { target: { value: 'revoke' } });
+  fireEvent.change(screen.getByLabelText('Revocation reason'), { target: { value: '1' } });
+}
+
+test('changing a revocation reason invalidates its prepared review', async () => {
+  const service = makeService();
+  await editRevocation(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(service.prepare).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 'revoke', changes: { reason: 1 } }));
+  fireEvent.change(screen.getByLabelText('Revocation reason'), { target: { value: '2' } });
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(service.prepare).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 'revoke', changes: { reason: 2 } }));
+  expect(service.signOperation).not.toHaveBeenCalled();
+});
+
+test('a stale preparation response cannot restore review after a revocation edit', async () => {
+  const service = makeService();
+  let resolve;
+  const response = await service.prepare();
+  service.prepare.mockImplementation(() => new Promise((done) => { resolve = done; }));
+  await editRevocation(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  await waitFor(() => expect(resolve).toBeDefined());
+  // Assert the generation guard as well as the disabled-control UX: a
+  // dispatched stale edit must never make an old response approvable.
+  fireEvent.change(screen.getByLabelText('Revocation reason'), { target: { value: '2' } });
+  await act(async () => resolve(response));
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('operation details changed');
+  expect(service.signOperation).not.toHaveBeenCalled();
+});

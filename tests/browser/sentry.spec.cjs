@@ -6,6 +6,7 @@ const ADDRESS = `0x${'12'.repeat(20)}`;
 async function fixtures(page, { unknown = false, recovery = false } = {}) {
   let submitted = 0;
   let operations = [];
+  const preparations = [];
   await page.addInitScript(() => {
     window.__walletCalls = [];
     window.pali = {
@@ -15,7 +16,7 @@ async function fixtures(page, { unknown = false, recovery = false } = {}) {
         if (method === 'sys_requestAccounts') return ['tsys-test-fixture'];
         if (method === 'sys_getPublicKey') return 'vpub-test-fixture';
         if (method === 'sys_getChangeAddress') return 'tsys-change-fixture';
-        if (method === 'sys_getSentryCapabilities') return { operations: ['updateService'] };
+        if (method === 'sys_getSentryCapabilities') return { operations: ['updateService', 'revoke'] };
         if (method === 'sys_signSentryOperation') return { transactionHex: 'operator-authorized' };
         if (method === 'sys_sign') return { psbt: 'fee-signed' };
         if (method === 'sys_linkSentryNode') return { version: 1, linked: true, proTxHash: params[0].proTxHash, genesisHash: params[0].genesisHash };
@@ -28,11 +29,14 @@ async function fixtures(page, { unknown = false, recovery = false } = {}) {
   await page.route('**/api/sentry/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
-    if (path.endsWith('/capabilities')) return route.fulfill({ json: { version: 1, network: 'testnet', chain: { genesisHash: '12'.repeat(32), era: 'legacy-v3' }, operations: ['updateService'] } });
+    if (path.endsWith('/capabilities')) return route.fulfill({ json: { version: 1, network: 'testnet', chain: { genesisHash: '12'.repeat(32), era: 'legacy-v3' }, operations: ['updateService', 'revoke'] } });
     if (path.endsWith('/nodes')) return route.fulfill({ json: [{ network: 'testnet', proTxHash: HASH, label: 'My Sentry node' }] });
     if (path.endsWith('/context')) return route.fulfill({ json: { chain: { genesisHash: '12'.repeat(32), era: 'legacy-v3' }, node: { proTxHash: HASH, operatorPublicKey: 'b'.repeat(96), service: recovery ? '[::]:0' : '1.2.3.4:18369', nevmAddress: '', poseBanHeight: recovery ? 10 : -1 } } });
     if (path.endsWith('/operations') && method === 'GET') return route.fulfill({ json: operations });
     if (path.endsWith('/operations') && method === 'POST') {
+      const body = route.request().postDataJSON();
+      preparations.push(body);
+      if (body.operation === 'revoke') return route.fulfill({ json: { id: 'revoke1', prepared: { request: { version: 1, operation: 'revoke', transactionHex: 'unsigned' }, review: { fields: { reason: body.changes.reason }, feeSatoshis: '1000' } } } });
       expect(route.request().postDataJSON().changes).toEqual(recovery ? { service: '1.2.3.4:18369' } : { nevmAddress: ADDRESS });
       return route.fulfill({ json: { id: 'op1', prepared: { request: { version: 1, operation: 'updateService', transactionHex: 'unsigned' }, review: { changes: recovery ? { service: { previous: '[::]:0', next: '1.2.3.4:18369' } } : { nevmAddress: { previous: '', next: ADDRESS } }, feeSatoshis: '1000' } } } });
     }
@@ -51,7 +55,7 @@ async function fixtures(page, { unknown = false, recovery = false } = {}) {
     if (path.endsWith('/op1')) return route.fulfill({ json: { ...operations[0], status: 'confirmed' } });
     throw new Error(`Unexpected API request ${path}`);
   });
-  return { submissions: () => submitted };
+  return { submissions: () => submitted, preparations: () => preparations };
 }
 for (const width of [320, 400, 960]) test(`NEVM update and unknown-result recovery at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 568 });
@@ -110,4 +114,24 @@ test('manual identical-byte retry does not request another wallet signature', as
   expect(fixture.submissions()).toBe(2);
   expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_signSentryOperation').length)).toBe(1);
   expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_sign').length)).toBe(1);
+});
+
+test('changing a revocation reason removes the previous approval at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const fixture = await fixtures(page);
+  await page.goto('/nodes');
+  await page.getByRole('button', { name: /My Sentry node/ }).click();
+  await page.getByText('Registration and authority management', { exact: true }).click();
+  await page.getByRole('combobox', { name: 'Operation', exact: true }).selectOption('revoke');
+  await page.getByRole('combobox', { name: 'Revocation reason' }).selectOption('1');
+  await page.getByRole('button', { name: 'Prepare operation' }).click();
+  await expect(page.getByRole('button', { name: 'Review and sign in Pali' })).toBeVisible();
+  await page.getByRole('combobox', { name: 'Revocation reason' }).selectOption('2');
+  await expect(page.getByRole('button', { name: 'Review and sign in Pali' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Prepare operation' }).click();
+  await expect(page.getByRole('button', { name: 'Review and sign in Pali' })).toBeVisible();
+  expect(fixture.preparations().map((request) => request.changes.reason)).toEqual([1, 2]);
+  expect(fixture.submissions()).toBe(0);
+  expect(await page.evaluate(() => window.__walletCalls.includes('sys_signSentryOperation'))).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

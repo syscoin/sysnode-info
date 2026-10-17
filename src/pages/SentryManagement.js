@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PageMeta from '../components/PageMeta';
 import { getPali } from '../lib/paliProvider';
 import { normalizeProTxHash, serviceChanges, sentryService, SENTRY_OPERATIONS } from '../lib/sentryService';
@@ -28,6 +28,7 @@ const ERROR_COPY = {
   KEY_MISMATCH: 'The selected authority does not match the on-chain registration.',
   UNSUPPORTED_OPERATION: 'The connected protocol does not support this operation. No legacy fallback was used.',
   context_changed: 'The wallet account or network changed. Review the update again.',
+  intent_changed: 'The operation details changed. Prepare and review the updated operation before signing.',
 };
 function message(error) { return ERROR_COPY[error?.code || error?.message] || error?.message || 'The operation could not be completed. No automatic retry was sent.'; }
 const INITIAL = { nevmMode: 'keep', nevmAddress: '', serviceMode: 'keep', service: '', payoutMode: 'keep', payout: '' };
@@ -50,9 +51,12 @@ export default function SentryManagement({ service = sentryService }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const generation = useRef(0);
+  const invalidationReason = useRef('intent_changed');
   const mounted = useRef(true);
   const locked = useRef(false);
-  const field = (key) => (event) => { generation.current += 1; setDraft((value) => ({ ...value, [key]: event.target.value })); setPrepared(null); };
+  const invalidateIntent = useCallback((reason = 'intent_changed') => { invalidationReason.current = reason; generation.current += 1; setPrepared(null); }, []);
+  const field = (key) => (event) => { invalidateIntent(); setDraft((value) => ({ ...value, [key]: event.target.value })); };
+  const managementChange = (name, value) => { invalidateIntent(); setManagementFields((old) => ({ ...old, [name]: value })); };
 
   useEffect(() => {
     mounted.current = true;
@@ -61,23 +65,24 @@ export default function SentryManagement({ service = sentryService }) {
       if (active) { setCapabilities(caps); setNodes(list); setOperations(history); }
     }).catch((err) => active && setError(message(err)));
     const provider = getPali();
-    const changed = () => { generation.current += 1; setPrepared(null); setError(ERROR_COPY.context_changed); };
+    const changed = () => { invalidateIntent('context_changed'); setError(ERROR_COPY.context_changed); };
     provider?.on?.('accountsChanged', changed); provider?.on?.('chainChanged', changed);
     return () => {
       active = false; mounted.current = false; generation.current += 1;
       provider?.removeListener?.('accountsChanged', changed); provider?.removeListener?.('chainChanged', changed);
     };
-  }, [service]);
+  }, [service, invalidateIntent]);
   async function perform(phase, fn) {
     if (locked.current) return;
     locked.current = true; setBusy(phase); setError(''); setNotice('');
     const token = generation.current;
-    const assertCurrent = () => { if (!mounted.current || generation.current !== token) throw new Error('context_changed'); };
+    const assertCurrent = () => { if (!mounted.current || generation.current !== token) throw new Error(invalidationReason.current); };
     try { await fn(assertCurrent); }
     catch (err) { if (mounted.current) setError(message(err)); }
     finally { locked.current = false; if (mounted.current) setBusy(''); }
   }
   async function select(node) {
+    invalidateIntent();
     await perform('Loading node', async (assertCurrent) => {
       const value = await service.context(node.network, node.proTxHash); assertCurrent();
       setSelected(node); setContext(value); setDraft(INITIAL); setPrepared(null);
@@ -210,7 +215,7 @@ export default function SentryManagement({ service = sentryService }) {
   }
   const request = prepared?.prepared;
   const pq = capabilities?.chain.era === 'pq-v4';
-  const managementField = (name, labelText, options = {}) => <label key={name}>{labelText}<input value={managementFields[name] || ''} onChange={(event) => { generation.current += 1; setPrepared(null); setManagementFields((old) => ({ ...old, [name]: event.target.value })); }} disabled={!!busy} {...options} /></label>;
+  const managementField = (name, labelText, options = {}) => <label key={name}>{labelText}<input value={managementFields[name] || ''} onChange={(event) => managementChange(name, event.target.value)} disabled={!!busy} {...options} /></label>;
   return <>
     <PageMeta title="Sentry Node management" description="Manage your on-chain Sentry Node registration with local signing in Pali." />
     <section className="page-hero auth-hero"><div className="site-wrap">
@@ -224,7 +229,7 @@ export default function SentryManagement({ service = sentryService }) {
       <div className="auth-card">
         <h2>Network and protocol</h2>
         <p>{capabilities ? `${capabilities.network} · ${capabilities.chain.era === 'pq-v4' ? 'Post-quantum' : 'Legacy BLS'}` : 'Checking configured network…'}</p>
-        <label>Fee rate (satoshis per vbyte)<input type="number" min="1" max="1000" step="1" value={feeRate} disabled={!!busy} onChange={(event) => { generation.current += 1; setFeeRate(event.target.value); setPrepared(null); }} /></label>
+        <label>Fee rate (satoshis per vbyte)<input type="number" min="1" max="1000" step="1" value={feeRate} disabled={!!busy} onChange={(event) => { invalidateIntent(); setFeeRate(event.target.value); }} /></label>
         <p className="auth-card__hint">The exact total is shown before signing. Pali independently enforces your maximum fee; this page cannot raise it.</p>
         <details><summary>Supported operations and hosting</summary>
         <ul>{SENTRY_OPERATIONS.map((operation) => <li key={operation.id}>{operation.label} — {operation.role}: {capabilities?.operations?.includes(operation.id) ? 'Available' : 'Not supported by the connected protocol adapter'}</li>)}</ul>
@@ -234,7 +239,7 @@ export default function SentryManagement({ service = sentryService }) {
       <details className="auth-card"><summary><h2>Registration and authority management</h2></summary>
         <p>Node ownership, collateral and operator authority are separate roles. Every required role must approve in Pali before the fee transaction is signed.</p>
         <form onSubmit={prepareManagement}>
-          <label>Operation<select value={managementOperation} onChange={(event) => { setManagementOperation(event.target.value); setManagementFields({}); setPrepared(null); }} disabled={!!busy}>
+          <label>Operation<select value={managementOperation} onChange={(event) => { invalidateIntent(); setManagementOperation(event.target.value); setManagementFields({}); }} disabled={!!busy}>
             <option value="register">Register a node using existing collateral</option><option value="updateRegistrar">Update owner-authorized registration</option><option value="registerOperator">Enroll or recover a PQ operator</option><option value="rotateOperator">Rotate an active PQ operator</option><option value="revoke">Revoke operator</option>
           </select></label>
           {managementOperation !== 'register' && <p>{selected ? `Selected node: ${selected.label || selected.proTxHash}` : 'Select a node from your watch list first.'}</p>}
@@ -262,7 +267,7 @@ export default function SentryManagement({ service = sentryService }) {
             {managementField('childKeyCommitment', 'Public child-key commitment from the node operator tool', { required: true, maxLength: 160 })}
             <p>The public commitment must belong to the prepared operator key tree. Pali signs locally with the matching imported key. Never paste a private key or seed here.</p>
           </>}
-          {managementOperation === 'revoke' && <label>Revocation reason<select value={managementFields.reason || '0'} onChange={(event) => setManagementFields({ reason: event.target.value })} disabled={!!busy}><option value="0">Unspecified</option><option value="1">Termination of service</option><option value="2">Compromised keys</option><option value="3">Change of keys</option></select></label>}
+          {managementOperation === 'revoke' && <label>Revocation reason<select value={managementFields.reason || '0'} onChange={(event) => managementChange('reason', event.target.value)} disabled={!!busy}><option value="0">Unspecified</option><option value="1">Termination of service</option><option value="2">Compromised keys</option><option value="3">Change of keys</option></select></label>}
           {managementOperation === 'revoke' && <p className="auth-alert auth-alert--error">Revocation disables the node operator. It does not spend or transfer the collateral.</p>}
           <button className="button button--primary" disabled={!!busy || !capabilities?.operations?.includes(managementOperation) || (managementOperation !== 'register' && !selected)}>Prepare operation</button>
         </form>
@@ -297,7 +302,7 @@ export default function SentryManagement({ service = sentryService }) {
         <dl>{Object.entries(request.review.changes || {}).map(([name, change]) => <React.Fragment key={name}><dt>{REVIEW_LABELS[name] || name}</dt><dd>{change.previous || 'Unregistered'} → {change.next || 'Unregistered'}</dd></React.Fragment>)}{Object.entries(request.review.fields || {}).filter(([, value]) => value !== '').map(([name, value]) => <React.Fragment key={name}><dt>{REVIEW_LABELS[name] || name}</dt><dd>{value}</dd></React.Fragment>)}<dt>Network fee (satoshis)</dt><dd>{request.review.feeSatoshis}</dd></dl>
         {!!request.review.authorizations?.length && <><h3>Required approvals</h3><ul>{request.review.authorizations.map((authorization) => <li key={authorization.id}>{authorization.role} · {authorization.scheme}</li>)}</ul></>}
         <p>Pali independently checks the node authorities and transaction. Approve each required authority, then the network fee. No private key is shared with Sysnode.</p>
-        <div className="sentry-actions"><button className="button button--primary" onClick={signAndSubmit} disabled={!!busy}>Review and sign in Pali</button><button className="button button--ghost" onClick={() => setPrepared(null)} disabled={!!busy}>Cancel review</button></div>
+        <div className="sentry-actions"><button className="button button--primary" onClick={signAndSubmit} disabled={!!busy}>Review and sign in Pali</button><button className="button button--ghost" onClick={() => invalidateIntent()} disabled={!!busy}>Cancel review</button></div>
       </div>}
       <div className="auth-card"><h2>Operation history</h2><p>Submission records survive reloads. Check status after a connection loss. You can retry the identical signed transaction without creating a new payment or signing again; this is never automatic.</p>
         {operations.length === 0 ? <p>No operations yet.</p> : <ul>{operations.map((operation) => <li key={operation.id}><strong>{operation.status.replace(/_/g, ' ')}</strong> · {operation.network}<code>{operation.txid || operation.id}</code><div className="sentry-actions">{operation.status === 'prepared' && <button className="button button--ghost" disabled={!!busy} onClick={() => resumeOperation(operation.id)}>Resume review</button>}{operation.status === 'confirmed' && operation.operation === 'register' && <button className="button button--ghost" disabled={!!busy} onClick={() => linkRegisteredNode(operation)}>Link registered node to Pali</button>}{['submission_unknown', 'submitting', 'submitted'].includes(operation.status) && <button className="button button--ghost" disabled={!!busy} onClick={() => retryOperation(operation.id)}>Retry identical transaction</button>}<button className="button button--ghost" disabled={!!busy} onClick={() => refreshOperation(operation.id)}>Check status</button></div></li>)}</ul>}
