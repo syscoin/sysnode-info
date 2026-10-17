@@ -3,6 +3,13 @@ import { paliRequest } from './paliProvider';
 
 const BASE = '/api/sentry/v1';
 const HASH = /^[0-9a-f]{64}$/;
+export const SENTRY_FEE_SIGNING_CAPABILITY = 'same-origin-authorized-psbt-v1';
+export const SENTRY_FEE_SIGNING_UPDATE = 'Update Pali before preparing or signing a Sentry transaction. This version cannot securely approve its network fee.';
+export function assertSentryFeeSigning(capabilities) {
+  if (capabilities?.feeSigning !== SENTRY_FEE_SIGNING_CAPABILITY) {
+    throw Object.assign(new Error(SENTRY_FEE_SIGNING_UPDATE), { code: 'pali_fee_signing_unsupported' });
+  }
+}
 export const SENTRY_OPERATIONS = [
   { id: 'register', label: 'Register a node', role: 'Owner and collateral' },
   { id: 'updateService', label: 'Service, payout and NEVM address', role: 'Operator' },
@@ -44,6 +51,7 @@ export function createSentryService(client = apiClient, walletRequest = paliRequ
       return walletRequest('sys_linkSentryNode', [{ version: 1, proTxHash: normalizeProTxHash(proTxHash), genesisHash }]);
     },
     async signFees(psbt) {
+      assertSentryFeeSigning(await walletRequest('sys_getSentryCapabilities'));
       const result = await walletRequest('sys_sign', [psbt]);
       const signed = typeof result === 'string' ? result : result?.psbt;
       if (typeof signed !== 'string' || !signed.length) throw new Error('Pali returned no signed PSBT');

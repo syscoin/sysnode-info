@@ -16,9 +16,15 @@ test('wallet requests never import keys or send secret material to Sysnode', asy
   expect(wallet.mock.calls.map(([method]) => method)).toEqual(['sys_requestAccounts', 'sys_getPublicKey', 'sys_getChangeAddress']);
 });
 test('fee approval signs but never broadcasts in the wallet', async () => {
-  const wallet = jest.fn().mockResolvedValue({ psbt: 'signed' });
+  const wallet = jest.fn().mockResolvedValueOnce({ feeSigning: 'same-origin-authorized-psbt-v1' }).mockResolvedValueOnce({ psbt: 'signed' });
   expect(await createSentryService({}, wallet).signFees({ psbt: 'unsigned' })).toBe('signed');
   expect(wallet).toHaveBeenCalledWith('sys_sign', [{ psbt: 'unsigned' }]);
+  expect(wallet.mock.calls.map(([method]) => method)).toEqual(['sys_getSentryCapabilities', 'sys_sign']);
+});
+test.each([undefined, false, 'separate-after-operator-authorization'])('fee signing refuses an older wallet before requesting its signature: %p', async (feeSigning) => {
+  const wallet = jest.fn().mockResolvedValue({ feeSigning });
+  await expect(createSentryService({}, wallet).signFees({ psbt: 'unsigned' })).rejects.toThrow('Update Pali before preparing or signing a Sentry transaction');
+  expect(wallet.mock.calls).toEqual([['sys_getSentryCapabilities']]);
 });
 test('linking a node uses the selected wallet network and never supplies secrets or a URL', async () => {
   const wallet = jest.fn().mockResolvedValue({ linked: true });

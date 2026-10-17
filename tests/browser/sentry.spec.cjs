@@ -3,12 +3,13 @@ const { test, expect } = require('@playwright/test');
 // contracts. Crypto/serialization are tested separately against the real SDK.
 const HASH = 'a'.repeat(64);
 const ADDRESS = `0x${'12'.repeat(20)}`;
-async function fixtures(page, { unknown = false, recovery = false, timeout = false } = {}) {
+async function fixtures(page, { unknown = false, recovery = false, timeout = false, expiredFeeGrant = false, feeSigning = 'same-origin-authorized-psbt-v1' } = {}) {
   let submitted = 0;
   let operations = [];
   const preparations = [];
-  await page.addInitScript(() => {
+  await page.addInitScript(({ feeSigning, expiredFeeGrant }) => {
     window.__walletCalls = [];
+    let feeAttempts = 0;
     window.pali = {
       on() {}, removeListener() {},
       async request({ method, params }) {
@@ -16,14 +17,17 @@ async function fixtures(page, { unknown = false, recovery = false, timeout = fal
         if (method === 'sys_requestAccounts') return ['tsys-test-fixture'];
         if (method === 'sys_getPublicKey') return 'vpub-test-fixture';
         if (method === 'sys_getChangeAddress') return 'tsys-change-fixture';
-        if (method === 'sys_getSentryCapabilities') return { operations: ['updateService', 'revoke'] };
+        if (method === 'sys_getSentryCapabilities') return { operations: ['updateService', 'revoke'], feeSigning };
         if (method === 'sys_signSentryOperation') return { transactionHex: 'operator-authorized' };
-        if (method === 'sys_sign') return { psbt: 'fee-signed' };
+        if (method === 'sys_sign') {
+          if (expiredFeeGrant && feeAttempts++ === 0) throw new Error('SENTRY_FEE_AUTHORIZATION_REQUIRED: expired or missing');
+          return { psbt: 'fee-signed' };
+        }
         if (method === 'sys_linkSentryNode') return { version: 1, linked: true, proTxHash: params[0].proTxHash, genesisHash: params[0].genesisHash };
         throw new Error(`Unexpected method ${method}`);
       },
     };
-  });
+  }, { feeSigning, expiredFeeGrant });
   await page.route('**/auth/me', (route) => route.fulfill({ json: { user: { id: 1, email: 'fixture@example.test', emailVerified: true, saltV: 'a'.repeat(32) } } }));
   await page.route('**/vault', (route) => route.fulfill({ status: 404, json: { error: 'not_found' } }));
   await page.route('**/api/sentry/v1/**', async (route) => {
@@ -58,6 +62,32 @@ async function fixtures(page, { unknown = false, recovery = false, timeout = fal
   });
   return { submissions: () => submitted, preparations: () => preparations };
 }
+for (const feeSigning of [null, 'separate-after-operator-authorization']) test(`older Pali is stopped before preparation and remains link-capable at 320x360: ${feeSigning}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 360 });
+  const fixture = await fixtures(page, { feeSigning });
+  await page.goto('/nodes');
+  await page.getByRole('button', { name: /My Sentry node/ }).click();
+  await page.getByRole('button', { name: 'Link node to Pali' }).click();
+  await expect(page.getByText('Node linked in Pali. This did not sign or broadcast a transaction.')).toBeVisible();
+  await page.getByRole('combobox', { name: 'NEVM address', exact: true }).selectOption('set');
+  await page.getByLabel('New NEVM address').fill(ADDRESS);
+  await page.getByRole('button', { name: 'Prepare update' }).click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText('Update Pali before preparing or signing a Sentry transaction');
+  await alert.scrollIntoViewIfNeeded();
+  expect(await alert.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const centerX = (rect.left + rect.right) / 2;
+    const centerY = (rect.top + rect.bottom) / 2;
+    // Test all four edges, not the transparent corners of the rounded card.
+    return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight &&
+      [[centerX, rect.top + 2], [centerX, rect.bottom - 2], [rect.left + 2, centerY], [rect.right - 2, centerY]].every(([x, y]) => element.contains(document.elementFromPoint(x, y)));
+  })).toBe(true);
+  expect(fixture.preparations()).toHaveLength(0);
+  expect(fixture.submissions()).toBe(0);
+  expect(await page.evaluate(() => window.__walletCalls.some(name => ['sys_signSentryOperation', 'sys_sign'].includes(name)))).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath(`update-pali-${String(feeSigning)}-320x360.png`) });
+});
 for (const width of [320, 400, 960]) test(`NEVM update and unknown-result recovery at ${width}px`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 568 });
   const fixture = await fixtures(page, { unknown: true });
@@ -80,6 +110,27 @@ for (const width of [320, 400, 960]) test(`NEVM update and unknown-result recove
   expect(fixture.submissions()).toBe(1);
   expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_signSentryOperation').length)).toBe(1);
   await page.screenshot({ path: testInfo.outputPath(`confirmed-${width}.png`), fullPage: true });
+});
+test('expired fee approval repeats authority approval for the same saved operation at 320px', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 360 });
+  const fixture = await fixtures(page, { expiredFeeGrant: true });
+  await page.goto('/nodes');
+  await page.getByRole('button', { name: /My Sentry node/ }).click();
+  await page.getByRole('combobox', { name: 'NEVM address', exact: true }).selectOption('set');
+  await page.getByLabel('New NEVM address').fill(ADDRESS);
+  await page.getByRole('button', { name: 'Prepare update' }).click();
+  await page.getByRole('button', { name: 'Review and sign in Pali' }).click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toContainText('Review and sign this saved operation in Pali again');
+  await alert.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('expired-fee-grant-320x360.png') });
+  expect(fixture.preparations()).toHaveLength(1);
+  expect(fixture.submissions()).toBe(0);
+  await page.getByRole('button', { name: 'Review and sign in Pali' }).click();
+  await expect(page.getByText('submitted', { exact: true })).toBeVisible();
+  expect(fixture.preparations()).toHaveLength(1);
+  expect(fixture.submissions()).toBe(1);
+  expect(await page.evaluate(() => window.__walletCalls.filter(name => name === 'sys_signSentryOperation').length)).toBe(2);
 });
 
 test('service recovery is explicit and keeps NEVM unchanged at 320px', async ({ page }, testInfo) => {
