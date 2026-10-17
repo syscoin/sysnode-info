@@ -38,7 +38,8 @@ test('reviews exactly selected public nodes and relays verified signatures witho
   expect(screen.getByText('Relayed; confirmation pending.')).toBeInTheDocument();
 });
 test('unknown submission requires a status check and retries identical signed bytes without another Pali approval', async () => {
-  const { service, votesService } = setup(); votesService.submitVote.mockRejectedValueOnce({ code: 'network_error' });
+  const { service, votesService, fixture } = setup(); votesService.submitVote.mockRejectedValueOnce({ code: 'network_error' });
+  votesService.reconcileReceipts.mockResolvedValue({ reconciled: true, receipts: [{ collateralHash: fixture.vector.collateralHash, collateralIndex: 0, proposalHash: fixture.request.proposalHash, voteTime: fixture.request.timestamp, voteOutcome: 'yes', voteSignal: 'funding', status: 'stale' }] });
   await approve(); await screen.findByText(/Submission status is uncertain/);
   expect(screen.queryByRole('button', { name: /Retry .*failed/ })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
@@ -52,7 +53,8 @@ test('status check recognizes only the matching signed timestamp and outcome', a
   const { fixture, votesService } = setup(); votesService.submitVote.mockRejectedValueOnce({ code: 'network_error' });
   votesService.reconcileReceipts.mockResolvedValue({ reconciled: true, receipts: [{ collateralHash: fixture.vector.collateralHash, collateralIndex: 0, proposalHash: fixture.request.proposalHash, voteTime: fixture.request.timestamp - 1, voteOutcome: 'yes', status: 'confirmed' }] });
   await approve(); await screen.findByText(/Submission status is uncertain/); fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
-  await screen.findByRole('button', { name: 'Retry 1 failed vote' });
+  await screen.findByText(/Status could not be checked yet/);
+  expect(screen.queryByRole('button', { name: 'Retry 1 failed vote' })).toBeNull();
   expect(screen.getByText(/0 of 1 relayed/)).toBeInTheDocument();
 });
 test.each(['wrong signature', 'missing key', 'wrong network', 'unsupported wallet'])('%s never reaches the vote relay', async (reason) => {
@@ -97,7 +99,7 @@ test('an unavailable reconciliation cannot turn missing receipts into a safe ret
 });
 test('confirmed receipts are labelled confirmed, not pending', async () => {
   const { fixture, votesService } = setup();
-  votesService.reconcileReceipts.mockResolvedValue({ reconciled: true, receipts: [{ collateralHash: fixture.vector.collateralHash, collateralIndex: 0, proposalHash: fixture.request.proposalHash, voteTime: fixture.request.timestamp, voteOutcome: 'yes', status: 'confirmed' }] });
+  votesService.reconcileReceipts.mockResolvedValue({ reconciled: true, receipts: [{ collateralHash: fixture.vector.collateralHash, collateralIndex: 0, proposalHash: fixture.request.proposalHash, voteTime: fixture.request.timestamp, voteOutcome: 'yes', voteSignal: 'funding', status: 'confirmed' }] });
   await approve(); await screen.findByText(/1 of 1 relayed/);
   fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
   await screen.findByText('Confirmed on-chain.');

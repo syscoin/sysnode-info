@@ -12,6 +12,7 @@ import { useVault } from '../context/VaultContext';
 import { useOwnedMasternodes } from '../hooks/useOwnedMasternodes';
 import { governanceService as defaultService } from '../lib/governanceService';
 import { signVoteFromWif } from '../lib/syscoin/voteSigner';
+import { isUnknownVote, reconciledVoteStatus } from '../lib/voteSubmissionStatus';
 import {
   describeError,
   isBenignDup,
@@ -22,11 +23,8 @@ import {
   describeSupportShift,
 } from '../lib/governanceSupportShift';
 import {
-  enqueue as enqueueOfflineVote,
   drain as drainOfflineVote,
   peek as peekOfflineVote,
-  isOffline,
-  onOnline,
 } from '../lib/voteOfflineQueue';
 
 // ProposalVoteModal
@@ -56,17 +54,9 @@ import {
 // signatures with drifting times — harmless but inconsistent, and
 // harder to reason about when debugging rejected votes.
 //
-// Recovery guarantees:
-//   - If the vault is locked mid-session (user clicks "Lock" in
-//     another tab), signVoteFromWif will fail because the WIF is
-//     already wiped from the vault payload. We surface the error
-//     per-row.
-//   - If the network fails during /gov/vote, we stay in 'submitting'
-//     → 'error' and offer a retry. No votes are lost because nothing
-//     was persisted client-side; the backend is either all-or-nothing
-//     on the batch endpoint (the Promise from submitVote either
-//     resolves with results or rejects; partial relays inside the
-//     batch are represented as ok:false rows, not rejections).
+// Lock, logout, identity/key changes and navigation invalidate all async work.
+// A failed transport may follow a successful Core relay. Retain only public
+// submission data for status checks; never re-sign automatically after failure.
 
 const PHASE = Object.freeze({
   PICK: 'pick',
@@ -137,6 +127,7 @@ function progressLabel(status) {
 function classifyOwned(m, currentOutcome) {
   const r = m && m.receipt;
   if (!r) return 'unseen';
+  if (r.status === 'submission_unknown') return 'unknown';
   if (r.status === 'failed') return 'failed';
   if (r.status === 'stale') return 'stale';
   if (r.status === 'relayed') return 'relayed';
@@ -250,6 +241,7 @@ function receiptBadge(receipt, currentOutcome) {
   if (receipt.status === 'failed') return 'Last attempt failed';
   if (receipt.status === 'stale') return 'Needs retry';
   if (receipt.status === 'relayed') return 'Awaiting confirmation';
+  if (receipt.status === 'submission_unknown') return 'Check submission status';
   return null;
 }
 
@@ -267,7 +259,7 @@ export default function ProposalVoteModal({
   // refresh so the button is never dead.
   onReloadProposals,
 }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const vault = useVault();
   // Gate the lookup on `open` so merely mounting the modal from a
   // parent page (Governance always renders <ProposalVoteModal
@@ -333,6 +325,11 @@ export default function ProposalVoteModal({
   // the confirm button only needs the value at click-time, and we'd
   // rather not trigger a re-render when stashing.
   const pendingChosenRef = useRef(null);
+  const submittedRef = useRef(null); // Public payload only; never vault WIFs.
+  const submittedBaseRef = useRef([]);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [statusChecked, setStatusChecked] = useState(false);
+  const [reviewingNewVote, setReviewingNewVote] = useState(false);
 
   // Countdown timestamp (Date.now()) at which a rate-limited batch
   // becomes retryable. Null when no countdown is active. Driven by
@@ -341,16 +338,6 @@ export default function ProposalVoteModal({
   // the server didn't supply a header.
   const [retryReadyAt, setRetryReadyAt] = useState(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
-
-  // Bookkeeping for automatic retry on transient server errors.
-  // `autoRetryAttempts` is the number of auto-retry attempts
-  // consumed for the CURRENT error-phase visit; it resets every
-  // time we leave PHASE.ERROR (so a fresh batch gets a fresh
-  // budget). Stored in a ref because the scheduled retry fires
-  // asynchronously and has to read the current count without
-  // triggering re-renders that would cancel the timer.
-  const autoRetryAttemptsRef = useRef(0);
-  const autoRetryTimerRef = useRef(null);
 
   // When navigator is offline and a network_error happens, we
   // stash the vote intent in sessionStorage via voteOfflineQueue
@@ -369,12 +356,6 @@ export default function ProposalVoteModal({
   // and we don't want writes to trigger re-renders.
   const queuedSnapshotRef = useRef(null);
 
-  // Scheduled auto-retry timestamp (Date.now() at which the retry
-  // fires). Null when no retry is pending. Separate from the
-  // timer ref so the render path can drive a visible countdown
-  // off the tick without reaching into refs.
-  const [autoRetryAt, setAutoRetryAt] = useState(null);
-
   // Cancellation generation. Every voting run captures the current
   // value; after every async boundary (sign loop yield, submitVote
   // await) we compare it to the live counter and bail if it's moved.
@@ -384,17 +365,32 @@ export default function ProposalVoteModal({
   // from the previous run cannot race with a newly-opened modal.
   const runGenRef = useRef(0);
   const proposalKey = proposal && proposal.Key;
+  const currentVaultData = useRef(vault.data);
+  const vaultRevision = useRef(0);
+  if (currentVaultData.current !== vault.data) {
+    currentVaultData.current = vault.data;
+    vaultRevision.current += 1;
+  }
+  const dataRevision = vaultRevision.current;
+  // Every asynchronous continuation reads the current custody context, not
+  // the unlocked/key snapshot captured before a lock or identity switch.
+  const votingScope = useMemo(() => ({
+    eligible: open && isAuthenticated && user?.id != null && vault.isUnlocked,
+    userId: user?.id,
+    userSalt: user?.saltV,
+    dataRevision,
+    service: governanceService,
+    proposalKey,
+  }), [open, isAuthenticated, user?.id, user?.saltV, vault.isUnlocked, dataRevision, governanceService, proposalKey]);
+  const votingScopeRef = useRef(votingScope);
+  votingScopeRef.current = votingScope;
   useEffect(() => {
     return () => {
-      // Cleanup fires when `open` or `proposalKey` change AND on
-      // unmount. Any in-flight run sees a generation mismatch and
-      // becomes a no-op.
+      // Backstop for every custody-context change and unmount. The render-
+      // updated ref also rejects stale work before this effect cleanup runs.
       runGenRef.current += 1;
-      // Silence a lint warning about the unused capture — reading
-      // proposalKey here pins the dep to the useEffect deps list.
-      void proposalKey;
     };
-  }, [open, proposalKey]);
+  }, [votingScope]);
 
   // Default selection is receipt-aware: when the user hasn't
   // interacted yet, an owned MN with a confirmed on-chain receipt at
@@ -423,17 +419,20 @@ export default function ProposalVoteModal({
           r &&
           r.status === 'confirmed' &&
           r.voteOutcome === currentOutcome;
-        if (!alreadyVotedSameOutcome) set.add(mnId(m));
+        if (!alreadyVotedSameOutcome && (reviewingNewVote || m.receipt?.status !== 'submission_unknown')) set.add(mnId(m));
       }
       return set;
     },
-    []
+    [reviewingNewVote]
   );
 
   const effectiveSelected = useMemo(() => {
-    if (selected !== null) return selected;
+    if (selected !== null) {
+      const allowed = new Set(owned.filter((m) => reviewingNewVote || m.receipt?.status !== 'submission_unknown').map(mnId));
+      return new Set([...selected].filter((id) => allowed.has(id)));
+    }
     return computeDefault(owned, outcome);
-  }, [selected, owned, outcome, computeDefault]);
+  }, [selected, owned, outcome, computeDefault, reviewingNewVote]);
 
   // Pre-submit preview of how the current selection would move the
   // proposal's net on-chain support. Drives an informational banner
@@ -454,12 +453,8 @@ export default function ProposalVoteModal({
     return describeSupportShift(shift, entries.length);
   }, [owned, effectiveSelected, outcome]);
 
-  // Reset local state whenever the modal opens or the proposal
-  // changes. `proposal.Key` is the governance hash and is unique
-  // per proposal, so keying on it prevents stale selection / results
-  // from leaking across proposal switches.
+  // Never carry a prior account's selection or private-key work across scope.
   useEffect(() => {
-    if (!open) return;
     setSelected(null);
     setOutcome('yes');
     setPhase(PHASE.PICK);
@@ -471,46 +466,23 @@ export default function ProposalVoteModal({
     setSignFailures(new Map());
     setRetryReadyAt(null);
     setOfflineQueued(false);
-    setAutoRetryAt(null);
     pendingChosenRef.current = null;
+    submittedRef.current = null;
+    submittedBaseRef.current = [];
+    setCheckingStatus(false);
+    setStatusChecked(false);
+    setReviewingNewVote(false);
     queuedSnapshotRef.current = null;
-    autoRetryAttemptsRef.current = 0;
-    if (autoRetryTimerRef.current) {
-      clearTimeout(autoRetryTimerRef.current);
-      autoRetryTimerRef.current = null;
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, proposal && proposal.Key]);
+  }, [votingScope]);
 
-  // Tick for any visible countdown. Runs only while the modal
-  // is open AND a retry timer is armed (rate-limit OR auto-
-  // retry) — picker/DONE phases leave it idle so we don't burn
-  // CPU on a background interval. The `open` guard is critical:
-  // retryReadyAt is set on rate-limited failure but is NOT
-  // cleared when the modal closes (the reset-on-open effect
-  // only fires on open=true). Without `open` in the armed
-  // check a user who closes the modal while a rate-limit
-  // countdown is showing would leave a 250ms interval and a
-  // re-render loop alive in the background until unmount.
+  // A definite pre-submission rate limit can show a passive countdown.
   useEffect(() => {
-    const armed = open && (retryReadyAt != null || autoRetryAt != null);
+    const armed = open && retryReadyAt != null;
     if (!armed) return undefined;
     const id = setInterval(() => setNowTick(Date.now()), 250);
     return () => clearInterval(id);
-  }, [open, retryReadyAt, autoRetryAt]);
-
-  // Tear down any pending auto-retry timer when the modal closes
-  // or the proposal changes. Without this, navigating away during
-  // the 3s retry-countdown would fire submitVote against a stale
-  // proposal context.
-  useEffect(() => {
-    return () => {
-      if (autoRetryTimerRef.current) {
-        clearTimeout(autoRetryTimerRef.current);
-        autoRetryTimerRef.current = null;
-      }
-    };
-  }, []);
+  }, [open, retryReadyAt]);
 
   const toggle = useCallback(
     (id) => {
@@ -529,8 +501,8 @@ export default function ProposalVoteModal({
   );
 
   const selectAll = useCallback(() => {
-    setSelected(new Set(owned.map(mnId)));
-  }, [owned]);
+    setSelected(new Set(owned.filter((m) => reviewingNewVote || m.receipt?.status !== 'submission_unknown').map(mnId)));
+  }, [owned, reviewingNewVote]);
 
   const selectNone = useCallback(() => {
     setSelected(new Set());
@@ -561,12 +533,15 @@ export default function ProposalVoteModal({
   //                undercount `accepted`.
   const runVotePass = useCallback(
     async (chosen, { mergeBase = null } = {}) => {
+      const custodyScope = votingScopeRef.current;
+      if (!custodyScope.eligible) return;
       if (!proposal || typeof proposal.Key !== 'string') {
         setPhase(PHASE.ERROR);
         setSubmitError('missing_proposal');
         return;
       }
       if (!Array.isArray(chosen) || chosen.length === 0) return;
+      if (!reviewingNewVote && chosen.some((m) => m.receipt?.status === 'submission_unknown')) return;
 
       // Pin the cancellation generation for this run. The cleanup
       // effect on [open, proposal.Key] bumps runGenRef whenever the
@@ -575,7 +550,8 @@ export default function ProposalVoteModal({
       // (submitVote relay, setPhase/setResults on a stale view) can
       // fire.
       const myGen = runGenRef.current;
-      const isCancelled = () => runGenRef.current !== myGen;
+      const isCancelled = () => runGenRef.current !== myGen ||
+        votingScopeRef.current !== custodyScope || !votingScopeRef.current.eligible;
 
       setPhase(PHASE.SIGNING);
       setSignProgress({ done: 0, total: chosen.length });
@@ -587,7 +563,7 @@ export default function ProposalVoteModal({
       // list — either way it's what the user expects to see while
       // signing. Clear sign-failures at the same time so a prior
       // run's error markers don't bleed into the new view.
-      setChosenForRun(chosen);
+      setChosenForRun(chosen.map(({ wif: _secret, ...row }) => row));
       setSignFailures(new Map());
 
       const priorAccepted = Array.isArray(mergeBase)
@@ -617,6 +593,7 @@ export default function ProposalVoteModal({
             await new Promise((r) => setTimeout(r, 0));
             if (isCancelled()) return;
           }
+          if (isCancelled()) return;
           const { voteSig } = signVoteFromWif({
             wif: mn.wif,
             collateralHash: mn.collateralHash,
@@ -695,13 +672,16 @@ export default function ProposalVoteModal({
           })
         );
         if (isCancelled()) return;
-        const resp = await governanceService.submitVote({
+        const submission = {
           proposalHash: proposal.Key,
           voteOutcome: outcome,
           voteSignal: 'funding',
           time,
           entries: payload,
-        });
+        };
+        submittedRef.current = submission;
+        submittedBaseRef.current = baseEntries;
+        const resp = await governanceService.submitVote(submission);
         if (isCancelled()) return;
         const byOutpoint = new Map();
         for (const e of entries) {
@@ -724,6 +704,8 @@ export default function ProposalVoteModal({
               // or 'recently_relayed'. Preserved so successCopy() can
               // render a distinct status string.
               skipped: r.skipped || null,
+              uncertain: isUnknownVote(r),
+              notSubmitted: r.notSubmitted === true,
             };
           }
         );
@@ -748,7 +730,9 @@ export default function ProposalVoteModal({
         setPhase(PHASE.DONE);
       } catch (err) {
         if (isCancelled()) return;
-        const code = (err && err.code) || 'submit_failed';
+        const code = err?.uncertain === true || (!err?.notSubmitted &&
+          ['network_error', 'server_error', 'submit_failed'].includes(err?.code || 'submit_failed'))
+          ? 'submission_unknown' : (err && err.code) || 'submit_failed';
         setSubmitError(code);
         // Rate-limit countdown: prefer the server's explicit
         // Retry-After (propagated via apiClient → govError). Fall
@@ -763,149 +747,30 @@ export default function ProposalVoteModal({
         } else {
           setRetryReadyAt(null);
         }
-        // Offline queue: when the transport reports the browser
-        // is offline, stash the intent so it can be resumed on
-        // the `online` event. We intentionally persist the
-        // collateral targets (not signatures) — see module header
-        // of voteOfflineQueue.js.
-        if (code === 'network_error' && isOffline()) {
-          enqueueOfflineVote({
-            proposalHash: proposal.Key,
-            voteOutcome: outcome,
-            voteSignal: 'funding',
-            targets: chosen.map((m) => ({
-              collateralHash: m.collateralHash,
-              collateralIndex: m.collateralIndex,
-              keyId: m.keyId,
-              address: m.address,
-              label: m.label,
-            })),
-          });
-          setOfflineQueued(true);
-        } else {
-          setOfflineQueued(false);
-        }
+        // Once the request began, going offline does not establish that no
+        // vote reached Core. Keep its public payload for explicit status checks.
+        setOfflineQueued(false);
         setPhase(PHASE.ERROR);
       }
     },
-    [proposal, outcome, governanceService]
+    [proposal, outcome, governanceService, reviewingNewVote]
   );
 
-  // Re-run the last attempted batch. Used by the ERROR phase's
-  // "Try again" button and by the automatic-retry scheduler for
-  // transient server errors. Separate from `retryFailed` because
-  // the ERROR path has no per-row results to filter on — the
-  // whole batch failed upstream, so the whole batch must rerun.
+  // Explicit retry of a definite pre-submission failure uses current keys.
   const rerunLastBatch = useCallback(() => {
     if (!Array.isArray(chosenForRun) || chosenForRun.length === 0) {
       setPhase(PHASE.PICK);
       setSubmitError(null);
       setRetryReadyAt(null);
-      setAutoRetryAt(null);
       return undefined;
     }
     setSubmitError(null);
     setRetryReadyAt(null);
-    setAutoRetryAt(null);
-    return runVotePass(chosenForRun);
-  }, [chosenForRun, runVotePass]);
+    const ids = new Set(chosenForRun.map(mnId));
+    return runVotePass(owned.filter((row) => ids.has(mnId(row))));
+  }, [chosenForRun, owned, runVotePass]);
 
-  // Mark the start of a user-initiated vote pass — picker submit,
-  // CONFIRM_CHANGE confirm, Retry failed, Resume queue, or the
-  // "Try again" button in the ERROR view. The auto-retry budget
-  // is scoped to a single error incident, so every fresh user
-  // intent resets it; the auto-retry timer deliberately does NOT
-  // call this (it just increments the counter in-place).
-  //
-  // Without this reset, a server-error incident that burned its
-  // autoRetry.maxAttempts would leave the counter saturated for
-  // the rest of the modal session, and a later independent
-  // server error would skip the auto-retry UX entirely.
-  const beginUserInitiatedRun = useCallback(() => {
-    autoRetryAttemptsRef.current = 0;
-    if (autoRetryTimerRef.current) {
-      clearTimeout(autoRetryTimerRef.current);
-      autoRetryTimerRef.current = null;
-    }
-  }, []);
-
-  // Auto-retry scheduler for transient errors whose descriptor
-  // specifies a non-null `autoRetry` policy (server_error is the
-  // canonical consumer today). Constraints, in priority order:
-  //
-  //   1. Only while we're in PHASE.ERROR with a code whose
-  //      descriptor actually carries an autoRetry policy. Other
-  //      phases and codes opt out.
-  //   2. Count is bounded by `policy.maxAttempts` per error-phase
-  //      session. The attempt counter resets on modal open and
-  //      on every user-initiated run via `beginUserInitiatedRun`
-  //      (picker submit, CONFIRM_CHANGE confirm, Retry failed,
-  //      Try again, Resume queue, onOnline auto-resume). The
-  //      auto-retry timer itself does NOT reset, just increments
-  //      — so once the policy budget is consumed, the timer stops
-  //      scheduling until the user takes some action.
-  //   3. Never auto-retry while the browser reports offline. The
-  //      online-recovery effect below handles that transition.
-  //   4. The timer is torn down on any phase change, proposal
-  //      change, or modal close via the cleanup return.
-  useEffect(() => {
-    // Closing the modal (open→false) MUST tear down any pending
-    // auto-retry — otherwise the timer fires after the user has
-    // closed the dialog and mutely submits a vote they thought
-    // they'd cancelled. Keep `open` in the deps so this effect
-    // re-runs (cleaning up its own timer via the cleanup return)
-    // on close.
-    if (!open || phase !== PHASE.ERROR || !submitError) {
-      setAutoRetryAt(null);
-      return undefined;
-    }
-    const descriptor = describeError(submitError);
-    const policy = descriptor.autoRetry;
-    if (!policy) {
-      setAutoRetryAt(null);
-      return undefined;
-    }
-    if (autoRetryAttemptsRef.current >= policy.maxAttempts) {
-      setAutoRetryAt(null);
-      return undefined;
-    }
-    if (isOffline()) {
-      setAutoRetryAt(null);
-      return undefined;
-    }
-    const delayMs = Math.max(policy.delayMs, 0);
-    const fireAt = Date.now() + delayMs;
-    setAutoRetryAt(fireAt);
-    const t = setTimeout(() => {
-      autoRetryTimerRef.current = null;
-      autoRetryAttemptsRef.current += 1;
-      setAutoRetryAt(null);
-      rerunLastBatch();
-    }, delayMs);
-    autoRetryTimerRef.current = t;
-    return () => {
-      clearTimeout(t);
-      if (autoRetryTimerRef.current === t) {
-        autoRetryTimerRef.current = null;
-      }
-    };
-  }, [open, phase, submitError, rerunLastBatch]);
-
-  // On modal open, surface any queued-while-offline vote for the
-  // current proposal so the user can explicitly resume it. We
-  // deliberately DO NOT auto-resume — the previous session ended
-  // in an error state; asking the user to confirm restores their
-  // sense of control over what's being sent to the network.
-  //
-  // The Resume/Discard UI lives inside the PHASE.ERROR branch, so
-  // merely setting `offlineQueued` isn't enough: on a close/reopen
-  // or full page reload the fresh modal starts in PHASE.PICK and
-  // the persisted intent would be invisible. Transition into the
-  // same ERROR+network_error state the in-session flow produces
-  // so the user sees the same recovery affordance regardless of
-  // whether they closed the modal in between. The queued entry
-  // itself is stashed in a ref for the Resume handler to rebuild
-  // the batch against the freshly-loaded `owned` list.
+  // Old saved intents are readable only for explicit discard, never replayed.
   useEffect(() => {
     if (!open || !proposal || typeof proposal.Key !== 'string') return;
     const queued = peekOfflineVote(proposal.Key);
@@ -923,149 +788,16 @@ export default function ProposalVoteModal({
     setPhase(PHASE.ERROR);
   }, [open, proposal]);
 
-  // Cancel a pending auto-retry on user request. Exposed in the
-  // ERROR body when a countdown is visible so the user can pre-
-  // empt our automated retry without having to wait it out.
-  const cancelAutoRetry = useCallback(() => {
-    if (autoRetryTimerRef.current) {
-      clearTimeout(autoRetryTimerRef.current);
-      autoRetryTimerRef.current = null;
-    }
-    // Consume the remaining budget so the scheduler effect
-    // doesn't immediately re-arm a new timer on the next render.
-    const d = describeError(submitError);
-    if (d && d.autoRetry) {
-      autoRetryAttemptsRef.current = d.autoRetry.maxAttempts;
-    }
-    setAutoRetryAt(null);
-  }, [submitError]);
-
-  // Resume a queued-offline vote. Two shapes:
-  //
-  //   In-session: the failed batch still lives in `chosenForRun`,
-  //     so we just drain the sessionStorage copy and rerun that
-  //     exact list. Trivial hand-off to rerunLastBatch.
-  //
-  //   Cross-session (close/reopen or page reload): `chosenForRun`
-  //     was reset to [] on open. We rehydrate it from the queued
-  //     snapshot by matching each stored target's outpoint against
-  //     the currently-loaded `owned` list (we need the live row
-  //     to pick up the WIF from the unlocked vault — the queued
-  //     entry deliberately never stored signatures or private
-  //     keys). Targets whose MN is no longer owned are silently
-  //     dropped; if the intersection is empty we fall back to
-  //     the picker so the user can rebuild selection manually.
-  const resumeOfflineQueue = useCallback(() => {
-    if (!proposal || typeof proposal.Key !== 'string') return;
-    if (Array.isArray(chosenForRun) && chosenForRun.length > 0) {
-      drainOfflineVote(proposal.Key);
-      queuedSnapshotRef.current = null;
-      setOfflineQueued(false);
-      beginUserInitiatedRun();
-      rerunLastBatch();
-      return;
-    }
-    const snap = queuedSnapshotRef.current;
-    if (!snap || !Array.isArray(snap.targets) || snap.targets.length === 0) {
-      drainOfflineVote(proposal.Key);
-      queuedSnapshotRef.current = null;
-      setOfflineQueued(false);
-      setPhase(PHASE.PICK);
-      setSubmitError(null);
-      return;
-    }
-    const ownedByOutpoint = new Map(owned.map((m) => [mnId(m), m]));
-    const chosen = [];
-    for (const t of snap.targets) {
-      if (!t || !t.collateralHash || t.collateralIndex == null) continue;
-      const key = outpointKey(t.collateralHash, t.collateralIndex);
-      const m = ownedByOutpoint.get(key);
-      if (m) chosen.push(m);
-    }
-    drainOfflineVote(proposal.Key);
-    queuedSnapshotRef.current = null;
-    setOfflineQueued(false);
-    if (chosen.length === 0) {
-      setPhase(PHASE.PICK);
-      setSubmitError(null);
-      return;
-    }
-    setSubmitError(null);
-    setRetryReadyAt(null);
-    setAutoRetryAt(null);
-    beginUserInitiatedRun();
-    runVotePass(chosen);
-  }, [
-    proposal,
-    chosenForRun,
-    owned,
-    rerunLastBatch,
-    runVotePass,
-    beginUserInitiatedRun,
-  ]);
-
   const discardOfflineQueue = useCallback(() => {
     if (!proposal || typeof proposal.Key !== 'string') return;
     drainOfflineVote(proposal.Key);
     queuedSnapshotRef.current = null;
     setOfflineQueued(false);
-    // Discard is a definitive "don't send this batch" — the
-    // user is walking away from the intent. Both in-session
-    // and cross-session flows must exit PHASE.ERROR / clear
-    // submitError so:
-    //   (a) the ERROR body no longer renders (no stale
-    //       Resume/Discard UI),
-    //   (b) the onOnline auto-resume guard (which matches on
-    //       phase===ERROR && submitError==='network_error')
-    //       stops firing — otherwise reconnecting after Discard
-    //       would silently submit the batch anyway, violating
-    //       the explicit user intent.
+    // Discard abandons the old intent without signing or relaying it.
     setPhase(PHASE.PICK);
     setSubmitError(null);
     setRetryReadyAt(null);
-    setAutoRetryAt(null);
   }, [proposal]);
-
-  // Automatic resume on `online` event: only actually trigger the
-  // rerun when the modal is open AND we're sitting in the ERROR
-  // phase AND the error was a network_error. Any other state
-  // means the user has moved on, and firing off a relay would be
-  // surprising.
-  //
-  // Cross-session queues (surfaced via peekOfflineVote on reopen)
-  // are explicitly NOT auto-resumed here: the user hasn't yet
-  // acknowledged the persisted intent, so going back online
-  // shouldn't silently submit a batch on their behalf. The
-  // queuedSnapshotRef is cleared by resumeOfflineQueue /
-  // discardOfflineQueue, so once the user has acknowledged the
-  // surfaced queue this guard naturally drops.
-  //
-  // Drain the sessionStorage queue BEFORE rerunning: only
-  // resumeOfflineQueue / discardOfflineQueue called drain
-  // previously, so a successful auto-resume would leave the
-  // entry behind as a phantom that re-surfaces on the next
-  // modal open (and could cause duplicate re-submissions of
-  // already-processed targets). If the rerun itself fails with
-  // a fresh network_error, runVotePass's catch branch will
-  // re-enqueue the current intent, so the drain is safe.
-  useEffect(() => {
-    if (!open) return undefined;
-    return onOnline(() => {
-      if (phase !== PHASE.ERROR) return;
-      if (submitError !== 'network_error') return;
-      if (queuedSnapshotRef.current != null) return;
-      if (proposal && typeof proposal.Key === 'string') {
-        drainOfflineVote(proposal.Key);
-      }
-      setOfflineQueued(false);
-      // User-intent continuation: the failed batch the user just
-      // tried to send is about to rerun, so reset the auto-retry
-      // budget in case a prior incident in the same modal session
-      // had consumed it.
-      autoRetryAttemptsRef.current = 0;
-      rerunLastBatch();
-    });
-  }, [open, phase, submitError, proposal, rerunLastBatch]);
 
   // Grouping for the picker render. Memoised so the sections don't
   // recompute on unrelated state transitions (selection changes,
@@ -1087,13 +819,12 @@ export default function ProposalVoteModal({
       (m) => classifyOwned(m, outcome) === 'confirmed-different'
     );
     if (voteChanges.length > 0) {
-      pendingChosenRef.current = chosen;
+      pendingChosenRef.current = chosen.map(({ wif: _secret, ...row }) => row);
       setPhase(PHASE.CONFIRM_CHANGE);
       return;
     }
-    beginUserInitiatedRun();
     return runVotePass(chosen);
-  }, [owned, effectiveSelected, outcome, runVotePass, beginUserInitiatedRun]);
+  }, [owned, effectiveSelected, outcome, runVotePass]);
 
   const confirmVoteChange = useCallback(() => {
     const chosen = pendingChosenRef.current;
@@ -1102,9 +833,9 @@ export default function ProposalVoteModal({
       setPhase(PHASE.PICK);
       return;
     }
-    beginUserInitiatedRun();
-    return runVotePass(chosen);
-  }, [runVotePass, beginUserInitiatedRun]);
+    const ids = new Set(chosen.map(mnId));
+    return runVotePass(owned.filter((row) => ids.has(mnId(row))));
+  }, [owned, runVotePass]);
 
   const cancelVoteChange = useCallback(() => {
     pendingChosenRef.current = null;
@@ -1150,6 +881,8 @@ export default function ProposalVoteModal({
         .filter(
           (e) =>
             !e.ok &&
+            !isUnknownVote(e) &&
+            !e.superseded &&
             !isBenignDup(e.error) &&
             e.collateralHash &&
             e.collateralIndex != null &&
@@ -1168,9 +901,48 @@ export default function ProposalVoteModal({
       if (!(e.collateralHash && e.collateralIndex != null)) return true;
       return !retriedKeys.has(outpointKey(e.collateralHash, e.collateralIndex));
     });
-    beginUserInitiatedRun();
     return runVotePass(chosen, { mergeBase });
-  }, [owned, results, runVotePass, beginUserInitiatedRun]);
+  }, [owned, results, runVotePass]);
+
+  const checkSubmissionStatus = async () => {
+    const batch = submittedRef.current;
+    const scope = votingScopeRef.current;
+    if (!scope.eligible || !batch || checkingStatus) return;
+    const generation = runGenRef.current;
+    const current = () => scope === votingScopeRef.current && scope.eligible &&
+      generation === runGenRef.current;
+    setCheckingStatus(true);
+    try {
+      const status = await governanceService.reconcileReceipts(batch.proposalHash, { refresh: true });
+      if (!current()) return;
+      setStatusChecked(true);
+      const prior = new Map([...submittedBaseRef.current, ...(results?.byEntry || [])].map((row) => [outpointKey(row.collateralHash, row.collateralIndex), row]));
+      for (const entry of batch.entries) {
+        const key = outpointKey(entry.collateralHash, entry.collateralIndex);
+        prior.set(key, reconciledVoteStatus(prior.get(key) || { ...entry, ok: false, uncertain: true }, batch, status));
+      }
+      const byEntry = Array.from(prior.values());
+      setResults({ byEntry, accepted: byEntry.filter((entry) => entry.ok).length,
+        rejected: byEntry.filter((entry) => !entry.ok).length });
+      setSubmitError(null);
+      setPhase(PHASE.DONE);
+    } catch (_) {
+      if (current()) setSubmitError('submission_unknown');
+    } finally { if (current()) setCheckingStatus(false); }
+  };
+
+  const reviewNewVote = () => {
+    if (!votingScopeRef.current.eligible || !statusChecked) return;
+    submittedRef.current = null;
+    submittedBaseRef.current = [];
+    setChosenForRun([]);
+    pendingChosenRef.current = null;
+    setSelected(null);
+    setResults(null);
+    setSubmitError(null);
+    setReviewingNewVote(true);
+    setPhase(PHASE.PICK);
+  };
 
   if (!open) return null;
 
@@ -1328,48 +1100,24 @@ export default function ProposalVoteModal({
       </div>
     );
   } else if (phase === PHASE.DONE) {
-    // Benign-dup rows (already_voted) are reported as rejected by
-    // the server bookkeeping but are logical successes — the
-    // network already has the exact vote we wanted to cast. Don't
-    // let them drive the "Retry failed" CTA; retrying a dedup
-    // would just produce another dedup.
-    // Count-aware bookkeeping for the DONE screen. We need THREE
-    // numbers to render the right CTAs:
-    //
-    //   failedCount      — rows the user actually needs to know about
-    //                      (non-OK AND non-benign-dup). Drives whether
-    //                      the retry CTA is visible at all.
-    //   retryableCount   — subset of failedCount where the MN is still
-    //                      in `owned` and carries a collateral outpoint.
-    //                      Only these rows have a feasible re-send.
-    //   dedupCount       — benign dup rows. Not failures from the user
-    //                      perspective, but we surface the count so they
-    //                      know the dedup is why "rejected" was non-zero.
-    //
-    // Previously the code only tracked the boolean existence
-    // (`hasFailures`, `retryable`), which was enough to gate the
-    // button but left the user without an "X out of Y still need
-    // action" signal. Explicit counts let us:
-    //   * Label the retry button "Retry 3 failed" or
-    //     "Retry 2 of 3 failed" when some rows are unrecoverable,
-    //     so the user knows before clicking exactly how many
-    //     masternodes get re-attempted.
-    //   * Render an inline note when failedCount > retryableCount
-    //     (i.e. some failures will remain after retry no matter
-    //     what) so there's no "I clicked retry and the row is
-    //     still red" surprise.
+    // Prior-vote errors do not establish this requested outcome. Keep them
+    // out of automatic retries and offer an explicit status check.
     const ownedIds = new Set(owned.map(mnId));
     let failedCount = 0;
     let retryableCount = 0;
     let dedupCount = 0;
     for (const r of results.byEntry) {
       if (r.ok) continue;
+      if (r.superseded) continue;
+      if (isUnknownVote(r)) continue;
       if (isBenignDup(r.error)) {
         dedupCount += 1;
         continue;
       }
       failedCount += 1;
       if (
+        !isUnknownVote(r) &&
+        !r.superseded &&
         r.collateralHash &&
         r.collateralIndex != null &&
         ownedIds.has(outpointKey(r.collateralHash, r.collateralIndex))
@@ -1379,6 +1127,10 @@ export default function ProposalVoteModal({
     }
     const hasFailures = failedCount > 0;
     const retryable = retryableCount > 0;
+    const unknownCount = results.byEntry.filter(isUnknownVote).length;
+    const supersededCount = results.byEntry.filter((row) => row.superseded).length;
+    const notSubmittedCount = results.byEntry.filter((row) => row.notSubmitted).length;
+    const hasUnknown = unknownCount > 0;
     const unretryableCount = failedCount - retryableCount;
     const retryButtonLabel =
       unretryableCount > 0
@@ -1386,32 +1138,29 @@ export default function ProposalVoteModal({
         : `Retry ${retryableCount} failed`;
     body = (
       <div className="vote-modal__state" data-testid="vote-modal-done">
-        <p>
+        {(hasUnknown || dedupCount > 0) && <div role="status"><p>Some vote submissions need checking. Check status before retrying; no votes will be automatically resubmitted.</p>
+          <button type="button" className="button button--primary button--small" disabled={checkingStatus} onClick={checkSubmissionStatus}>Check status</button>
+          {statusChecked && <button type="button" className="button button--ghost button--small" onClick={reviewNewVote}>Review a new vote</button>}</div>}
+        <p data-testid="vote-modal-summary">
           <strong>{results.accepted}</strong> accepted,{' '}
-          <strong>{results.rejected}</strong> rejected.
+          <strong>{results.byEntry.filter((row) => !row.ok && !isUnknownVote(row) && !row.notSubmitted && !row.superseded).length}</strong> rejected.
+          {unknownCount > 0 && <> <strong>{unknownCount}</strong> uncertain.</>}
+          {notSubmittedCount > 0 && <> <strong>{notSubmittedCount}</strong> not submitted.</>}
+          {supersededCount > 0 && <> <strong>{supersededCount}</strong> superseded by on-chain votes.</>}
         </p>
+        {results.byEntry.some((row) => row.superseded) && statusChecked && <button type="button" className="button button--ghost button--small" onClick={reviewNewVote}>Review a new vote</button>}
         {dedupCount > 0 ? (
           <p
             className="vote-modal__hint"
             data-testid="vote-modal-dedup-note"
           >
-            {dedupCount} of the {dedupCount === 1 ? 'rejected row is' : 'rejected rows are'}{' '}
-            an identical vote already on-chain, so {dedupCount === 1 ? 'it counts' : 'they count'}{' '}
-            as success from your side — nothing to retry.
+            {dedupCount} rejected {dedupCount === 1 ? 'row reports' : 'rows report'}{' '}
+            a prior vote. This does not confirm the newly requested outcome; check the current vote before trying again.
           </p>
         ) : null}
         <ul className="vote-result-list">
           {results.byEntry.map((r, idx) => {
-            // "Benign dup" rows (already_voted) surface from the
-            // backend when the network already recorded an
-            // identical vote for this MN+proposal+outcome. The
-            // batch is still a failure from the server's
-            // bookkeeping perspective (rejected++ in totals), but
-            // from the user's perspective their intent was
-            // already on-chain — so we render the row as a soft
-            // success rather than a scary red error. This also
-            // defuses the "I voted twice and now it says
-            // rejected!?" support path.
+            // A prior vote may have a different outcome; never show success.
             const benign = !r.ok && isBenignDup(r.error);
             const rowDescriptor =
               !r.ok && !benign ? describeError(r.error) : null;
@@ -1419,14 +1168,14 @@ export default function ProposalVoteModal({
             if (r.ok) {
               statusText = successCopy({ outcome, skipped: r.skipped });
             } else if (benign) {
-              statusText = 'Already on-chain';
+              statusText = 'Prior vote exists; requested outcome not confirmed';
             } else {
               statusText = rowErrorCopy(r.error);
             }
             const rowClass = r.ok
               ? 'vote-result is-ok'
               : benign
-              ? 'vote-result is-ok vote-result--dedup'
+              ? 'vote-result is-warn vote-result--dedup'
               : rowDescriptor && rowDescriptor.severity === SEVERITY.WARN
               ? 'vote-result is-warn'
               : 'vote-result is-error';
@@ -1535,12 +1284,6 @@ export default function ProposalVoteModal({
       retryReadyAt != null &&
       rateLimitRemainingMs > 0;
     const rateLimitRemainingSec = Math.ceil(rateLimitRemainingMs / 1000);
-    // Auto-retry countdown.
-    const autoRetryRemainingMs =
-      autoRetryAt != null ? Math.max(0, autoRetryAt - nowTick) : 0;
-    const showAutoRetryCountdown =
-      autoRetryAt != null && autoRetryRemainingMs > 0;
-    const autoRetryRemainingSec = Math.ceil(autoRetryRemainingMs / 1000);
     // Try-again button enable/disable.
     const canRerun =
       Array.isArray(chosenForRun) && chosenForRun.length > 0;
@@ -1624,27 +1367,12 @@ export default function ProposalVoteModal({
             .
           </p>
         ) : null}
-        {showAutoRetryCountdown && !offlineQueued ? (
-          <p
-            className="vote-modal__error-countdown"
-            data-testid="vote-modal-auto-retry-countdown"
-            aria-live="polite"
-          >
-            Retrying automatically in{' '}
-            <strong>{autoRetryRemainingSec}s</strong>.
-          </p>
-        ) : null}
         <div className="vote-modal__actions">
-          {offlineQueued ? (
+          {submitError === 'submission_unknown' ? (
+            <button type="button" className="button button--primary button--small" disabled={checkingStatus} onClick={checkSubmissionStatus}>Check status</button>
+          ) : offlineQueued ? (
             <>
-              <button
-                type="button"
-                className="button button--primary button--small"
-                onClick={resumeOfflineQueue}
-                data-testid="vote-modal-offline-resume"
-              >
-                Resume when online
-              </button>
+              <p>A saved request is not proof of submission. Discard it and review current on-chain votes before starting another vote.</p>
               <button
                 type="button"
                 className="button button--ghost button--small"
@@ -1661,17 +1389,12 @@ export default function ProposalVoteModal({
                 className="button button--primary button--small"
                 onClick={() => {
                   if (canRerun) {
-                    // User-initiated retry: reset the auto-retry
-                    // budget so a subsequent fresh server-error
-                    // incident in the same modal session still
-                    // gets its full autoRetry.maxAttempts window.
-                    beginUserInitiatedRun();
+                    // Only definite pre-submission errors reach this retry.
                     rerunLastBatch();
                   } else {
                     setPhase(PHASE.PICK);
                     setSubmitError(null);
                     setRetryReadyAt(null);
-                    setAutoRetryAt(null);
                   }
                 }}
                 disabled={tryAgainDisabled}
@@ -1681,16 +1404,6 @@ export default function ProposalVoteModal({
                   ? `Try again (${rateLimitRemainingSec}s)`
                   : 'Try again'}
               </button>
-              {showAutoRetryCountdown ? (
-                <button
-                  type="button"
-                  className="button button--ghost button--small"
-                  onClick={cancelAutoRetry}
-                  data-testid="vote-modal-cancel-auto-retry"
-                >
-                  Cancel auto-retry
-                </button>
-              ) : null}
               {/* Always offer an escape back to the picker — even
                   during a countdown the user should be able to
                   reconsider selection (e.g. "oh, I meant abstain,
@@ -1700,14 +1413,9 @@ export default function ProposalVoteModal({
                 type="button"
                 className="button button--ghost button--small"
                 onClick={() => {
-                  if (autoRetryTimerRef.current) {
-                    clearTimeout(autoRetryTimerRef.current);
-                    autoRetryTimerRef.current = null;
-                  }
                   setPhase(PHASE.PICK);
                   setSubmitError(null);
                   setRetryReadyAt(null);
-                  setAutoRetryAt(null);
                 }}
                 data-testid="vote-modal-error-back-to-picker"
               >
@@ -1855,6 +1563,18 @@ export default function ProposalVoteModal({
   } else {
     body = (
       <>
+        {reviewingNewVote && <p role="alert">An earlier vote may still reach the network. This is a new vote, not proof that the previous request failed. Review the outcome and nodes before signing again.</p>}
+        {!reviewingNewVote && owned.some((m) => m.receipt?.status === 'submission_unknown') && <div role="status">
+          <p>A previous submission is uncertain. Check status before reviewing another vote.</p>
+          <button type="button" className="button button--ghost button--small" disabled={checkingStatus} onClick={async () => {
+            const scope = votingScopeRef.current;
+            if (!scope.eligible) return;
+            setCheckingStatus(true);
+            try { await refresh({ refreshReceipts: true }); if (scope === votingScopeRef.current) setStatusChecked(true); }
+            finally { if (scope === votingScopeRef.current) setCheckingStatus(false); }
+          }}>Check status</button>
+          {statusChecked && <button type="button" className="button button--ghost button--small" onClick={reviewNewVote}>Review a new vote</button>}
+        </div>}
         <fieldset
           className="vote-modal__outcome"
           aria-label="Vote outcome"
@@ -1954,6 +1674,7 @@ export default function ProposalVoteModal({
                   <input
                     type="checkbox"
                     checked={effectiveSelected.has(id)}
+                    disabled={kind === 'unknown' && !reviewingNewVote}
                     onChange={() => toggle(id)}
                     data-testid={`vote-modal-toggle-${id}`}
                   />

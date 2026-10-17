@@ -52,12 +52,26 @@ export const SEVERITY = Object.freeze({
 // analogues surfaced by governanceService.js). Order is by
 // severity-then-alphabetical to keep this file scan-friendly.
 const DESCRIPTORS = Object.freeze({
+  submission_unknown: {
+    short: 'Submission status unknown',
+    long: 'The response did not establish whether your votes reached the network. Check status before retrying. No votes will be automatically signed or resubmitted.',
+    severity: SEVERITY.WARN,
+  },
+  not_submitted: {
+    short: 'Not submitted',
+    long: 'This vote was not sent. You can explicitly retry it after reviewing the current state.',
+    severity: SEVERITY.WARN,
+  },
+  superseded: {
+    short: 'On-chain vote superseded request',
+    long: 'Another on-chain vote superseded this request. Review the current outcome before starting another vote.',
+    severity: SEVERITY.WARN,
+  },
   // -------------------------------------------------- info ("not really a problem")
   already_voted: {
     short: 'Already submitted',
     long:
-      'This sentry node already voted on this proposal. No change was ' +
-      'made — the on-chain record still reflects your prior vote.',
+      'Core reported a prior vote. This does not confirm your newly requested outcome. Check the current on-chain vote before trying again.',
     severity: SEVERITY.INFO,
   },
 

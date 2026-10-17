@@ -159,10 +159,10 @@ function buildVotePreimage({
   if (typeof proposalHash !== 'string' || !HEX64.test(proposalHash)) {
     throw err('invalid_proposal_hash');
   }
-  if (typeof voteOutcome !== 'string' || !(voteOutcome in OUTCOMES)) {
+  if (typeof voteOutcome !== 'string' || !Object.prototype.hasOwnProperty.call(OUTCOMES, voteOutcome)) {
     throw err('invalid_vote_outcome');
   }
-  if (typeof voteSignal !== 'string' || !(voteSignal in SIGNALS)) {
+  if (typeof voteSignal !== 'string' || !Object.prototype.hasOwnProperty.call(SIGNALS, voteSignal)) {
     // The frontend should only ever pass "funding"; if we receive
     // anything else it's a programmer error and we want a loud fail
     // rather than silently producing a signature Core will reject.

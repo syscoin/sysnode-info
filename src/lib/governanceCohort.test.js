@@ -8,19 +8,21 @@ function row(partial = {}) {
   const relayed = partial.relayed ?? 0;
   const stale = partial.stale ?? 0;
   const failed = partial.failed ?? 0;
+  const unknown = partial.unknown ?? 0;
   const confirmedYes = partial.confirmedYes ?? 0;
   const confirmedNo = partial.confirmedNo ?? 0;
   const confirmedAbstain = partial.confirmedAbstain ?? 0;
   const total =
     partial.total !== undefined
       ? partial.total
-      : confirmed + relayed + stale + failed;
+      : confirmed + relayed + stale + failed + unknown;
   return {
     proposalHash: 'a'.repeat(64),
     confirmed,
     relayed,
     stale,
     failed,
+    unknown,
     total,
     confirmedYes,
     confirmedNo,
@@ -51,6 +53,20 @@ describe('cohortChip — no summary row', () => {
 });
 
 describe('cohortChip — priority of states', () => {
+  test.each([null, 1, 5])('unknown submissions never become Voted with owned count %s', (owned) => {
+    const chip = cohortChip(row({ unknown: 1 }), owned);
+    expect(chip).toMatchObject({ kind: 'checking', label: 'Check status' });
+    expect(chip.detail).toMatch(/1 vote has an unknown submission result/);
+    expect(chip.detail).not.toMatch(/succeeded|haven't voted|changed elsewhere/);
+  });
+
+  test('unknown beats confirmed, relayed, failed and stale without claiming rejection', () => {
+    const chip = cohortChip(row({ unknown: 2, confirmed: 1, relayed: 1, failed: 1, stale: 1 }), 8);
+    expect(chip.kind).toBe('checking');
+    expect(chip.detail).toMatch(/2 votes have unknown submission results/);
+    expect(chip.detail).toMatch(/before retrying/);
+  });
+
   test('stale beats failed, pending, and voted', () => {
     const chip = cohortChip(
       row({
@@ -62,8 +78,9 @@ describe('cohortChip — priority of states', () => {
       }),
       5
     );
-    expect(chip).toMatchObject({ kind: 'changed', label: 'Changed' });
-    expect(chip.detail).toMatch(/changed elsewhere/i);
+    expect(chip).toMatchObject({ kind: 'needs-retry', label: 'Not confirmed' });
+    expect(chip.detail).toMatch(/not confirmed on chain/i);
+    expect(chip.detail).not.toMatch(/changed elsewhere/i);
   });
 
   test('failed beats pending and voted', () => {

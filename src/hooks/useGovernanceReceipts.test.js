@@ -362,6 +362,33 @@ describe('useGovernanceReceipts — background reconcile sweep', () => {
     }
   }
 
+  test('unknown submissions are checked in the background without forcing retry eligibility', async () => {
+    jest.useFakeTimers();
+    useAuth.mockReturnValue({ isAuthenticated: true });
+    useOwnedMasternodes.mockReturnValue(makeOwnedHook({ owned: [] }));
+    const hash = 'a'.repeat(64);
+    const unknown = row({ proposalHash: hash, confirmed: 0, confirmedYes: 0, unknown: 1 });
+    const confirmed = row({ proposalHash: hash, unknown: 0 });
+    const service = {
+      fetchReceiptsSummary: jest.fn()
+        .mockResolvedValueOnce({ summary: [unknown] })
+        .mockResolvedValue({ summary: [confirmed] }),
+      reconcileReceipts: jest.fn().mockResolvedValue({ reconciled: true, receipts: [] }),
+    };
+    let snapshot;
+    render(<Probe service={service} capture={(value) => { snapshot = value; }} />);
+    await act(flushMicrotasks);
+    await act(async () => {
+      jest.advanceTimersByTime(SUMMARY_POLL_MS);
+      await flushMicrotasks();
+    });
+    expect(service.reconcileReceipts).toHaveBeenCalledTimes(1);
+    // No refresh:true: only the explicit status action can retire uncertainty
+    // on an absent vote after the grace period. Polling may confirm a match.
+    expect(service.reconcileReceipts).toHaveBeenCalledWith(hash);
+    expect(snapshot.summary).toEqual([confirmed]);
+  });
+
   test('a background tick fires reconcile for every proposal with relayed > 0 and then re-loads /summary so relayed→confirmed transitions surface without user action', async () => {
     // Regression guard for the UX gap operators hit after voting:
     // `/gov/receipts/summary` is a pure SELECT so a freshly relayed

@@ -138,7 +138,7 @@ export function useGovernanceReceipts({
   //
   // Each tick does TWO things in order:
   //
-  //   1. For every proposal with at least one `relayed` receipt in
+  //   1. For every proposal with at least one `relayed` or unknown receipt in
   //      the last-known summary, fire POST /gov/receipts/reconcile.
   //      That's the only call that can flip receipts from relayed
   //      to confirmed by issuing `gobject_getcurrentvotes`; without
@@ -182,7 +182,7 @@ export function useGovernanceReceipts({
   // cadence/visibility contract.
   const reconcilePendingAndLoad = useCallback(async () => {
     if (!enabled || !isAuthenticated) return;
-    // Pending = any summary row with at least one still-relayed
+    // Pending = any summary row with at least one still-relayed or unknown
     // receipt. Built fresh per tick from the ref so we always act
     // on the latest snapshot even though the callback identity
     // never changes.
@@ -191,7 +191,9 @@ export function useGovernanceReceipts({
     for (const rowState of current) {
       if (!rowState || typeof rowState.proposalHash !== 'string') continue;
       const relayed = Number(rowState.relayed);
-      if (Number.isFinite(relayed) && relayed > 0) {
+      const unknown = Number(rowState.unknown);
+      if ((Number.isFinite(relayed) && relayed > 0) ||
+          (Number.isFinite(unknown) && unknown > 0)) {
         pending.push(rowState.proposalHash);
       }
     }
@@ -203,6 +205,8 @@ export function useGovernanceReceipts({
       await Promise.allSettled(
         pending.map((hash) =>
           Promise.resolve()
+            // Do not force a new absence observation: background checks can
+            // confirm delivery, but cannot retire an unknown result for retry.
             .then(() => governanceService.reconcileReceipts(hash))
             .catch(() => null)
         )

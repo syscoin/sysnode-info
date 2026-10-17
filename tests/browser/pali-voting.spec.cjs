@@ -24,7 +24,7 @@ async function setup(page, { unknown = false, missingKey = false } = {}) {
   }, { vector, hash, genesisHash, missingKey });
   await page.route('**/auth/me', (route) => route.fulfill({ json: { user: { id: 1, email: 'fixture@example.test', emailVerified: true, saltV: 'a'.repeat(32) } } }));
   await page.route('**/vault', (route) => route.fulfill({ json: { empty: true } }));
-  await page.route('**/mnstats', (route) => route.fulfill({ json: { mn_stats: { enabled: 10 }, superblock_stats: { budget: 100000 } } }));
+  await page.route('**/mnstats', (route) => route.fulfill({ json: { stats: { mn_stats: { enabled: 10 }, superblock_stats: { budget: 100000 } } } }));
   // Core's object Key is the voting parent; nested Hash is a distinct DataHash.
   await page.route('**/govlist', (route) => route.fulfill({ json: [{ Key: vector.proposalHash, Hash: 'd'.repeat(64), ObectType: 1, fBlockchainValidity: true, fCachedValid: true, fCachedDelete: false, start_epoch: Math.floor(Date.now() / 1000) - 86400, end_epoch: Math.floor(Date.now() / 1000) + 86400 * 365, name: 'A deliberately long funding proposal name for narrow-window layout checks', title: 'A deliberately long funding proposal name for narrow-window layout checks', AbsoluteYesCount: 1, YesCount: 2, NoCount: 1, payment_amount: 10 }] }));
   await page.route('**/gov/**', (route) => {
@@ -36,7 +36,7 @@ async function setup(page, { unknown = false, missingKey = false } = {}) {
       if (unknown && writes === 1) return route.abort('timedout');
       return route.fulfill({ json: { accepted: 1, rejected: 0, results: [{ collateralHash: vector.collateralHash, collateralIndex: vector.collateralIndex, ok: true }] } });
     }
-    if (path.endsWith('/reconcile')) { reconciles += 1; return route.fulfill({ json: { receipts: [], reconciled: true } }); }
+    if (path.endsWith('/reconcile')) { reconciles += 1; return route.fulfill({ json: { receipts: unknown ? [{ collateralHash: vector.collateralHash, collateralIndex: vector.collateralIndex, proposalHash: vector.proposalHash, voteTime: vector.timestamp, voteOutcome: 'yes', voteSignal: 'funding', status: 'stale' }] : [], reconciled: true } }); }
     if (path.endsWith('/summary')) return route.fulfill({ json: { summary: [] } });
     if (path.endsWith('/recent')) return route.fulfill({ json: { receipts: [] } });
     return route.fulfill({ json: { receipts: [], matches: [] } });
@@ -75,13 +75,13 @@ test('Pali voting uses an explicit custody choice and remains usable at320px', a
   await page.screenshot({ path: testInfo.outputPath('pali-vote-result-320.png'), animations: 'disabled' });
 });
 
-test('uncertain vote relay checks status before retrying the same approved signatures', async ({ page }) => {
+test('uncertain vote relay requires a fresh stale receipt before retrying the same approved signatures', async ({ page }) => {
   const fixture = await setup(page, { unknown: true });
   await page.goto('/governance');
   await page.getByRole('button', { name: 'Vote on proposal' }).click();
   await page.getByRole('button', { name: /Pali wallet Approve/ }).click();
   await page.getByRole('button', { name: 'Review 1 yes vote in Pali' }).click();
-  await expect(page.getByRole('alert')).toContainText('Check status before retrying');
+  await expect(page.getByText('Checking required.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry 1 failed vote' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Check status' }).click();
   await page.getByRole('button', { name: 'Retry 1 failed vote' }).click();
