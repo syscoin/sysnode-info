@@ -3,18 +3,27 @@ const { test, expect } = require('@playwright/test');
 // contracts. Crypto/serialization are tested separately against the real SDK.
 const HASH = 'a'.repeat(64);
 const ADDRESS = `0x${'12'.repeat(20)}`;
-async function fixtures(page, { unknown = false, recovery = false, timeout = false, expiredFeeGrant = false, feeSigning = 'same-origin-authorized-psbt-v1' } = {}) {
+async function fixtures(page, { unknown = false, recovery = false, timeout = false, expiredFeeGrant = false, initialConnection = false, feeSigning = 'same-origin-authorized-psbt-v1' } = {}) {
   let submitted = 0;
   let operations = [];
   const preparations = [];
-  await page.addInitScript(({ feeSigning, expiredFeeGrant }) => {
+  await page.addInitScript(({ feeSigning, expiredFeeGrant, initialConnection }) => {
     window.__walletCalls = [];
     let feeAttempts = 0;
+    const handlers = {};
+    let connected = false;
     window.pali = {
-      on() {}, removeListener() {},
+      on(name, callback) { handlers[name] = callback; }, removeListener(name, callback) { if (handlers[name] === callback) delete handlers[name]; },
       async request({ method, params }) {
         window.__walletCalls.push(method);
-        if (method === 'sys_requestAccounts') return ['tsys-test-fixture'];
+        if (method === 'sys_requestAccounts') {
+          if (initialConnection && !connected) {
+            connected = true;
+            handlers.accountsChanged?.(['tsys-test-fixture']);
+            setTimeout(() => handlers.accountsChanged?.(['tsys-test-fixture']), 50);
+          }
+          return ['tsys-test-fixture'];
+        }
         if (method === 'sys_getPublicKey') return 'vpub-test-fixture';
         if (method === 'sys_getChangeAddress') return 'tsys-change-fixture';
         if (method === 'sys_getSentryCapabilities') return { operations: ['updateService', 'revoke'], feeSigning };
@@ -27,7 +36,7 @@ async function fixtures(page, { unknown = false, recovery = false, timeout = fal
         throw new Error(`Unexpected method ${method}`);
       },
     };
-  }, { feeSigning, expiredFeeGrant });
+  }, { feeSigning, expiredFeeGrant, initialConnection });
   await page.route('**/auth/me', (route) => route.fulfill({ json: { user: { id: 1, email: 'fixture@example.test', emailVerified: true, saltV: 'a'.repeat(32) } } }));
   await page.route('**/vault', (route) => route.fulfill({ status: 404, json: { error: 'not_found' } }));
   await page.route('**/api/sentry/v1/**', async (route) => {
@@ -62,6 +71,20 @@ async function fixtures(page, { unknown = false, recovery = false, timeout = fal
   });
   return { submissions: () => submitted, preparations: () => preparations };
 }
+test('first connection and its delayed duplicate event preserve the new review at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 360 });
+  const fixture = await fixtures(page, { initialConnection: true });
+  await page.goto('/nodes');await page.getByRole('button', { name: /My Sentry node/ }).click();
+  await page.getByRole('combobox', { name: 'NEVM address', exact: true }).selectOption('set');await page.getByLabel('New NEVM address').fill(ADDRESS);
+  await page.getByRole('button', { name: 'Prepare update' }).click();
+  await page.getByRole('button', { name: 'Review and sign in Pali' }).click();
+  await expect(page.getByText('submitted', { exact: true })).toBeVisible();
+  expect(fixture.preparations()).toHaveLength(1);expect(fixture.submissions()).toBe(1);
+  const calls = await page.evaluate(() => window.__walletCalls);
+  expect(calls.indexOf('sys_requestAccounts')).toBeLessThan(calls.indexOf('sys_getSentryCapabilities'));
+  expect(calls.filter(value => value === 'sys_signSentryOperation')).toHaveLength(1);
+  expect(calls.filter(value => value === 'sys_sign')).toHaveLength(1);
+});
 for (const feeSigning of [null, 'separate-after-operator-authorization']) test(`older Pali is stopped before preparation and remains link-capable at 320x360: ${feeSigning}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 360 });
   const fixture = await fixtures(page, { feeSigning });

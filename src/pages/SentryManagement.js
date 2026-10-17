@@ -81,12 +81,27 @@ export default function SentryManagement({ service = sentryService }) {
   const invalidationReason = useRef('intent_changed');
   const mounted = useRef(true);
   const locked = useRef(false);
+  const providerCleanup = useRef(() => {});
   const invalidateIntent = useCallback((reason = 'intent_changed') => { invalidationReason.current = reason; generation.current += 1; setPrepared(null); }, []);
   const field = (key) => (event) => { invalidateIntent(); setDraft((value) => ({ ...value, [key]: event.target.value })); };
   const managementChange = (name, value) => { invalidateIntent(); setManagementFields((old) => ({ ...old, [name]: value })); };
   const updateOperations = (value) => { historyRevision.current += 1; setOperations(value); };
   const updateNodes = (value) => { watchesRevision.current += 1; setNodes(value); };
   const importBusy = useCallback((value) => { locked.current = value; setBusy(value ? 'Importing nodes' : ''); }, []);
+  const bindProvider = useCallback((accounts) => {
+    providerCleanup.current();
+    const provider = getPali();
+    const changed = () => { invalidateIntent('context_changed'); setError(ERROR_COPY.context_changed); };
+    const selected = JSON.stringify(accounts);
+    const accountsChanged = (next) => {
+      // A delayed notification for this exact permission response is not a
+      // switch. Empty, malformed or genuinely different accounts invalidate.
+      if (Array.isArray(next) && JSON.stringify(next) === selected) return;
+      changed();
+    };
+    provider?.on?.('accountsChanged', accountsChanged); provider?.on?.('chainChanged', changed);
+    providerCleanup.current = () => { provider?.removeListener?.('accountsChanged', accountsChanged); provider?.removeListener?.('chainChanged', changed); };
+  }, [invalidateIntent]);
   const loadBootstrap = useCallback(() => {
     const token = ++bootstrapGeneration.current;
     const historyAtStart = historyRevision.current;
@@ -129,12 +144,9 @@ export default function SentryManagement({ service = sentryService }) {
   useEffect(() => {
     mounted.current = true;
     loadBootstrap();
-    const provider = getPali();
-    const changed = () => { invalidateIntent('context_changed'); setError(ERROR_COPY.context_changed); };
-    provider?.on?.('accountsChanged', changed); provider?.on?.('chainChanged', changed);
     return () => {
       mounted.current = false; generation.current += 1; bootstrapGeneration.current += 1;
-      provider?.removeListener?.('accountsChanged', changed); provider?.removeListener?.('chainChanged', changed);
+      providerCleanup.current();
     };
   }, [loadBootstrap, invalidateIntent]);
   async function perform(phase, fn) {
@@ -162,10 +174,23 @@ export default function SentryManagement({ service = sentryService }) {
   }
   async function linkNode() {
     await perform('Waiting for Pali to verify this node', async (assertCurrent) => {
+      await connectForReview(assertCurrent);
       const result = await service.linkNode(selected.proTxHash, context.chain.genesisHash); assertCurrent();
       if (result?.linked !== true || result.proTxHash !== selected.proTxHash || result.genesisHash !== context.chain.genesisHash) throw new Error('Pali did not confirm the selected node and network.');
       setNotice('Node linked in Pali. This did not sign or broadcast a transaction.');
     });
+  }
+  async function connectForReview(assertCurrent) {
+    // A new explicit connection starts a fresh review. Retire the old account
+    // binding first, so a legitimate reconnect cannot cancel itself forever.
+    setPrepared(null);
+    providerCleanup.current();
+    providerCleanup.current = () => {};
+    const accounts = await service.connectWallet(); assertCurrent();
+    if (!Array.isArray(accounts) || accounts.length !== 1 || typeof accounts[0] !== 'string' || !accounts[0]) throw new Error('Pali did not confirm the selected account.');
+    // The initial permission grant legitimately emits accountsChanged. Bind
+    // only once it completes, before any account-dependent data or signing.
+    bindProvider(accounts);
   }
   async function requireWalletFeeSupport(assertCurrent, operation) {
     const walletCaps = await service.walletCapabilities(); assertCurrent();
@@ -178,6 +203,7 @@ export default function SentryManagement({ service = sentryService }) {
     await perform('Preparing update', async (assertCurrent) => {
       if (!capabilities?.operations.includes('updateService') || !selected) throw new Error('invalid_capabilities');
       const changes = serviceChanges(draft);
+      await connectForReview(assertCurrent);
       await requireWalletFeeSupport(assertCurrent, 'updateService');
       const funding = await service.fundingIdentity(); assertCurrent();
       const rate = Number(feeRate);
@@ -226,6 +252,7 @@ export default function SentryManagement({ service = sentryService }) {
     event.preventDefault();
     await perform('Preparing node operation', async (assertCurrent) => {
       if (!capabilities?.operations.includes(managementOperation) || (managementOperation !== 'register' && !selected)) throw new Error('invalid_capabilities');
+      await connectForReview(assertCurrent);
       await requireWalletFeeSupport(assertCurrent, managementOperation);
       const funding = await service.fundingIdentity(); assertCurrent();
       const changes = {};
@@ -271,6 +298,7 @@ export default function SentryManagement({ service = sentryService }) {
   }
   async function resumeOperation(id) {
     await perform('Restoring saved review', async (assertCurrent) => {
+      await connectForReview(assertCurrent);
       const walletCaps = await requireWalletFeeSupport(assertCurrent);
       const result = await service.reconcile(id); assertCurrent();
       if (result.status !== 'prepared') throw new Error('This operation has already been submitted. Use Check status.');
@@ -284,6 +312,7 @@ export default function SentryManagement({ service = sentryService }) {
   }
   async function linkRegisteredNode(operation) {
     await perform('Linking confirmed registration in Pali', async (assertCurrent) => {
+      await connectForReview(assertCurrent);
       const registered = await service.context(operation.network, operation.txid); assertCurrent();
       const result = await service.linkNode(operation.txid, registered.chain.genesisHash); assertCurrent();
       if (result?.linked !== true || result.genesisHash !== registered.chain.genesisHash || result.proTxHash !== operation.txid) throw new Error('Pali did not confirm the registered node.');

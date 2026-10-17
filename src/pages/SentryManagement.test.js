@@ -10,6 +10,7 @@ const HASH = 'a'.repeat(64);
 const FEE_SIGNING = 'same-origin-authorized-psbt-v1';
 const node = { network: 'testnet', proTxHash: HASH, label: 'My test node' };
 const current = { chain: { genesisHash: 'c'.repeat(64), era: 'legacy-v3' }, node: { proTxHash: HASH, operatorPublicKey: 'b'.repeat(96), service: '1.2.3.4:18369', nevmAddress: '' } };
+afterEach(() => { delete window.pali; });
 function makeService() {
   const request = { version: 1, operation: 'updateService', chain: current.chain, transactionHex: 'abcd' };
   return {
@@ -17,6 +18,7 @@ function makeService() {
     nodes: jest.fn().mockResolvedValue([node]), operations: jest.fn().mockResolvedValue([]),
     context: jest.fn().mockResolvedValue(current), watch: jest.fn().mockResolvedValue([node]),
     walletCapabilities: jest.fn().mockResolvedValue({ operations: ['updateService'], feeSigning: FEE_SIGNING }),
+    connectWallet: jest.fn().mockResolvedValue(['tsys-initial']),
     fundingIdentity: jest.fn().mockResolvedValue({ xpub: 'vpub', changeAddress: 'tsys' }),
     prepare: jest.fn().mockResolvedValue({ id: 'op1', prepared: { request, review: { changes: { nevmAddress: { previous: '', next: `0x${'12'.repeat(20)}` } }, feeSatoshis: '1000' } } }),
     signOperation: jest.fn().mockResolvedValue({ transactionHex: 'authorized' }),
@@ -35,6 +37,83 @@ async function editNEVM(service) {
   fireEvent.change(screen.getByLabelText('NEVM address'), { target: { value: 'set' } });
   fireEvent.change(screen.getByLabelText('New NEVM address'), { target: { value: `0x${'12'.repeat(20)}` } });
 }
+test('initial wallet connection is not treated as a change to an already-approved account', async () => {
+  const handlers = {};
+  window.pali = { request: jest.fn(), on: (event, callback) => { handlers[event] = callback; }, removeListener: jest.fn() };
+  const service = makeService();
+  service.connectWallet.mockImplementation(async () => { handlers.accountsChanged?.(['tsys-initial']); return ['tsys-initial']; });
+  // The real capability method also connects when not yet permitted.
+  service.walletCapabilities.mockImplementation(async () => { if (!service.connectWallet.mock.calls.length) handlers.accountsChanged?.(['tsys-initial']); return { operations: ['updateService'], feeSigning: FEE_SIGNING }; });
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('button', { name: 'Review and sign in Pali' })).toBeVisible();
+  expect(service.prepare).toHaveBeenCalledTimes(1);
+  expect(service.connectWallet.mock.invocationCallOrder[0]).toBeLessThan(service.walletCapabilities.mock.invocationCallOrder[0]);
+  expect(screen.queryByText(/wallet account or network changed/i)).not.toBeInTheDocument();
+  delete window.pali;
+});
+test('a delayed initial account notification preserves the verified connection', async () => {
+  const handlers = {};
+  window.pali = { request: jest.fn(), on: (event, callback) => { handlers[event] = callback; }, removeListener: jest.fn() };
+  const service = makeService();
+  service.fundingIdentity.mockImplementation(async () => { handlers.accountsChanged(['tsys-initial']); return { xpub: 'vpub', changeAddress: 'tsys' }; });
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('button', { name: 'Review and sign in Pali' })).toBeVisible();
+  expect(service.prepare).toHaveBeenCalledTimes(1);
+});
+test.each(['accountsChanged', 'chainChanged'])('a real %s after connection stops funding before preparation', async (event) => {
+  const handlers = {};
+  window.pali = { request: jest.fn(), on: (name, callback) => { handlers[name] = callback; }, removeListener: jest.fn() };
+  const service = makeService();
+  service.fundingIdentity.mockImplementation(async () => { handlers[event](event === 'accountsChanged' ? ['another-account'] : '0x39'); return { xpub: 'vpub', changeAddress: 'tsys' }; });
+  await editNEVM(service);fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('wallet account or network changed');
+  expect(service.prepare).not.toHaveBeenCalled();expect(service.signOperation).not.toHaveBeenCalled();
+});
+test.each(['accountsChanged', 'chainChanged'])('a real %s during fee approval never submits its returned signature', async (event) => {
+  const handlers = {};
+  window.pali = { request: jest.fn(), on: (name, callback) => { handlers[name] = callback; }, removeListener: jest.fn() };
+  const service = makeService();let complete;
+  service.signFees.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+  await editNEVM(service);fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
+  await waitFor(() => expect(complete).toEqual(expect.any(Function)));
+  await act(async () => { handlers[event](event === 'accountsChanged' ? ['another-account'] : '0x39');complete('signed'); });
+  expect(await screen.findByRole('alert')).toHaveTextContent('wallet account or network changed');
+  expect(service.submit).not.toHaveBeenCalled();
+});
+test('cancelled initial connection never asks for fee capability or funding', async () => {
+  const service = makeService();service.connectWallet.mockRejectedValue(new Error('User rejected'));
+  await editNEVM(service);fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('User rejected');
+  expect(service.walletCapabilities).not.toHaveBeenCalled();expect(service.fundingIdentity).not.toHaveBeenCalled();expect(service.prepare).not.toHaveBeenCalled();
+});
+test('disconnect clears the old review and a new account can explicitly reconnect without reloading', async () => {
+  const handlers = {};
+  window.pali = { request: jest.fn(), on: (name, callback) => { handlers[name] = callback; }, removeListener: (name, callback) => { if (handlers[name] === callback) delete handlers[name]; } };
+  const service = makeService();
+  await editNEVM(service);fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  act(() => handlers.accountsChanged([]));
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  service.connectWallet.mockImplementationOnce(async () => { handlers.accountsChanged?.(['new-account']); return ['new-account']; });
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(service.prepare).toHaveBeenCalledTimes(2);
+  act(() => handlers.accountsChanged(['third-account']));
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  expect(service.signOperation).not.toHaveBeenCalled();
+});
+test('a rejected reconnect retires the earlier prepared review without signing it', async () => {
+  const service = makeService();await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  service.connectWallet.mockRejectedValueOnce(new Error('User rejected'));
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('User rejected');
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  expect(service.prepare).toHaveBeenCalledTimes(1);expect(service.signOperation).not.toHaveBeenCalled();
+});
 test.each([undefined, false, 'separate-after-operator-authorization'])('an unsupported fee capability blocks preparation before funding or approvals: %p', async (feeSigning) => {
   const service = makeService();
   service.walletCapabilities.mockResolvedValue({ operations: ['updateService'], feeSigning });
@@ -99,7 +178,7 @@ test('linking uses exact node and genesis and does not sign or broadcast', async
   expect(service.linkNode).toHaveBeenCalledWith(HASH, current.chain.genesisHash);
   expect(service.prepare).not.toHaveBeenCalled(); expect(service.signOperation).not.toHaveBeenCalled(); expect(service.submit).not.toHaveBeenCalled();
 });
-test('wallet context change during operator approval invalidates preparation', async () => {
+test.each(['accountsChanged', 'chainChanged'])('wallet %s during operator approval invalidates preparation', async (event) => {
   const handlers = {};
   window.pali = { request: jest.fn(), on: (event, callback) => { handlers[event] = callback; }, removeListener: jest.fn() };
   const service = makeService(); let resolve;
@@ -107,7 +186,7 @@ test('wallet context change during operator approval invalidates preparation', a
   await editNEVM(service); fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
   await waitFor(() => expect(resolve).toEqual(expect.any(Function)));
-  await act(async () => { handlers.accountsChanged([]); resolve({ transactionHex: 'authorized' }); });
+  await act(async () => { handlers[event](event === 'accountsChanged' ? [] : '0x39'); resolve({ transactionHex: 'authorized' }); });
   expect(service.authorize).not.toHaveBeenCalled(); expect(service.submit).not.toHaveBeenCalled();
   delete window.pali;
 });
