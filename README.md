@@ -85,6 +85,23 @@ npm test -- --watchAll=false
 
 ## Full-stack deployment
 
+The `Deploy production` CI job is restricted to successful pushes on this repo's
+exact `master` branch and the branch-restricted GitHub `production` environment.
+It uses a new repository-specific forced-command SSH key, never an administrator
+key. The existing host independently verifies CI/run/SHA, stages and tests the
+commit, and serializes cutovers with backend deployments. See the shared
+[host runner and setup policy](https://github.com/syscoin/sysnode-backend/blob/main/deploy/automation/README.md).
+No PR/fork receives deployment secrets. The same-origin API, live `.env`, backend,
+database and PM2 configuration are preserved; previous frontend artifacts remain
+available for code-only rollback.
+
+Environment secrets: `SYSNODE_DEPLOY_KEY`, `SYSNODE_KNOWN_HOSTS`. Environment
+variables: `SYSNODE_DEPLOY_HOST`, `SYSNODE_DEPLOY_USER`. Restrict the environment to
+`master`, pin the independently verified host key, and test the forced-command
+`status` and rejection paths before enabling automatic rollout. The checked-in
+client accepts only this repository's push event, exact default ref, SHA, run ID
+and attempt. `npm run test:deployment` exercises that boundary.
+
 For a single-host deployment that runs this dashboard alongside the API backend and a Syscoin Core node (mainnet or testnet), see the **Full-stack test deployment** section of the [`sysnode-backend` README](https://github.com/syscoin/sysnode-backend#full-stack-test-deployment-single-host). It covers Node.js setup, Mailpit (open-source SMTP catcher) for verification-email testing, RPC cookie auth against a local `syscoind`, firewall rules, and `pm2` supervision.
 
 ## Project Structure
