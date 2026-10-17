@@ -207,6 +207,13 @@ describe('buildVotePreimage', () => {
     );
   });
 
+  test.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])('rejects inherited enum name %s', (name) => {
+    const base = { collateralHash: 'aa'.repeat(32), collateralIndex: 0,
+      proposalHash: 'bb'.repeat(32), voteOutcome: 'yes', voteSignal: 'funding', time: 1 };
+    expect(() => buildVotePreimage({ ...base, voteOutcome: name })).toThrow(/invalid_vote_outcome/);
+    expect(() => buildVotePreimage({ ...base, voteSignal: name })).toThrow(/unsupported_vote_signal/);
+  });
+
   test('signatureHash double-SHA256s the preimage', () => {
     const fields = {
       collateralHash: 'aa'.repeat(32),

@@ -6,6 +6,7 @@ import { sentryService } from '../lib/sentryService';
 import { governanceService } from '../lib/governanceService';
 import { buildPaliVoteRequest, PALI_VOTE_LIMIT, paliVotingError, publicWatchedVotingNodes, requireWalletVotingCapability, validatePaliVoteResponse, validateVotingCapabilities, voteRelayResults } from '../lib/paliVoting';
 import VotingDialog from './VotingDialog';
+import { isUnknownVote, reconciledVoteStatus } from '../lib/voteSubmissionStatus';
 
 const entryId = (entry) => `${entry.collateralHash}:${entry.collateralIndex}`;
 
@@ -20,6 +21,7 @@ export default function PaliVoteModal({ proposal, onClose, onBack, onReloadPropo
   const [batch, setBatch] = useState(null);
   const [results, setResults] = useState([]);
   const [verifiedName, setVerifiedName] = useState('');
+  const [checkedStatus, setCheckedStatus] = useState(false);
   const generation = useRef(0);
   const alive = useRef(true);
   const locked = useRef(false);
@@ -42,6 +44,7 @@ export default function PaliVoteModal({ proposal, onClose, onBack, onReloadPropo
   const load = useCallback(async () => {
     const current = run(); if (!current) return;
     setPhase('loading'); setError(''); setCapabilities(null); setBatch(null); setResults([]);
+    setCheckedStatus(false);
     try {
       const [caps, watched] = await Promise.all([service.capabilities(), service.nodes()]);
       if (!current()) return;
@@ -105,28 +108,27 @@ export default function PaliVoteModal({ proposal, onClose, onBack, onReloadPropo
       const status = await votesService.reconcileReceipts(batch.proposalHash, { refresh: true });
       if (!current()) return;
       if (status.reconcileError || !Array.isArray(status.receipts)) throw new Error('reconcile_failed');
+      setCheckedStatus(true);
       const next = batch.entries.map((entry) => {
-        const receipt = status.receipts.find((row) => row.collateralHash?.toLowerCase() === entry.collateralHash && row.collateralIndex === entry.collateralIndex && row.proposalHash?.toLowerCase() === batch.proposalHash && row.voteOutcome === batch.voteOutcome && row.voteTime === batch.time);
-        const ok = receipt?.status === 'relayed' || receipt?.status === 'confirmed';
-        return { ...entry, ok, confirmed: receipt?.status === 'confirmed', error: ok ? '' : status.reconciled === true ? 'not_relayed' : 'status_unknown' };
+        return reconciledVoteStatus(results.find((row) => entryId(row) === entryId(entry)) || entry, batch, status);
       });
       setResults(next);
-      if (next.some((entry) => !entry.ok) && status.reconciled !== true) throw new Error('reconcile_unavailable');
+      if (next.some(isUnknownVote)) throw new Error('reconcile_unavailable');
       setPhase('done');
     } catch (_) { if (current()) { setPhase('unknown'); setError('Status could not be checked yet. Wait and check again; no votes were automatically resubmitted.'); } }
     finally { if (current()) locked.current = false; }
   }
   async function retryFailed() {
     if (!batch) return;
-    const entries = results.filter((entry) => !entry.ok && entry.error !== 'status_unknown').map(({ collateralHash, collateralIndex, voteSig }) => ({ collateralHash, collateralIndex, voteSig }));
+    const entries = results.filter((entry) => !entry.ok && !isUnknownVote(entry) && !entry.superseded).map(({ collateralHash, collateralIndex, voteSig }) => ({ collateralHash, collateralIndex, voteSig }));
     if (!entries.length) return;
     const current = run(); if (!current) return;
     try { await relay({ ...batch, entries }, current); }
     finally { if (current()) locked.current = false; }
   }
   if (!isAuthenticated || initialScope.current !== scope) return null;
-  const hasUnknown = phase === 'unknown' || results.some((entry) => entry.error === 'status_unknown');
-  const failed = results.filter((entry) => !entry.ok).length;
+  const hasUnknown = phase === 'unknown' || results.some(isUnknownVote);
+  const failed = results.filter((entry) => !entry.ok && !entry.superseded).length;
   return <VotingDialog title="Vote with Pali" onClose={onClose}>
     <p className="pali-vote__proposal">{verifiedName || String(proposal.title || proposal.name || 'Proposal').slice(0, 160)}</p>
     <p className="vote-modal__hint">Voting keys stay in Pali. This website receives only approved vote signatures, never your private keys.</p>
@@ -147,12 +149,14 @@ export default function PaliVoteModal({ proposal, onClose, onBack, onReloadPropo
       <p><strong>{batch.voteOutcome.toUpperCase()}</strong> · {results.filter((entry) => entry.ok).length} of {batch.entries.length} relayed</p>
       {phase === 'submitting' && <p role="status">Relaying your approved votes…</p>}
       {phase === 'checking' && <p role="status">Checking saved receipts and the chain…</p>}
-      <ul className="pali-vote__nodes">{results.map((entry) => <li key={entryId(entry)}><code>{entry.collateralHash.slice(0, 12)}…:{entry.collateralIndex}</code><span>{entry.confirmed ? 'Confirmed on-chain.' : entry.ok ? 'Relayed; confirmation pending.' : entry.error === 'status_unknown' ? 'Checking required.' : 'Not relayed.'}</span></li>)}</ul>
+      <ul className="pali-vote__nodes">{results.map((entry) => <li key={entryId(entry)}><code>{entry.collateralHash.slice(0, 12)}…:{entry.collateralIndex}</code><span>{entry.superseded ? 'Another on-chain vote superseded this request.' : entry.confirmed ? 'Confirmed on-chain.' : entry.ok ? 'Relayed; confirmation pending.' : isUnknownVote(entry) ? 'Checking required.' : 'Not relayed.'}</span></li>)}</ul>
       <div className="pali-vote__actions">
         <button className="button button--ghost" type="button" disabled={busy} onClick={checkStatus}>Check status</button>
         {phase === 'done' && !!failed && !hasUnknown && <button className="button button--primary" type="button" disabled={busy} onClick={retryFailed}>Retry {failed} failed vote{failed === 1 ? '' : 's'}</button>}
         {phase === 'done' && !failed && <button className="button button--ghost" type="button" onClick={load}>Prepare another vote</button>}
+        {checkedStatus && hasUnknown && <button className="button button--ghost" type="button" onClick={load}>Review a new vote</button>}
       </div>
+      {checkedStatus && hasUnknown && <p className="vote-modal__hint">The earlier vote may still reach the network. A new vote requires another explicit Pali approval; checking did not prove the previous request failed.</p>}
       <p className="vote-modal__hint">Retries use the identical approved signatures. Closing does not cancel votes already relayed; receipts remain in your governance activity.</p>
     </section>}
     {!busy && !batch && onBack && <button type="button" className="button button--ghost pali-vote__back" onClick={onBack}>Choose another key store</button>}

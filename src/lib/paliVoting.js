@@ -85,7 +85,7 @@ export function validatePaliVoteResponse(value, request, context) {
 export function voteRelayResults(response, entries) {
   return entries.map((entry) => {
     const result = response?.results?.find((row) => row.collateralHash?.toLowerCase() === entry.collateralHash && row.collateralIndex === entry.collateralIndex);
-    return { ...entry, ok: result?.ok === true, error: result?.ok === true ? '' : result?.error || 'status_unknown' };
+    return { ...entry, ok: result?.ok === true, error: result?.ok === true ? '' : result?.error || 'status_unknown', ...(result?.uncertain === true ? { uncertain: true } : {}), ...(result?.notSubmitted === true ? { notSubmitted: true } : {}) };
   });
 }
 

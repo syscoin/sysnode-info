@@ -68,6 +68,15 @@ const RECEIPTS_RECENT_PATH = '/gov/receipts/recent';
 const HEX64_RE = /^[0-9a-fA-F]{64}$/;
 const MAX_VOTE_ENTRIES_PER_REQUEST = 256;
 
+function summarizeVotes(results) {
+  return { results,
+    accepted: results.filter((row) => row.ok === true).length,
+    unknown: results.filter((row) => row.uncertain === true).length,
+    notSubmitted: results.filter((row) => row.notSubmitted === true).length,
+    rejected: results.filter((row) => !row.ok && !row.uncertain && !row.notSubmitted).length,
+  };
+}
+
 function govError(code, status, cause) {
   const e = new Error(code);
   e.code = code;
@@ -120,16 +129,16 @@ function normalizeSubmitError(err) {
   }
 }
 
-function failedVoteResults(chunks, startIndex, code) {
+function failedVoteResults(chunks, startIndex, code, uncertain) {
   return chunks
     .slice(startIndex)
-    .flat()
-    .map((entry) => ({
+    .flatMap((chunk, offset) => chunk.map((entry) => ({
       collateralHash: entry.collateralHash,
       collateralIndex: entry.collateralIndex,
       ok: false,
-      error: code,
-    }));
+      error: offset === 0 ? (uncertain ? 'submission_unknown' : code) : 'not_submitted',
+      ...(offset === 0 && uncertain ? { uncertain: true } : { notSubmitted: true }),
+    })));
 }
 
 export function createGovernanceService(client = defaultClient) {
@@ -201,8 +210,7 @@ export function createGovernanceService(client = defaultClient) {
       throw govError('no_entries', 0);
     }
     const chunks = chunkArray(entries, MAX_VOTE_ENTRIES_PER_REQUEST);
-    const merged = { accepted: 0, rejected: 0, results: [] };
-    let completedChunks = 0;
+    const merged = { results: [] };
     for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
       const chunk = chunks[chunkIndex];
       try {
@@ -212,34 +220,37 @@ export function createGovernanceService(client = defaultClient) {
           voteSignal,
           time,
           entries: chunk,
-        });
+        }, { timeout: 40000 }); // Backend batch bound is 30s; retain transport margin.
         const data = res.data || {};
-        merged.accepted += Number.isInteger(data.accepted)
-          ? data.accepted
-          : 0;
-        merged.rejected += Number.isInteger(data.rejected)
-          ? data.rejected
-          : 0;
-        if (Array.isArray(data.results)) {
-          merged.results.push(...data.results);
+        for (const entry of chunk) {
+          const rows = Array.isArray(data.results) ? data.results.filter((row) =>
+            row.collateralHash?.toLowerCase() === entry.collateralHash.toLowerCase() && row.collateralIndex === entry.collateralIndex) : [];
+          const row = rows.length === 1 ? rows[0] : undefined;
+          merged.results.push(row && typeof row.ok === 'boolean'
+            ? { ...row, ...(row.error === 'submission_unknown' ? { uncertain: true } : {}) }
+            : { collateralHash: entry.collateralHash, collateralIndex: entry.collateralIndex, ok: false, error: 'submission_unknown', uncertain: true });
         }
-        completedChunks += 1;
       } catch (err) {
         const normalized = normalizeSubmitError(err);
-        if (completedChunks === 0) {
+        const uncertain = !Number.isInteger(normalized.status) ||
+          normalized.status === 0 || normalized.status >= 500;
+        if (!uncertain && chunkIndex === 0) {
+          normalized.notSubmitted = true;
           throw normalized;
         }
+        // Even the first failed request may have reached Core. Return exact
+        // attempted/never-attempted rows instead of losing that distinction.
         const failures = failedVoteResults(
           chunks,
           chunkIndex,
-          normalized.code || 'submit_failed'
+          normalized.code || 'submit_failed',
+          uncertain
         );
-        merged.rejected += failures.length;
         merged.results.push(...failures);
-        return merged;
+        return summarizeVotes(merged.results);
       }
     }
-    return merged;
+    return summarizeVotes(merged.results);
   }
 
   // Fetch the caller's stored vote receipts for a single proposal.

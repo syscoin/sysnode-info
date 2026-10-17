@@ -2172,7 +2172,8 @@
   color: #0d766d;
 }
 
-.cohort-chip--pending {
+.cohort-chip--pending,
+.cohort-chip--checking {
   background: rgba(99, 135, 203, 0.14);
   color: #2f4b8a;
 }

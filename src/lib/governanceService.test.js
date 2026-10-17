@@ -179,7 +179,8 @@ describe('governanceService.submitVote', () => {
 
     expect(adapter.history.post).toHaveLength(2);
     expect(out.accepted).toBe(256);
-    expect(out.rejected).toBe(257);
+    expect(out.rejected).toBe(0);
+    expect(out.notSubmitted).toBe(257);
     expect(out.results).toHaveLength(513);
     expect(out.results[255]).toMatchObject({ collateralIndex: 255, ok: true });
     expect(out.results[256]).toMatchObject({
@@ -190,11 +191,12 @@ describe('governanceService.submitVote', () => {
     expect(out.results[512]).toMatchObject({
       collateralIndex: 512,
       ok: false,
-      error: 'rate_limited',
+      error: 'not_submitted',
+      notSubmitted: true,
     });
   });
 
-  test('tracks successful chunks even if a success body omits results', async () => {
+  test('missing per-entry results remain unknown despite a success count', async () => {
     const { service, adapter } = makeService();
     const entries = Array.from({ length: 257 }, (_, i) => ({
       collateralHash: H64(i >= 256 ? 'c' : 'b'),
@@ -213,25 +215,36 @@ describe('governanceService.submitVote', () => {
     const out = await service.submitVote(validVoteBody({ entries }));
 
     expect(adapter.history.post).toHaveLength(2);
-    expect(out.accepted).toBe(256);
-    expect(out.rejected).toBe(1);
-    expect(out.results).toEqual([
-      {
+    expect(out.accepted).toBe(0);
+    expect(out.unknown).toBe(256);
+    expect(out.rejected).toBe(0);
+    expect(out.notSubmitted).toBe(1);
+    expect(out.results[256]).toEqual({
         collateralHash: H64('c'),
         collateralIndex: 256,
         ok: false,
         error: 'rate_limited',
-      },
-    ]);
+        notSubmitted: true,
+      });
   });
 
   test('maps 429 too_many_vote_requests to rate_limited', async () => {
     const { service, adapter } = makeService();
     adapter.onPost('/gov/vote').reply(429, { error: 'too_many_vote_requests' });
     await expect(service.submitVote(validVoteBody())).rejects.toMatchObject({
-      code: 'rate_limited',
-      status: 429,
+      code: 'rate_limited', status: 429, notSubmitted: true,
     });
+  });
+
+  test('first chunk timeout distinguishes attempted unknown from later never-sent chunks', async () => {
+    const { service, adapter } = makeService();
+    const entries = Array.from({ length: 257 }, (_, i) => ({ collateralHash: H64('b'), collateralIndex: i, voteSig: SIG }));
+    adapter.onPost('/gov/vote').timeout();
+    const result = await service.submitVote(validVoteBody({ entries }));
+    expect(adapter.history.post).toHaveLength(1);
+    expect(adapter.history.post[0].timeout).toBe(40000);
+    expect(result.results[0]).toMatchObject({ error: 'submission_unknown', uncertain: true });
+    expect(result.results[256]).toMatchObject({ error: 'not_submitted', notSubmitted: true });
   });
 
   test('rejects invalid proposalHash locally (no request sent)', async () => {

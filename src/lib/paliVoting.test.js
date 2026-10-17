@@ -37,3 +37,8 @@ test('missing relay result is unknown, never a success', () => {
   const entry = { collateralHash: hash, collateralIndex: 0, voteSig: 'signature' };
   expect(voteRelayResults({ results: [] }, [entry])).toEqual([{ ...entry, ok: false, error: 'status_unknown' }]);
 });
+test('uncertain and never-submitted rows preserve distinct retry information', () => {
+  const entry = { collateralHash: hash, collateralIndex: 0, voteSig: 'signature' };
+  expect(voteRelayResults({ results: [{ ...entry, ok: false, error: 'submission_unknown', uncertain: true }] }, [entry])[0]).toMatchObject({ uncertain: true, error: 'submission_unknown' });
+  expect(voteRelayResults({ results: [{ ...entry, ok: false, error: 'not_submitted', notSubmitted: true }] }, [entry])[0]).toMatchObject({ notSubmitted: true, error: 'not_submitted' });
+});

@@ -287,7 +287,19 @@ describe('GovernanceActivity', () => {
     expect(screen.getByText('Submitted')).toBeInTheDocument();
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.getByText('Voted yes')).toBeInTheDocument();
-    expect(screen.getByText('Voted no')).toBeInTheDocument();
-    expect(screen.getByText('Abstained')).toBeInTheDocument();
+    expect(screen.getByText('Requested no')).toBeInTheDocument();
+    expect(screen.getByText('Requested abstain')).toBeInTheDocument();
+  });
+
+  test('unknown submission is a request to check, not an accepted vote', async () => {
+    const svc = makeService({ fetchRecentReceipts: jest.fn().mockResolvedValue({
+      receipts: [baseReceipt({ status: 'submission_unknown', voteOutcome: 'no', verifiedAt: null })],
+    }) });
+    render(<GovernanceActivity governanceService={svc} proposalsByHash={{}} />);
+    await waitFor(() => expect(screen.getByTestId('gov-activity-item')).toBeInTheDocument());
+    expect(screen.getByText('Check status')).toBeInTheDocument();
+    expect(screen.getByText('Requested no')).toBeInTheDocument();
+    expect(screen.queryByText('Voted no')).not.toBeInTheDocument();
+    expect(screen.queryByText('On-chain')).not.toBeInTheDocument();
   });
 });

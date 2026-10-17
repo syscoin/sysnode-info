@@ -10,7 +10,7 @@
 //
 //                  Shape (see lib/voteReceipts.js summaryForUser):
 //                    { proposalHash, total, relayed, confirmed,
-//                      stale, failed,
+//                      stale, failed, unknown,
 //                      confirmedYes, confirmedNo, confirmedAbstain,
 //                      latestSubmittedAt, latestVerifiedAt }
 //
@@ -34,9 +34,9 @@
 //
 // Design notes:
 //
-//   * Priority order follows the UX grief hierarchy — if there's a
-//     cross-device vote change (`stale`) we tell the user first
-//     because it affects intent. Then failures (actionable on their
+//   * Priority order follows the UX grief hierarchy — if there's an
+//     uncertain submission we tell the user first: it needs a status
+//     check, not another signature. Then stale/failed votes (actionable on their
 //     side), then pending confirmations, then success, then
 //     "not voted" (informational only).
 //
@@ -124,6 +124,7 @@ export function cohortChip(summaryRow, ownedCount) {
   const relayed = toNonNegativeInt(summaryRow.relayed);
   const stale = toNonNegativeInt(summaryRow.stale);
   const failed = toNonNegativeInt(summaryRow.failed);
+  const unknown = toNonNegativeInt(summaryRow.unknown);
   const total = toNonNegativeInt(summaryRow.total);
 
   // Degenerate row: every status count (and total) coerced to 0.
@@ -132,7 +133,7 @@ export function cohortChip(summaryRow, ownedCount) {
   // against upstream bugs and corrupted payloads. Fall through to
   // the "no summary row" branch so the user still gets a sensible
   // "Not voted" chip when they own MNs.
-  if (confirmed + relayed + stale + failed === 0 && total === 0) {
+  if (confirmed + relayed + stale + failed + unknown === 0 && total === 0) {
     return cohortChip(null, ownedCount);
   }
   const confirmedYes = toNonNegativeInt(summaryRow.confirmedYes);
@@ -145,17 +146,27 @@ export function cohortChip(summaryRow, ownedCount) {
     confirmedAbstain,
   });
 
-  // Stale first — a cross-device vote change is the only state that
-  // implies the user's *intent* might be out of sync. The detail
-  // copy is deliberately blunt because the fix is non-obvious.
+  // Unknown is neither success nor rejection. In particular it must not
+  // reach the partial-cohort branch merely because it has a receipt row.
+  if (unknown > 0) {
+    return {
+      kind: 'checking',
+      label: 'Check status',
+      detail:
+        `${unknown} ${pluralVote(unknown)} ${unknown === 1 ? 'has an unknown submission result' : 'have unknown submission results'}. ` +
+        'Open the proposal and check status before retrying.',
+    };
+  }
+
+  // Stale means absent after the grace period, not proof that another
+  // device changed the vote or that this submission ever reached Core.
   if (stale > 0) {
     return {
-      kind: 'changed',
-      label: 'Changed',
+      kind: 'needs-retry',
+      label: 'Not confirmed',
       detail:
-        `${stale} of your ${pluralVote(stale)} were changed elsewhere ` +
-        `(another device, or removed by the network). Re-open this ` +
-        `proposal to re-submit your intended vote.`,
+        `${stale} of your ${pluralVote(stale)} were not confirmed on chain. ` +
+        'Open the proposal to review the current status before retrying.',
     };
   }
 
@@ -226,7 +237,7 @@ export function cohortChip(summaryRow, ownedCount) {
     };
   }
 
-  // Non-zero total but no confirmed / relayed / stale / failed is
+  // Non-zero total but no recognized status is
   // logically unreachable (status is a closed set), but don't crash
   // if the backend ships a new status code we haven't taught this
   // helper about yet.

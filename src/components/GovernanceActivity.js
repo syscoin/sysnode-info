@@ -106,6 +106,7 @@ const STATUS_LABEL = {
   relayed: 'Submitted',
   stale: 'Needs retry',
   failed: 'Failed',
+  submission_unknown: 'Check status',
 };
 
 const STATUS_CLASS = {
@@ -113,6 +114,7 @@ const STATUS_CLASS = {
   relayed: 'gov-activity__status gov-activity__status--relayed',
   stale: 'gov-activity__status gov-activity__status--stale',
   failed: 'gov-activity__status gov-activity__status--failed',
+  submission_unknown: 'gov-activity__status gov-activity__status--stale',
 };
 
 function shortHash(h) {
@@ -132,7 +134,10 @@ function lastSeenMs(receipt) {
   return null;
 }
 
-function outcomeLabel(outcome) {
+function outcomeLabel(outcome, status) {
+  if (status !== 'confirmed') {
+    return ['yes', 'no', 'abstain'].includes(outcome) ? `Requested ${outcome}` : 'Requested vote';
+  }
   return OUTCOME_LABEL[outcome] || 'Vote';
 }
 
@@ -339,7 +344,7 @@ export default function GovernanceActivity({
                 </div>
                 <div className="gov-activity__item-meta">
                   <span className="gov-activity__outcome">
-                    {outcomeLabel(r.voteOutcome)}
+                    {outcomeLabel(r.voteOutcome, r.status)}
                   </span>
                   {!proposal ? (
                     <span
