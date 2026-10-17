@@ -37,6 +37,10 @@ test('bounded batch import keeps per-line results and failed-only retry usable a
   await expect(open).toBeEnabled();
   await open.click();
   const panel = page.getByRole('region', { name: 'Import nodes' });
+  await page.getByLabel('Public ProTx IDs, one per line').fill(`${FIRST}, ${'12'.repeat(32)}`);
+  await expect(page.getByText('Use a short human-readable label, never a private key or WIF.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check node IDs' })).toBeDisabled();
+  expect(lookups).toHaveLength(0); expect(writes).toHaveLength(0);
   await page.getByLabel('Public ProTx IDs, one per line').fill(`${FIRST}, ${'LongNodeLabel'.repeat(5)}\nnot-an-id\n${FIRST}, duplicate\n${SECOND}, Retry node`);
   await page.getByRole('button', { name: 'Check node IDs' }).click();
   await expect(page.getByRole('button', { name: 'Watch selected nodes (1)' })).toBeEnabled();

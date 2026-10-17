@@ -25,6 +25,16 @@ test('private-like malformed input and invalid labels never enter request projec
 test('voting discovery exports only public node ids and labels, never custody material', () => {
   expect(publicVotingNodes([{ proTxHash: hash, label: 'My node', wif: 'secret', keyId: 'secret-id', address: 'address' }, { proTxHash: hash }, { proTxHash: 'invalid', wif: 'secret' }])).toEqual([{ proTxHash: hash, label: 'My node' }]);
 });
+test('private-key-shaped labels are never previewed or exported as public metadata', () => {
+  const wif = 'KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn';
+  for (const secret of [wif, '12'.repeat(32), `0x${'ab'.repeat(32)}`]) {
+    const rows = parseNodeImport(`${hash}, Node ${secret}`, 'testnet').rows;
+    expect(rows[0].status).toBe('invalid');
+    expect(JSON.stringify(rows)).not.toContain(secret);
+    expect(publicVotingNodes([{ proTxHash: hash, label: secret, wif: secret }])).toEqual([{ proTxHash: hash, label: '' }]);
+    expect(publicVotingNodes([{ proTxHash: hash, label: `${'Node '.repeat(12)}${secret}`, wif: secret }])).toEqual([{ proTxHash: hash, label: '' }]);
+  }
+});
 test('verified context binds exact node, network and protocol', () => {
   const capabilities = { chain: { genesisHash: other, era: 'legacy-v3' } };
   const context = { chain: capabilities.chain, node: { proTxHash: hash, service: '1.2.3.4:18369', nevmAddress: '', wif: 'secret' } };

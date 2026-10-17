@@ -52,6 +52,13 @@ test('fresh duplicate detection never overwrites an existing watch label', async
   await screen.findByText('Already watched');
   expect(service.context).not.toHaveBeenCalled(); expect(service.watch).not.toHaveBeenCalled();
 });
+test('a private-key-shaped label cannot be checked or sent to the backend', () => {
+  const { service } = setup();
+  fireEvent.change(screen.getByLabelText('Public ProTx IDs, one per line'), { target: { value: `${hash}, ${'12'.repeat(32)}` } });
+  expect(screen.getByText('Use a short human-readable label, never a private key or WIF.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Check node IDs' })).toBeDisabled();
+  expect(service.context).not.toHaveBeenCalled(); expect(service.watch).not.toHaveBeenCalled();
+});
 test('partial lookup failures preserve successes and retry only failed lookups', async () => {
   const { service } = setup();
   service.context.mockImplementation((network, id) => id === other ? Promise.reject({ status: 503 }) : Promise.resolve(context(id)));

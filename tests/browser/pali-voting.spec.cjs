@@ -25,7 +25,8 @@ async function setup(page, { unknown = false, missingKey = false } = {}) {
   await page.route('**/auth/me', (route) => route.fulfill({ json: { user: { id: 1, email: 'fixture@example.test', emailVerified: true, saltV: 'a'.repeat(32) } } }));
   await page.route('**/vault', (route) => route.fulfill({ json: { empty: true } }));
   await page.route('**/mnstats', (route) => route.fulfill({ json: { mn_stats: { enabled: 10 }, superblock_stats: { budget: 100000 } } }));
-  await page.route('**/govlist', (route) => route.fulfill({ json: [{ Key: vector.proposalHash, Hash: vector.proposalHash, ObectType: 1, name: 'A deliberately long funding proposal name for narrow-window layout checks', title: 'A deliberately long funding proposal name for narrow-window layout checks', AbsoluteYesCount: 1, YesCount: 2, NoCount: 1, payment_amount: 10 }] }));
+  // Core's object Key is the voting parent; nested Hash is a distinct DataHash.
+  await page.route('**/govlist', (route) => route.fulfill({ json: [{ Key: vector.proposalHash, Hash: 'd'.repeat(64), ObectType: 1, name: 'A deliberately long funding proposal name for narrow-window layout checks', title: 'A deliberately long funding proposal name for narrow-window layout checks', AbsoluteYesCount: 1, YesCount: 2, NoCount: 1, payment_amount: 10 }] }));
   await page.route('**/gov/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/vote')) {

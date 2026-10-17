@@ -3,6 +3,7 @@ import { normalizeProTxHash } from './sentryService';
 export const NODE_IMPORT_LIMIT = 20;
 export const NODE_IMPORT_MAX_LENGTH = 16384;
 export const nodeImportId = (network, hash) => `${network}:${hash.toLowerCase()}`;
+const privateKeyShapedLabel = (label) => /[0-9a-fA-F]{64}|[5KL9c][1-9A-HJ-NP-Za-km-z]{50,51}/.test(label);
 
 // Keep invalid input out of the preview and all requests. In particular, do
 // not auto-detect private-key formats in the public node-ID input.
@@ -28,6 +29,9 @@ export function parseNodeImport(text, network, watched = []) {
     if (label.length > 80 || [...label].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
       rows.push({ ...row, proTxHash, status: 'invalid', message: 'Use a label of at most 80 characters without control characters.' }); continue;
     }
+    if (privateKeyShapedLabel(label)) {
+      rows.push({ ...row, proTxHash, status: 'invalid', message: 'Use a short human-readable label, never a private key or WIF.' }); continue;
+    }
     const id = nodeImportId(network, proTxHash);
     if (seen.has(id)) rows.push({ ...row, proTxHash, label, status: 'duplicate', message: 'Duplicate in this batch.' });
     else if (existing.has(id)) rows.push({ ...row, proTxHash, label, status: 'existing', message: 'Already watched. Its existing label will be kept.' });
@@ -46,7 +50,8 @@ export function publicVotingNodes(owned) {
     try { proTxHash = normalizeProTxHash(node.proTxHash); } catch { return []; }
     if (seen.has(proTxHash)) return [];
     seen.add(proTxHash);
-    return [{ proTxHash, label: String(node.label || '').replace(/[\r\n]/g, ' ').slice(0, 80) }];
+    const label = String(node.label || '').replace(/[\r\n]/g, ' ');
+    return [{ proTxHash, label: privateKeyShapedLabel(label) ? '' : label.slice(0, 80) }];
   });
 }
 

@@ -19,7 +19,7 @@ function setup(overrides = {}, configure) {
   };
   const votesService = { submitVote: jest.fn().mockResolvedValue({ results: [{ collateralHash: fixture.vector.collateralHash, collateralIndex: fixture.vector.collateralIndex, ok: true }] }), reconcileReceipts: jest.fn().mockResolvedValue({ receipts: [], reconciled: true }) };
   configure?.(service, votesService);
-  const props = { proposal: { Key: fixture.request.proposalHash, name: 'Funding' }, service, votesService, onClose: jest.fn(), onBack: jest.fn(), ...overrides };
+  const props = { proposal: { Key: fixture.request.proposalHash, Hash: 'd'.repeat(64), name: 'Funding' }, service, votesService, onClose: jest.fn(), onBack: jest.fn(), ...overrides };
   const view = render(<MemoryRouter><PaliVoteModal {...props} /></MemoryRouter>);
   return { ...view, props, service, votesService, fixture };
 }
