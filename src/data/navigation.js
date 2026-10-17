@@ -1,6 +1,7 @@
 export const NAV_LINKS = [
   { label: 'Overview', to: '/', exact: true },
   { label: 'Network', to: '/network' },
+  { label: 'My nodes', to: '/nodes' },
   { label: 'Governance', to: '/governance' },
   { label: 'Learn', to: '/learn' },
   { label: 'Setup', to: '/setup' },

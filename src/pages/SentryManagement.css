@@ -1,0 +1,19 @@
+.sentry-management { max-width: 960px; display: grid; gap: 24px; }
+.sentry-management .auth-card { min-width: 0; }
+.sentry-management form { display: grid; gap: 18px; }
+.sentry-management label { display: grid; gap: 8px; font-weight: 600; }
+.sentry-management input, .sentry-management select { width: 100%; min-width: 0; padding: 12px; min-height: 44px; border-radius: 8px; border: 1px solid #a0a5ae; font: inherit; color: #14202e; background: #fff; }
+.sentry-management input:focus-visible, .sentry-management select:focus-visible { outline: 3px solid #2463cf; outline-offset: 2px; }
+.sentry-management dd, .sentry-management code { overflow-wrap: anywhere; margin: 4px 0 16px; }
+.sentry-management code { display: block; }
+.sentry-management dt { font-weight: 600; }
+.sentry-management li { margin: 10px 0; }
+.sentry-node-list { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; }
+.sentry-node-list small { display: block; }
+.sentry-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.sentry-management .button { min-height: 44px; white-space: normal; }
+.sentry-management summary { cursor: pointer; min-height: 44px; }
+.sentry-management summary h2 { display: inline; }
+.sentry-management summary:focus-visible { outline: 3px solid #2463cf; outline-offset: 4px; }
+.sentry-management details[open] summary { margin-bottom: 20px; }
+@media (max-width: 480px) { .sentry-actions .button { width: 100%; } .sentry-management .auth-card { padding: 20px 16px; } }
