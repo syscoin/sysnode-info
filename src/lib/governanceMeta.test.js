@@ -16,6 +16,7 @@ describe('closingChip', () => {
     expect(closingChip({ votingDeadline: undefined, nowMs: DEADLINE_MS })).toBeNull();
     expect(closingChip({ votingDeadline: 0, nowMs: DEADLINE_MS })).toBeNull();
     expect(closingChip({ votingDeadline: 'soon', nowMs: DEADLINE_MS })).toBeNull();
+    expect(closingChip({ votingDeadline: 'November 99th 2023, 10:13:20 pm', nowMs: DEADLINE_MS })).toBeNull();
   });
 
   test('returns null when the deadline has already passed', () => {
@@ -34,13 +35,32 @@ describe('closingChip', () => {
     ).toBeNull();
   });
 
+  test('accepts the actual dashboard UTC string without treating proposal epochs as milliseconds', () => {
+    const chip = closingChip({
+      votingDeadline: 'November 14th 2023, 10:13:20 pm',
+      nowMs: DEADLINE_MS - 3 * 86400 * 1000,
+    });
+    expect(chip.label).toBe('Selection in 3d');
+    expect(chip.remainingSeconds).toBe(3 * 86400);
+  });
+
+  test.each(['2023-11-14T22:13:20Z', '2023-11-14T23:13:20+01:00'])(
+    'preserves an explicit timezone: %s',
+    (votingDeadline) => {
+      const chip = closingChip({ votingDeadline, nowMs: DEADLINE_MS - 3 * 86400 * 1000 });
+      expect(chip.label).toBe('Selection in 3d');
+      expect(chip.remainingSeconds).toBe(3 * 86400);
+    }
+  );
+
   test('labels the "soon" tier when the window is under a week but not urgent', () => {
     const threeDays = 3 * 24 * 60 * 60;
     const now = DEADLINE_MS - threeDays * 1000;
     const chip = closingChip({ votingDeadline: DEADLINE_SEC, nowMs: now });
     expect(chip).not.toBeNull();
     expect(chip.kind).toBe('closing-soon');
-    expect(chip.label).toMatch(/Closes in 3d/);
+    expect(chip.label).toBe('Selection in 3d');
+    expect(chip.detail).toMatch(/not a deadline for submitting proposal votes/i);
     expect(chip.remainingSeconds).toBe(threeDays);
   });
 
@@ -50,7 +70,8 @@ describe('closingChip', () => {
     const chip = closingChip({ votingDeadline: DEADLINE_SEC, nowMs: now });
     expect(chip).not.toBeNull();
     expect(chip.kind).toBe('closing-urgent');
-    expect(chip.label).toMatch(/Closes in 1h/);
+    expect(chip.label).toBe('Selection in 1h');
+    expect(chip.detail).toMatch(/not a deadline for submitting proposal votes/i);
   });
 
   test('tier boundary: exactly CLOSING_URGENT_SECONDS away still reads as urgent', () => {

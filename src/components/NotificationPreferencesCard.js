@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 //
 // The only bucket wired today is `voteReminders.enabled`, which
 // controls whether the backend's reminderDispatcher sends a user a
-// "proposals closing soon" email once per cycle.
+// governance reminder emails (at most twice per cycle).
 //
 // Default value: the backend treats an omitted flag as `enabled:true`
 // (see sysnode-backend/lib/users.js:listWithRemindersEnabled). We
@@ -235,10 +235,8 @@ export default function NotificationPreferencesCard({
         <div className="auth-card__header-text">
           <h2 className="auth-card__title">Notifications</h2>
           <p className="auth-card__hint">
-            Governance moves on-chain whether you're watching or not.
-            Enable reminders and we'll email you a few days before
-            each superblock — and once more in the final 24 hours if
-            you haven't voted yet.
+            Governance reminders are enabled by default and timed before
+            estimated payout selection. You can turn them off below.
           </p>
         </div>
         <button
@@ -283,8 +281,9 @@ export default function NotificationPreferencesCard({
                     Governance vote reminders
                   </span>
                   <span className="auth-toggle__hint">
-                    At most two emails per governance cycle. Skipped
-                    entirely once you've voted that cycle.
+                    Up to two scheduled reminders per governance cycle. Votes recorded
+                    through your Sysnode account suppress reminders. Votes
+                    cast elsewhere may not be detected.
                   </span>
                 </span>
               </label>

@@ -339,7 +339,7 @@ export default function Governance() {
   // the closing-window chip. Re-computing once per minute keeps the
   // label accurate across long-lived sessions (e.g. "closing-soon"
   // → "closing-urgent" transition at the 48h boundary, or the chip
-  // disappearing once the deadline passes) without hammering React
+  // disappearing once selection may have begun) without hammering React
   // — the chip rounds to minute / hour / day tiers, so sub-minute
   // drift is invisible anyway.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -405,15 +405,13 @@ export default function Governance() {
     [proposals, enabledCount, superblockStats]
   );
 
-  // Per-row closing chip depends on the superblock deadline AND
+  // Per-row selection chip depends on the estimated trigger-selection time AND
   // the current time, so it's memoized on both and re-derived once
   // per minute via the `nowMs` ticker above. That ticker is what
   // keeps long-lived sessions honest: the chip transitions from
   // closing-soon → closing-urgent at the 48h boundary and
-  // disappears entirely once the deadline passes, even if the
-  // stats object isn't refreshed. Any hard-timed behaviour (e.g.
-  // disabling the vote button at the deadline) still lives on the
-  // server; this label is purely advisory.
+  // disappears once that estimate passes, even if the stats object isn't
+  // refreshed. This is advisory, not a proposal-vote cutoff.
   const closing = useMemo(
     () =>
       closingChip({
@@ -556,7 +554,7 @@ export default function Governance() {
     <main className="page-main">
       <PageMeta
         title="Governance"
-        description="Track active Syscoin governance proposals, requested budgets, voting deadlines, superblocks, and vote directly from your vault or via copy-ready CLI commands."
+        description="Track Syscoin governance proposals, requested budgets, estimated payout selection, and superblocks. Vote from your browser vault, Pali, or copy-ready CLI commands."
       />
 
       <section className="page-hero">
@@ -565,7 +563,7 @@ export default function Governance() {
             <p className="eyebrow">Syscoin Governance</p>
             <h1>Keeping up with Governance.</h1>
             <p className="page-hero__copy">
-              See what is up for vote, how much has been requested, when voting closes, and when the next superblock lands.
+              See what is up for vote, how much has been requested, when payout selection may begin, and when the next superblock lands.
             </p>
           </div>
 
@@ -587,8 +585,8 @@ export default function Governance() {
               <strong>{`${formatCompactNumber(requestedBudget)} SYS`}</strong>
               <small>Total Proposal Budget Ask</small>
             </div>
-            <div className="governance-summary__item">
-              <span>Voting Deadline</span>
+            <div className="governance-summary__item" title="Payout-trigger selection may begin around this time. This is not a deadline for submitting proposal votes.">
+              <span>Estimated Selection Start</span>
               <strong>
                 {superblockStats ? formatDayMonth(superblockStats.voting_deadline) : 'Loading...'}
               </strong>
