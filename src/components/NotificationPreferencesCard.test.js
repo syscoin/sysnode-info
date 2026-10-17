@@ -97,6 +97,12 @@ describe('NotificationPreferencesCard', () => {
     // With prefs hydrated from /auth/me, the fallback getPrefs MUST
     // NOT be called (spec: single network read of user identity).
     expect(cardAuthService.getPrefs).not.toHaveBeenCalled();
+    expect(screen.getByText(/Votes recorded through your Sysnode account suppress reminders/)).toBeInTheDocument();
+    expect(screen.getByText(/Votes cast elsewhere may not be detected/)).toBeInTheDocument();
+    expect(screen.queryByText(/Skipped entirely once you've voted/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Governance reminders are enabled by default/)).toBeInTheDocument();
+    expect(screen.getByText(/Up to two scheduled reminders per governance cycle/)).toBeInTheDocument();
+    expect(screen.queryByText(/if you haven't voted yet/)).not.toBeInTheDocument();
   });
 
   test('reflects a server-stored opt-out as an unchecked toggle', async () => {

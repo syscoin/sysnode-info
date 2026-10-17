@@ -118,6 +118,12 @@ function normalizeDateValue(dateValue, options) {
   return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 }
 
+// The dashboard API emits human-readable UTC dates without a timezone suffix.
+// Reuse the same normalization for countdowns as for their displayed headings.
+export function parseUtcDateValue(dateValue) {
+  return normalizeDateValue(dateValue, { assumeUtc: true });
+}
+
 export function formatCurrency(value) {
   const numericValue = Number(value) || 0;
   const absoluteValue = Math.abs(numericValue);

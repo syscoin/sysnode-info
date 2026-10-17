@@ -608,7 +608,10 @@ describe('Governance page — proposal metadata chips', () => {
       (c) => c.getAttribute('data-meta-kind') === 'closing-soon'
     );
     expect(closing).toBeDefined();
-    expect(closing.textContent).toMatch(/Closes in/i);
+    expect(closing.textContent).toMatch(/Selection in/i);
+    expect(screen.queryByText('Voting Deadline')).not.toBeInTheDocument();
+    expect(screen.getByText('Estimated Selection Start')).toBeInTheDocument();
+    expect(closing.getAttribute('title')).toMatch(/not a deadline for submitting proposal votes/i);
   });
 
   test('closing chip escalates to urgent tone when the deadline is within 48h', () => {

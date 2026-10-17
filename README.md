@@ -14,7 +14,7 @@ Sysnode is designed to make that information easier to read, easier to verify, a
 
 - Current Sentry Node count, enabled nodes, locked supply, and ROI range.
 - Sentry Node trend data over selectable time ranges.
-- Current governance proposals, budgets, support, vote counts, voting deadline, and next superblock.
+- Current governance proposals, budgets, support, vote counts, estimated payout-selection start, and next superblock.
 - Country-level Sentry Node distribution.
 - SYS market context including price, volume, market cap, supply, and exchange links.
 - Educational pages covering what Sentry Nodes are and how to approach setup.

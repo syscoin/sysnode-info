@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchGovernanceFeed, fetchNetworkStats } from '../lib/api';
-
-const EXCLUDED_HASH =
-  '1b9039bd9f7b36dc43a2d8e4dea944550897414fabd981404b3d3d51741175d6';
+import { isSupportedGovernanceProposal } from '../lib/governanceEligibility';
 
 // Governance feed + network stats, loaded once on mount and refetchable
 // on demand via the returned `refresh` callback.
@@ -65,14 +63,10 @@ export default function useGovernanceData() {
       if (!mountedRef.current) return;
       if (latestRequestIdRef.current !== requestId) return;
       const rawProposals = Array.isArray(response[1]) ? response[1] : [];
+      const nowMs = Date.now();
       const proposals = rawProposals
         .filter(function keepProposal(proposal) {
-          return (
-            proposal &&
-            proposal.ObectType === 1 &&
-            proposal.Hash !== EXCLUDED_HASH &&
-            !proposal.fCachedDelete
-          );
+          return isSupportedGovernanceProposal(proposal, nowMs);
         })
         .sort(function sortBySupport(a, b) {
           return (

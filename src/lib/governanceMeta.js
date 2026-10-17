@@ -1,13 +1,13 @@
+import { parseUtcDateValue } from './formatters';
+
 // governanceMeta — pure helpers that derive per-proposal metadata
 // chips shown on the Governance feed.
 //
 // Why these three chips, and why this module:
 //
-//   1. "Closes soon" — the single biggest reason a vote gets missed
-//      is that users don't notice the superblock voting deadline is
-//      imminent. Surfacing an at-a-glance chip on rows that would
-//      still be relevant for the current superblock prevents the
-//      "wait, I had plans to vote on that" regret.
+//   1. "Selection soon" — show when next-superblock payout-trigger
+//      selection may begin, so users can review proposals before
+//      that process starts. This estimate is not a vote expiry.
 //
 //   2. "Over budget" — the ~72k SYS (roughly) per-superblock budget
 //      ceiling is a hard gate: if the sum of currently-passing
@@ -46,18 +46,16 @@ export const PASSING_SUPPORT_PERCENT = 10;
 // for the current ~2k–3k enabled masternode cohort.
 export const MARGIN_WARNING_PERCENT = 1.5;
 
-// "Closes soon" urgency tiers. We picked 48h because that's the
-// window below which sleeping through a weekend becomes a serious
-// risk of missing the vote entirely — a reasonable "pay attention
-// now" threshold for casual users. 7d is the secondary "closes
-// this week" tier for users who want to plan their voting session
-// but aren't at red-alert urgency yet.
+// Preserve the existing tier names/API. They now describe approaching
+// payout selection, not a deadline after which proposal votes are invalid.
 export const CLOSING_URGENT_SECONDS = 2 * 24 * 60 * 60;
 export const CLOSING_SOON_SECONDS = 7 * 24 * 60 * 60;
 
 function toSeconds(value) {
   const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  if (Number.isFinite(n)) return n;
+  const date = typeof value === 'string' ? parseUtcDateValue(value) : null;
+  return date ? Math.floor(date.getTime() / 1000) : 0;
 }
 
 // Format a positive number of seconds as a human phrase like
@@ -71,22 +69,17 @@ function formatCountdown(seconds) {
   return `${Math.round(seconds / 86400)}d`;
 }
 
-// closingChip — urgency chip derived from the superblock voting
-// deadline. Returns null when:
-//   * the voting deadline isn't known yet (superblock stats still
+// Preserve the public closingChip/votingDeadline names for existing callers.
+// The timestamp estimates when next-superblock payout-trigger selection can
+// begin, not a hard deadline for submitting proposal votes. Returns null when:
+//   * the selection estimate isn't known yet (superblock stats still
 //     loading);
-//   * the deadline has already passed — in that case the proposal
-//     either made it into the payee list or it didn't, and a
-//     "closed" chip would add noise rather than agency;
+//   * selection may already have started — no countdown is appropriate;
 //   * the window is wider than CLOSING_SOON_SECONDS — the row
 //     doesn't need an urgency label.
 //
-// We deliberately key off the SUPERBLOCK voting deadline, not the
-// proposal's own end_epoch: Core governance only lets you vote in
-// the window that ends at the next deadline, even if the proposal
-// itself persists across multiple superblocks. Showing the
-// superblock clock is what tells the user "your vote must be cast
-// before this moment or it doesn't count for this period".
+// Core may retain and accept proposal votes across multiple superblocks.
+// Starting trigger selection does not itself close the proposal's vote window.
 export function closingChip({ votingDeadline, nowMs } = {}) {
   const deadlineSec = toSeconds(votingDeadline);
   if (deadlineSec <= 0) return null;
@@ -97,10 +90,10 @@ export function closingChip({ votingDeadline, nowMs } = {}) {
   const urgent = remainingSec <= CLOSING_URGENT_SECONDS;
   return {
     kind: urgent ? 'closing-urgent' : 'closing-soon',
-    label: `Closes in ${formatCountdown(remainingSec)}`,
+    label: `Selection in ${formatCountdown(remainingSec)}`,
     detail: urgent
-      ? 'Superblock voting ends soon — cast your vote or it won\u2019t count for this cycle.'
-      : 'Voting for the next superblock closes within a week.',
+      ? 'Estimated payout-trigger selection may begin soon. This is not a deadline for submitting proposal votes.'
+      : 'Estimated payout-trigger selection may begin within a week. This is not a deadline for submitting proposal votes.',
     remainingSeconds: remainingSec,
   };
 }
