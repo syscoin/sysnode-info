@@ -118,6 +118,25 @@ the voting vault as node-administration authority. Operator, owner and collatera
 authorizations stay in Pali. The connected account's public XPUB and change
 address are shared with the backend to construct the fee transaction.
 
+Use **Import nodes** for either a reviewed batch of up to 20 public ProTx IDs or
+the existing encrypted browser voting-key import. Every invalid, duplicate or
+excess line is reported. Existing watch labels are preserved; imports never grant
+owner/operator authority. Browser voting keys remain available for phone voting,
+and only derived public addresses are used to discover registered nodes.
+
+The governance **Vote** action offers an explicit custody choice: the browser
+voting vault, or `sys_signSentryVote` in Pali. The Pali path uses watched node IDs,
+not a wallet-key inventory request, and checks a fresh voting context before
+requesting approval for up to 20 nodes. Returned compact signatures are verified
+against the exact proposal, outcome, time, collateral and registered voting key
+before relay. PQ voting remains disabled until supported explicitly. A lost relay
+response requires status reconciliation before retrying identical signatures.
+
+Deploy this UI with backend support for atomic `preserveExisting: true` watch
+imports and `GET /api/sentry/v1/voting-context`, and with a Pali build exposing the
+`governanceVote` capability and `sys_signSentryVote`. Missing support fails closed;
+the UI never falls back to overwriting labels or opaque-message signing.
+
 The management API lives at `/api/sentry/v1/` on the same origin. Core capability
 metadata selects the legacy or post-quantum codec; unsupported protocol versions
 fail closed. NEVM fields distinguish keeping the current value from explicitly

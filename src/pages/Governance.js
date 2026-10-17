@@ -6,7 +6,7 @@ import GovernanceActivity from '../components/GovernanceActivity';
 import GovernanceOpsHero from '../components/GovernanceOpsHero';
 import PageMeta from '../components/PageMeta';
 import ProposalsCreatedPanel from '../components/ProposalsCreatedPanel';
-import ProposalVoteModal from '../components/ProposalVoteModal';
+import VoteMethodModal from '../components/VoteMethodModal';
 import { useAuth } from '../context/AuthContext';
 import useGovernanceData from '../hooks/useGovernanceData';
 import { useGovernanceReceipts } from '../hooks/useGovernanceReceipts';
@@ -796,8 +796,7 @@ export default function Governance() {
         next time the user clicks Vote.
       */}
       {voteProposal !== null ? (
-        <ProposalVoteModal
-          open
+        <VoteMethodModal
           proposal={voteProposal}
           onClose={closeVoteModal}
           // Wired so the `proposal_not_found` descriptor's

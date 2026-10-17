@@ -173,7 +173,7 @@ test('partial loading and retry retain usable resources without exposing a guess
   await expect(page.getByRole('button', { name: /My Sentry node/ })).toBeVisible();
   await page.getByText('Registration and authority management', { exact: true }).click();
   await expect(page.getByLabel('Operator BLS public key')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Import nodes' })).toBeDisabled();
   await expect(page.getByRole('alert')).toContainText('Could not load operation history');
   await expect(page.getByRole('alert')).toContainText('The service is temporarily unavailable. Try again.');
   await page.screenshot({ path: testInfo.outputPath('partial-loading-error-320.png'), fullPage: true });
@@ -184,7 +184,7 @@ test('partial loading and retry retain usable resources without exposing a guess
   await page.screenshot({ path: testInfo.outputPath('partial-loading-error-viewport-320.png') });
   resolveCapabilities();
   await expect(page.getByLabel('Owner PQ public key')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add node' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import nodes' })).toBeEnabled();
   historyFailed = false;
   await page.getByRole('button', { name: 'Retry loading' }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);

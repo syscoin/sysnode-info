@@ -19,10 +19,10 @@ jest.mock('../context/AuthContext', () => ({
 jest.mock('../hooks/useGovernanceReceipts', () => ({
   useGovernanceReceipts: jest.fn(),
 }));
-jest.mock('../components/ProposalVoteModal', () => (props) => (
+jest.mock('../components/VoteMethodModal', () => (props) => (
   <div
     data-testid="modal-stub"
-    data-open={String(!!props.open)}
+    data-open="true"
     data-proposal={props.proposal ? props.proposal.Key : ''}
   >
     {/* Expose onClose to tests via a dedicated button — the real

@@ -208,7 +208,8 @@ export default function VaultImportModal({
       return undefined;
     }
     const t = setTimeout(() => {
-      if (pasteRef.current) pasteRef.current.focus();
+      // Keep the title and key-custody guidance visible on short screens.
+      if (pasteRef.current) pasteRef.current.focus({ preventScroll: true });
     }, 0);
     function onKey(e) {
       // Read saving via ref so the guard always sees the current value
@@ -389,15 +390,16 @@ export default function VaultImportModal({
         </div>
 
         <p className="auth-card__hint">
-          Paste one voting WIF or private descriptor per line. You can
-          optionally add a label after a comma, for example{' '}
-          <code>KwDi…,MN&nbsp;1</code>. Fixed descriptors can be pasted on
-          their own; ranged descriptors ending in <code>{'/*'}</code> also
-          need the voting address, for example{' '}
-          <code>{'<descriptor>,sys1…,MN 1'}</code>. Keys are validated in
-          your browser before anything is encrypted or sent — the paste
-          never leaves this tab in the clear.
+          Paste one voting WIF or private descriptor per line, with an
+          optional label after a comma. Keys are validated locally and
+          encrypted before syncing; unencrypted keys never leave this tab.
         </p>
+        <details className="auth-card__hint">
+          <summary>Formats and examples</summary>
+          <p>For a WIF, use <code>KwDi…,MN&nbsp;1</code>. Fixed descriptors can
+            be pasted on their own. Ranged descriptors ending in <code>{'/*'}</code>
+            {' '}also need the voting address: <code>{'<descriptor>,sys1…,MN 1'}</code>.</p>
+        </details>
 
         <div className="auth-field">
           <label className="auth-label" htmlFor="vault-import-paste">
@@ -407,7 +409,7 @@ export default function VaultImportModal({
             id="vault-import-paste"
             ref={pasteRef}
             className="auth-input vault-modal__textarea"
-            rows={8}
+            rows={6}
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
