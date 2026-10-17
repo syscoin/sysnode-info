@@ -316,3 +316,22 @@ test.each([
   expect(alert).toHaveTextContent(copy);
   expect(alert).not.toHaveTextContent(error.code);
 });
+
+test.each(['submit', 'history'])('an uncertain %s response directs recovery through the saved operation, never a fresh send', async (failure) => {
+  const service = makeService();
+  const error = Object.assign(new Error('network_error'), { code: 'network_error', status: 0 });
+  if (failure === 'submit') service.submit.mockRejectedValue(error);
+  else service.operations.mockResolvedValueOnce([]).mockRejectedValueOnce(error);
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('Use Check status in Operation history below');
+  expect(alert).not.toHaveTextContent('Try again');
+  expect(screen.queryByRole('button', { name: 'Review and sign in Pali' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Check status' }));
+  await waitFor(() => expect(service.reconcile).toHaveBeenCalledWith('op1'));
+  expect(service.submit).toHaveBeenCalledTimes(1);
+  expect(service.signOperation).toHaveBeenCalledTimes(1);
+  expect(service.signFees).toHaveBeenCalledTimes(1);
+});

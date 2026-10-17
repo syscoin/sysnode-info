@@ -207,10 +207,16 @@ export default function SentryManagement({ service = sentryService }) {
       const id = prepared.id;
       setPrepared(null);
       updateOperations((items) => [{ id, network: prepared.network || capabilities.network, status: 'submission_unknown' }, ...items.filter((item) => item.id !== id)]);
-      const result = await service.submit(id, signed);
-      if (mounted.current) {
-        const history = await service.operations();
-        if (mounted.current) { updateOperations(history); setError(result.status === 'submission_unknown' ? 'Submission status is unknown. Use Check status below; do not create a duplicate update.' : ''); }
+      try {
+        const result = await service.submit(id, signed);
+        if (mounted.current) {
+          const history = await service.operations();
+          if (mounted.current) { updateOperations(history); setError(result.status === 'submission_unknown' ? 'Submission status is unknown. Use Check status below; do not create a duplicate update.' : ''); }
+        }
+      } catch {
+        // The server may have published before its response was lost. Keep the
+        // saved operation visible and never turn this into a generic retry.
+        if (mounted.current) setError('Could not verify the submission result. Use Check status in Operation history below. Do not create a duplicate operation or sign again.');
       }
     });
   }

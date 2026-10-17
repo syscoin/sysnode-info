@@ -3,7 +3,7 @@ const { test, expect } = require('@playwright/test');
 // contracts. Crypto/serialization are tested separately against the real SDK.
 const HASH = 'a'.repeat(64);
 const ADDRESS = `0x${'12'.repeat(20)}`;
-async function fixtures(page, { unknown = false, recovery = false } = {}) {
+async function fixtures(page, { unknown = false, recovery = false, timeout = false } = {}) {
   let submitted = 0;
   let operations = [];
   const preparations = [];
@@ -44,6 +44,7 @@ async function fixtures(page, { unknown = false, recovery = false } = {}) {
     if (path.endsWith('/op1/submit')) {
       submitted += 1;
       operations = [{ id: 'op1', network: 'testnet', status: unknown ? 'submission_unknown' : 'submitted', txid: 'f'.repeat(64) }];
+      if (timeout) return route.abort('timedout');
       return route.fulfill({ json: operations[0] });
     }
     if (path.endsWith('/op1/retry')) {
@@ -112,6 +113,24 @@ test('manual identical-byte retry does not request another wallet signature', as
   await page.getByRole('button', { name: 'Retry identical transaction' }).click();
   await expect(page.getByText('submitted', { exact: true })).toBeVisible();
   expect(fixture.submissions()).toBe(2);
+  expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_signSentryOperation').length)).toBe(1);
+  expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_sign').length)).toBe(1);
+});
+
+test('a lost submission response points to saved history without requesting another signature', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const fixture = await fixtures(page, { timeout: true });
+  await page.goto('/nodes');
+  await page.getByRole('button', { name: /My Sentry node/ }).click();
+  await page.getByRole('combobox', { name: 'NEVM address', exact: true }).selectOption('set');
+  await page.getByLabel('New NEVM address').fill(ADDRESS);
+  await page.getByRole('button', { name: 'Prepare update' }).click();
+  await page.getByRole('button', { name: 'Review and sign in Pali' }).click();
+  await expect(page.getByRole('alert')).toContainText('Use Check status in Operation history below');
+  await expect(page.getByRole('alert')).not.toContainText('Try again');
+  await page.getByRole('button', { name: 'Check status' }).click();
+  await expect(page.getByText('confirmed', { exact: true })).toBeVisible();
+  expect(fixture.submissions()).toBe(1);
   expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_signSentryOperation').length)).toBe(1);
   expect(await page.evaluate(() => window.__walletCalls.filter((name) => name === 'sys_sign').length)).toBe(1);
 });
