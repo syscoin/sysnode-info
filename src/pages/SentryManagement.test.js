@@ -7,6 +7,7 @@ jest.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test
 jest.mock('../context/VaultContext', () => ({ useVault: () => ({ isEmpty: true, isUnlocked: false }) }));
 
 const HASH = 'a'.repeat(64);
+const FEE_SIGNING = 'same-origin-authorized-psbt-v1';
 const node = { network: 'testnet', proTxHash: HASH, label: 'My test node' };
 const current = { chain: { genesisHash: 'c'.repeat(64), era: 'legacy-v3' }, node: { proTxHash: HASH, operatorPublicKey: 'b'.repeat(96), service: '1.2.3.4:18369', nevmAddress: '' } };
 function makeService() {
@@ -15,7 +16,7 @@ function makeService() {
     capabilities: jest.fn().mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['updateService'] }),
     nodes: jest.fn().mockResolvedValue([node]), operations: jest.fn().mockResolvedValue([]),
     context: jest.fn().mockResolvedValue(current), watch: jest.fn().mockResolvedValue([node]),
-    walletCapabilities: jest.fn().mockResolvedValue({ operations: ['updateService'] }),
+    walletCapabilities: jest.fn().mockResolvedValue({ operations: ['updateService'], feeSigning: FEE_SIGNING }),
     fundingIdentity: jest.fn().mockResolvedValue({ xpub: 'vpub', changeAddress: 'tsys' }),
     prepare: jest.fn().mockResolvedValue({ id: 'op1', prepared: { request, review: { changes: { nevmAddress: { previous: '', next: `0x${'12'.repeat(20)}` } }, feeSatoshis: '1000' } } }),
     signOperation: jest.fn().mockResolvedValue({ transactionHex: 'authorized' }),
@@ -34,6 +35,37 @@ async function editNEVM(service) {
   fireEvent.change(screen.getByLabelText('NEVM address'), { target: { value: 'set' } });
   fireEvent.change(screen.getByLabelText('New NEVM address'), { target: { value: `0x${'12'.repeat(20)}` } });
 }
+test.each([undefined, false, 'separate-after-operator-authorization'])('an unsupported fee capability blocks preparation before funding or approvals: %p', async (feeSigning) => {
+  const service = makeService();
+  service.walletCapabilities.mockResolvedValue({ operations: ['updateService'], feeSigning });
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Update Pali before preparing or signing a Sentry transaction');
+  expect(service.fundingIdentity).not.toHaveBeenCalled();
+  expect(service.prepare).not.toHaveBeenCalled();
+  expect(service.signOperation).not.toHaveBeenCalled();
+  expect(service.signFees).not.toHaveBeenCalled();
+});
+test('an older wallet cannot prepare authority management', async () => {
+  const service = makeService();
+  await editRevocation(service);
+  service.walletCapabilities.mockResolvedValue({ operations: ['revoke'] });
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Update Pali before preparing or signing a Sentry transaction');
+  expect(service.fundingIdentity).not.toHaveBeenCalled();
+  expect(service.prepare).not.toHaveBeenCalled();
+  expect(service.signOperation).not.toHaveBeenCalled();
+});
+test('an older wallet cannot resume a saved fee-bearing review', async () => {
+  const service = makeService();
+  service.walletCapabilities.mockResolvedValue({ operations: ['updateService'] });
+  service.operations.mockResolvedValue([{ id: 'old', status: 'prepared', network: 'testnet', proTxHash: HASH }]);
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume review' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Update Pali before preparing or signing a Sentry transaction');
+  expect(service.reconcile).not.toHaveBeenCalled();
+  expect(service.signOperation).not.toHaveBeenCalled();
+});
 test('two local approvals precede exactly one backend publication', async () => {
   const service = makeService(); await editNEVM(service);
   fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
@@ -74,9 +106,47 @@ test('wallet context change during operator approval invalidates preparation', a
   service.signOperation.mockImplementation(() => new Promise((done) => { resolve = done; }));
   await editNEVM(service); fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
+  await waitFor(() => expect(resolve).toEqual(expect.any(Function)));
   await act(async () => { handlers.accountsChanged([]); resolve({ transactionHex: 'authorized' }); });
   expect(service.authorize).not.toHaveBeenCalled(); expect(service.submit).not.toHaveBeenCalled();
   delete window.pali;
+});
+test.each(['first authority', 'next authority', 'fee approval'])('fee capability is rechecked before %s without submitting', async (stage) => {
+  const service = makeService();
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  const sign = await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  if (stage === 'first authority') service.walletCapabilities.mockResolvedValue({ operations: ['updateService'] });
+  else if (stage === 'next authority') service.signOperation.mockImplementationOnce(async () => {
+    service.walletCapabilities.mockResolvedValue({ operations: ['updateService'] });
+    return { complete: false, transactionHex: 'partly-authorized' };
+  });
+  else service.authorize.mockImplementationOnce(async () => {
+    service.walletCapabilities.mockResolvedValue({ operations: ['updateService'] });
+    return { psbt: { psbt: 'unsigned' } };
+  });
+  fireEvent.click(sign);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Update Pali before preparing or signing a Sentry transaction');
+  expect(service.signOperation).toHaveBeenCalledTimes(stage === 'first authority' ? 0 : 1);
+  expect(service.signFees).not.toHaveBeenCalled();
+  expect(service.submit).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Review and sign in Pali' })).toBeEnabled();
+});
+test('an expired fee grant retries the saved operation through fresh authority approval without rebuilding', async () => {
+  const service = makeService();
+  service.signFees.mockRejectedValueOnce(Object.assign(new Error('SENTRY_FEE_AUTHORIZATION_REQUIRED: expired or missing'), { code: 'pali_request_failed' }));
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Review and sign this saved operation in Pali again');
+  expect(service.submit).not.toHaveBeenCalled();
+  expect(service.prepare).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Review and sign in Pali' }));
+  await waitFor(() => expect(service.submit).toHaveBeenCalledTimes(1));
+  expect(service.prepare).toHaveBeenCalledTimes(1);
+  expect(service.signOperation).toHaveBeenCalledTimes(2);
+  expect(service.signOperation.mock.calls[1][0]).toEqual(service.signOperation.mock.calls[0][0]);
+  expect(service.authorize.mock.calls.map(([id]) => id)).toEqual(['op1', 'op1']);
 });
 test('unknown submission is reconciled from history without a second publication', async () => {
   const service = makeService();
@@ -100,7 +170,7 @@ test('manual retry uses the original journal without a new wallet signature', as
 test('registration collects public fields only and completes multiple approvals before fees', async () => {
   const service = makeService();
   service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['register', 'updateService'] });
-  service.walletCapabilities.mockResolvedValue({ operations: ['register'] });
+  service.walletCapabilities.mockResolvedValue({ operations: ['register'], feeSigning: FEE_SIGNING });
   service.prepare.mockResolvedValue({ id: 'registration', network: 'testnet', prepared: { request: { version: 1, operation: 'register', transactionHex: 'unsigned' }, review: { fields: { service: '1.2.3.4:18369' }, feeSatoshis: '10', authorizations: [{ id: 'collateral', role: 'collateral', scheme: 'secp256k1' }, { id: 'newOwner', role: 'owner', scheme: 'slh-dsa-shake-128s' }] } } });
   service.signOperation.mockResolvedValueOnce({ complete: false, transactionHex: 'partly-signed' }).mockResolvedValueOnce({ complete: true, transactionHex: 'fully-authorized' });
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
@@ -120,7 +190,7 @@ test('registration collects public fields only and completes multiple approvals 
 
 async function editRevocation(service) {
   service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['revoke'] });
-  service.walletCapabilities.mockResolvedValue({ operations: ['revoke'] });
+  service.walletCapabilities.mockResolvedValue({ operations: ['revoke'], feeSigning: FEE_SIGNING });
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
   fireEvent.click(await screen.findByRole('button', { name: /My test node/ }));
   await screen.findByRole('heading', { name: 'My test node' });
@@ -245,7 +315,7 @@ test('retry clears protocol-specific draft fields and ignores an obsolete capabi
 
 test('a capabilities retry never carries a legacy operator field into a PQ registration', async () => {
   const service = makeService();
-  service.walletCapabilities.mockResolvedValue({ operations: ['register'] });
+  service.walletCapabilities.mockResolvedValue({ operations: ['register'], feeSigning: FEE_SIGNING });
   service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['register'] });
   service.operations.mockRejectedValueOnce(new Error('Retry this history read'));
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);

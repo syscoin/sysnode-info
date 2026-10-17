@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PageMeta from '../components/PageMeta';
 import NodeImport from '../components/NodeImport';
 import { getPali } from '../lib/paliProvider';
-import { normalizeProTxHash, serviceChanges, sentryService, SENTRY_OPERATIONS } from '../lib/sentryService';
+import { assertSentryFeeSigning, normalizeProTxHash, serviceChanges, sentryService, SENTRY_FEE_SIGNING_UPDATE, SENTRY_OPERATIONS } from '../lib/sentryService';
 import './SentryManagement.css';
 
 const ERROR_COPY = {
@@ -15,6 +15,7 @@ const ERROR_COPY = {
   operation_changed: 'The prepared transaction no longer matches. Prepare and review a fresh update.',
   node_state_changed: 'The node registration changed after this update was prepared. Prepare and review it again.',
   method_not_supported: 'Update Pali to a version that supports this node operation.',
+  pali_fee_signing_unsupported: SENTRY_FEE_SIGNING_UPDATE,
   pali_unavailable: 'Install or unlock Pali to continue.',
   operation_expired: 'This review expired. Prepare a fresh update before signing.',
   retry_not_ready: 'Wait 30 seconds between publication attempts, then retry the identical transaction.',
@@ -33,6 +34,9 @@ const ERROR_COPY = {
   invalid_capabilities: 'The server did not provide a valid supported protocol. Node signing remains disabled.',
 };
 function message(error) {
+  if (typeof error?.message === 'string' && error.message.startsWith('SENTRY_FEE_AUTHORIZATION_REQUIRED:')) {
+    return 'Review and sign this saved operation in Pali again, then approve its network fee. No transaction has been submitted.';
+  }
   const known = ERROR_COPY[error?.code || error?.message];
   if (known) return known;
   if (error?.code === 'network_error' || error?.status === 0) return 'Could not connect to the service. Check your connection and try again.';
@@ -163,13 +167,18 @@ export default function SentryManagement({ service = sentryService }) {
       setNotice('Node linked in Pali. This did not sign or broadcast a transaction.');
     });
   }
+  async function requireWalletFeeSupport(assertCurrent, operation) {
+    const walletCaps = await service.walletCapabilities(); assertCurrent();
+    assertSentryFeeSigning(walletCaps);
+    if (operation && !walletCaps.operations?.includes(operation)) throw new Error('method_not_supported');
+    return walletCaps;
+  }
   async function prepare(event) {
     event.preventDefault();
     await perform('Preparing update', async (assertCurrent) => {
       if (!capabilities?.operations.includes('updateService') || !selected) throw new Error('invalid_capabilities');
       const changes = serviceChanges(draft);
-      const walletCaps = await service.walletCapabilities(); assertCurrent();
-      if (!walletCaps?.operations?.includes('updateService')) throw new Error('Update Pali to a version with Sentry operator signing.');
+      await requireWalletFeeSupport(assertCurrent, 'updateService');
       const funding = await service.fundingIdentity(); assertCurrent();
       const rate = Number(feeRate);
       if (!Number.isInteger(rate) || rate < 1 || rate > 1000) throw new Error('Fee rate must be 1 to 1000 satoshis per vbyte.');
@@ -183,6 +192,7 @@ export default function SentryManagement({ service = sentryService }) {
       let request = prepared.prepared.request;
       let authorization;
       for (let slot = 0; slot < 3; slot += 1) {
+        await requireWalletFeeSupport(assertCurrent, request.operation);
         authorization = await service.signOperation(request); assertCurrent();
         if (authorization.complete !== false) break;
         request = { ...request, transactionHex: authorization.transactionHex };
@@ -191,6 +201,7 @@ export default function SentryManagement({ service = sentryService }) {
       if (authorization.complete === false) throw new Error('Required node authorizations are incomplete. No fee transaction was signed.');
       const funded = await service.authorize(prepared.id, authorization); assertCurrent();
       setBusy('Waiting for fee approval in Pali');
+      await requireWalletFeeSupport(assertCurrent, request.operation);
       const signed = await service.signFees(funded.psbt); assertCurrent();
       setBusy('Submitting signed transaction');
       // No frontend retry on a timeout. The operation id remains in the
@@ -215,8 +226,7 @@ export default function SentryManagement({ service = sentryService }) {
     event.preventDefault();
     await perform('Preparing node operation', async (assertCurrent) => {
       if (!capabilities?.operations.includes(managementOperation) || (managementOperation !== 'register' && !selected)) throw new Error('invalid_capabilities');
-      const walletCaps = await service.walletCapabilities(); assertCurrent();
-      if (!walletCaps?.operations?.includes(managementOperation)) throw new Error('This Pali version does not support the selected operation. Update Pali first.');
+      await requireWalletFeeSupport(assertCurrent, managementOperation);
       const funding = await service.fundingIdentity(); assertCurrent();
       const changes = {};
       for (const key of ['service', 'ownerAddress', 'votingAddress', 'operatorPublicKey', 'pqOwnerPublicKey', 'pqVotingPublicKey', 'payoutAddress']) {
@@ -261,8 +271,10 @@ export default function SentryManagement({ service = sentryService }) {
   }
   async function resumeOperation(id) {
     await perform('Restoring saved review', async (assertCurrent) => {
+      const walletCaps = await requireWalletFeeSupport(assertCurrent);
       const result = await service.reconcile(id); assertCurrent();
       if (result.status !== 'prepared') throw new Error('This operation has already been submitted. Use Check status.');
+      if (!walletCaps.operations?.includes(result.prepared.request.operation)) throw new Error('method_not_supported');
       if (result.prepared.request.operation !== 'register') {
         const value = await service.context(result.network, result.proTxHash); assertCurrent();
         setContext(value); setSelected({ network: result.network, proTxHash: result.proTxHash });
