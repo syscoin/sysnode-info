@@ -489,6 +489,24 @@ describe('ProposalVoteModal — happy-path voting', () => {
 });
 
 describe('ProposalVoteModal — uncertain submission safety', () => {
+  test('superseded on-chain votes are distinct from rejection and ownership loss', async () => {
+    const service = makeService({ submit: jest.fn().mockRejectedValue(Object.assign(new Error('lost response'), { code: 'network_error' })) });
+    service.reconcileReceipts = jest.fn(async () => {
+      const batch = service.submitVote.mock.calls[0]?.[0];
+      return { reconciled: true, receipts: batch ? batch.entries.map((entry) => ({ ...entry,
+        proposalHash: batch.proposalHash, voteTime: batch.time,
+        voteOutcome: 'no', voteSignal: batch.voteSignal, status: 'confirmed' })) : [] };
+    });
+    renderModal({ vault: UNLOCKED_VAULT_WITH_TWO_KEYS, service });
+    await waitFor(() => expect(screen.getByTestId('vote-modal-submit')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('vote-modal-submit'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Check status' }));
+    await waitFor(() => expect(screen.getByTestId('vote-modal-summary')).toHaveTextContent('2 superseded'));
+    expect(screen.getByTestId('vote-modal-summary')).toHaveTextContent('0 rejected');
+    expect(screen.queryByTestId('vote-modal-unretryable-note')).toBeNull();
+    expect(screen.queryByTestId('vote-modal-retry-failed')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Review a new vote' })).toBeInTheDocument();
+  });
   test('subset status reconciliation preserves earlier successful rows', async () => {
     const service = makeService({ submit: jest.fn()
       .mockResolvedValueOnce({ accepted: 1, rejected: 1, results: [

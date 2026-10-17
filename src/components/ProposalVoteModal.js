@@ -1108,6 +1108,7 @@ export default function ProposalVoteModal({
     let dedupCount = 0;
     for (const r of results.byEntry) {
       if (r.ok) continue;
+      if (r.superseded) continue;
       if (isUnknownVote(r)) continue;
       if (isBenignDup(r.error)) {
         dedupCount += 1;
@@ -1127,6 +1128,7 @@ export default function ProposalVoteModal({
     const hasFailures = failedCount > 0;
     const retryable = retryableCount > 0;
     const unknownCount = results.byEntry.filter(isUnknownVote).length;
+    const supersededCount = results.byEntry.filter((row) => row.superseded).length;
     const notSubmittedCount = results.byEntry.filter((row) => row.notSubmitted).length;
     const hasUnknown = unknownCount > 0;
     const unretryableCount = failedCount - retryableCount;
@@ -1141,9 +1143,10 @@ export default function ProposalVoteModal({
           {statusChecked && <button type="button" className="button button--ghost button--small" onClick={reviewNewVote}>Review a new vote</button>}</div>}
         <p data-testid="vote-modal-summary">
           <strong>{results.accepted}</strong> accepted,{' '}
-          <strong>{results.byEntry.filter((row) => !row.ok && !isUnknownVote(row) && !row.notSubmitted).length}</strong> rejected.
+          <strong>{results.byEntry.filter((row) => !row.ok && !isUnknownVote(row) && !row.notSubmitted && !row.superseded).length}</strong> rejected.
           {unknownCount > 0 && <> <strong>{unknownCount}</strong> uncertain.</>}
           {notSubmittedCount > 0 && <> <strong>{notSubmittedCount}</strong> not submitted.</>}
+          {supersededCount > 0 && <> <strong>{supersededCount}</strong> superseded by on-chain votes.</>}
         </p>
         {results.byEntry.some((row) => row.superseded) && statusChecked && <button type="button" className="button button--ghost button--small" onClick={reviewNewVote}>Review a new vote</button>}
         {dedupCount > 0 ? (
