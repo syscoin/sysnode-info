@@ -95,8 +95,8 @@ No PR/fork receives deployment secrets. The same-origin API, live `.env`, backen
 database and PM2 configuration are preserved; previous frontend artifacts remain
 available for code-only rollback.
 
-Environment secrets: `SYSNODE_DEPLOY_KEY`, `SYSNODE_KNOWN_HOSTS`. Environment
-variables: `SYSNODE_DEPLOY_HOST`, `SYSNODE_DEPLOY_USER`. Restrict the environment to
+Environment secrets: `SYSNODE_DEPLOY_KEY`, `SYSNODE_KNOWN_HOSTS`,
+`SYSNODE_DEPLOY_HOST`. Environment variable: `SYSNODE_DEPLOY_USER`. Restrict the environment to
 `master`, pin the independently verified host key, and test the forced-command
 `status` and rejection paths before enabling automatic rollout. The checked-in
 client accepts only this repository's push event, exact default ref, SHA, run ID

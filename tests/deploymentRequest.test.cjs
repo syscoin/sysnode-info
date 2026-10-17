@@ -7,7 +7,7 @@ const os = require('node:os');
 const cp = require('node:child_process');
 const { inputs, privateKeyText } = require('../scripts/request-deploy.cjs');
 const sha = 'a'.repeat(40);
-const env = { GITHUB_EVENT_NAME: 'push', GITHUB_REPOSITORY: 'syscoin/sysnode-info', GITHUB_REF: 'refs/heads/master', GITHUB_SERVER_URL: 'https://github.com', GITHUB_SHA: sha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', SYSNODE_DEPLOY_HOST: '62.238.27.161', SYSNODE_DEPLOY_USER: 'ubuntu', SYSNODE_DEPLOY_KEY: '-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-only\n-----END OPENSSH PRIVATE KEY-----', SYSNODE_KNOWN_HOSTS: 'host ssh-ed25519 synthetic' };
+const env = { GITHUB_EVENT_NAME: 'push', GITHUB_REPOSITORY: 'syscoin/sysnode-info', GITHUB_REF: 'refs/heads/master', GITHUB_SERVER_URL: 'https://github.com', GITHUB_SHA: sha, GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', SYSNODE_DEPLOY_HOST: '192.0.2.10', SYSNODE_DEPLOY_USER: 'ubuntu', SYSNODE_DEPLOY_KEY: '-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-only\n-----END OPENSSH PRIVATE KEY-----', SYSNODE_KNOWN_HOSTS: 'host ssh-ed25519 synthetic' };
 test('real OpenSSH key parses after final-LF and CRLF secret normalization', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sysnode-key-format-'));
   fs.chmodSync(root, 0o700);
@@ -36,4 +36,6 @@ test('workflow keeps all CI gates before production and never cancels default-br
   assert.match(text, /name: Deploy production/); assert.match(text, /needs: \[test\]/); assert.match(text, /environment: production/);
   assert.match(text, /github.event_name == 'push'.*github.repository == 'syscoin\/sysnode-info'.*github.ref == 'refs\/heads\/master'/);
   assert.match(text, /persist-credentials: false/); assert.match(text, /ref: \$\{\{ github.sha \}\}/);
+  assert.ok(text.includes('SYSNODE_DEPLOY_HOST: ${{ secrets.SYSNODE_DEPLOY_HOST }}'));
+  assert.ok(!text.includes('vars.SYSNODE_DEPLOY_HOST'));
 });
