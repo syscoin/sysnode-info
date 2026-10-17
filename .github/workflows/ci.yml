@@ -7,7 +7,11 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve a running production cutover; the host independently rejects stale SHAs.
+  cancel-in-progress: ${{ !(github.event_name == 'push' && github.repository == 'syscoin/sysnode-info' && github.ref == 'refs/heads/master') }}
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -50,6 +54,9 @@ jobs:
       - name: Verify production dependency behavior
         run: npm run test:production-runtime
 
+      - name: Verify deployment request boundary
+        run: npm run test:deployment
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
@@ -58,3 +65,26 @@ jobs:
         # version — covers things that unit tests won't catch
         # (e.g. ESM/CJS interop regressions in new deps).
         run: npm run build
+
+  deploy:
+    name: Deploy production
+    needs: [test]
+    if: github.event_name == 'push' && github.repository == 'syscoin/sysnode-info' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Request exact-commit deployment
+        run: node scripts/request-deploy.cjs frontend
+        env:
+          SYSNODE_DEPLOY_HOST: ${{ vars.SYSNODE_DEPLOY_HOST }}
+          SYSNODE_DEPLOY_USER: ${{ vars.SYSNODE_DEPLOY_USER }}
+          SYSNODE_DEPLOY_KEY: ${{ secrets.SYSNODE_DEPLOY_KEY }}
+          SYSNODE_KNOWN_HOSTS: ${{ secrets.SYSNODE_KNOWN_HOSTS }}
