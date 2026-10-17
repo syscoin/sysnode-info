@@ -29,6 +29,7 @@
     "test": "react-scripts test",
     "test:ci": "react-scripts test --watchAll=false --maxWorkers=50%",
     "test:sentry-browser": "playwright test --config playwright.config.cjs",
+    "test:production-runtime": "node --test tests/productionRuntime.test.cjs",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {

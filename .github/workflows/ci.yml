@@ -47,6 +47,12 @@ jobs:
         # and caps workers; don't reinvent that flag set here.
         run: npm run test:ci
 
+      - name: Verify production dependency behavior
+        run: npm run test:production-runtime
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Production build
         # Smoke-test that the bundle still compiles on this Node
         # version — covers things that unit tests won't catch
