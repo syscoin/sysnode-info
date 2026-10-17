@@ -111,6 +111,28 @@ When contributing:
 - Include tests for formatting, calculations, or data transformation logic where practical.
 - Treat governance and operator workflows carefully. Anything related to voting keys, signatures, private keys, or node control should be designed with security review in mind.
 
+## Sentry Node management
+
+`/nodes` manages public watch records by `(network, proTxHash)`. It does not reuse
+the voting vault as node-administration authority. Operator, owner and collateral
+authorizations stay in Pali. The connected account's public XPUB and change
+address are shared with the backend to construct the fee transaction.
+
+The management API lives at `/api/sentry/v1/` on the same origin. Core capability
+metadata selects the legacy or post-quantum codec; unsupported protocol versions
+fail closed. NEVM fields distinguish keeping the current value from explicitly
+removing the registration. A transaction is only submitted after all required
+node authorizations and the separate fee-input signature are complete.
+
+Operation history survives reloads. Use **Resume review** for an unsigned saved
+operation or **Check status** for an uncertain submission. No timeout triggers an
+automatic replacement or a second publication. Removing a watch record does not
+alter the on-chain node. NodeHub hosting is optional and is not a signing authority.
+
+Tests: `npm run test:ci`; `npm run build && npm run test:sentry-browser` runs the
+production UI against isolated wallet/API fixtures at 320, 400 and 960px widths.
+The separate backend codec tests use real legacy/PQ authorization primitives.
+
 ## Security Notes
 
 This frontend should not contain private keys, RPC credentials, server secrets, or privileged voting credentials. Sensitive operations should be handled by secure backend services or wallet flows designed specifically for that purpose.

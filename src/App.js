@@ -19,6 +19,7 @@ import VerifyEmail from './pages/VerifyEmail';
 import Account from './pages/Account';
 import NewProposal from './pages/NewProposal';
 import ProposalStatus from './pages/ProposalStatus';
+import SentryManagement from './pages/SentryManagement';
 
 import { AuthProvider } from './context/AuthContext';
 import { VaultProvider } from './context/VaultContext';
@@ -49,6 +50,7 @@ export default function App() {
             <Route path="/network" component={Network} />
             <Route path="/stats" render={() => <Redirect to="/network" />} />
             <Route path="/setup" component={Setup} />
+            <PrivateRoute path="/nodes" component={SentryManagement} />
             <PrivateRoute path="/governance/new" component={NewProposal} />
             <PrivateRoute
               path="/governance/proposal/:id"
