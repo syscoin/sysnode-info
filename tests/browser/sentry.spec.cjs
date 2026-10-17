@@ -135,3 +135,45 @@ test('changing a revocation reason removes the previous approval at 320px', asyn
   expect(await page.evaluate(() => window.__walletCalls.includes('sys_signSentryOperation'))).toBe(false);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test('partial loading and retry retain usable resources without exposing a guessed protocol at 320px', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await fixtures(page);
+  let resolveCapabilities;
+  const capabilitiesReady = new Promise((resolve) => { resolveCapabilities = resolve; });
+  await page.route('**/api/sentry/v1/capabilities', async (route) => {
+    await capabilitiesReady;
+    await route.fulfill({ json: { version: 1, network: 'testnet', chain: { genesisHash: '12'.repeat(32), era: 'pq-v4' }, operations: ['register'] } });
+  });
+  let historyFailed = true;
+  await page.route('**/api/sentry/v1/operations', (route) => historyFailed
+    ? route.fulfill({ status: 503, json: { error: 'history_temporarily_unavailable' } })
+    : route.fulfill({ json: [] }));
+  await page.goto('/nodes');
+  await page.addStyleTag({ content: 'html, body { scroll-behavior: auto !important; }' });
+  await expect(page.getByRole('button', { name: /My Sentry node/ })).toBeVisible();
+  await page.getByText('Registration and authority management', { exact: true }).click();
+  await expect(page.getByLabel('Operator BLS public key')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  await expect(page.getByRole('alert')).toContainText('Could not load operation history');
+  await expect(page.getByRole('alert')).toContainText('The service is temporarily unavailable. Try again.');
+  await page.screenshot({ path: testInfo.outputPath('partial-loading-error-320.png'), fullPage: true });
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath('partial-loading-top-viewport-320.png') });
+  await page.getByRole('button', { name: 'Retry loading' }).evaluate((element) => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  await page.screenshot({ path: testInfo.outputPath('partial-loading-error-viewport-320.png') });
+  resolveCapabilities();
+  await expect(page.getByLabel('Owner PQ public key')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add node' })).toBeEnabled();
+  historyFailed = false;
+  await page.getByRole('button', { name: 'Retry loading' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByText('testnet · Post-quantum')).toBeVisible();
+  await expect(page.getByLabel('Operator BLS public key')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('retry-ready-pq-320.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Prepare operation' }).evaluate((element) => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  await page.screenshot({ path: testInfo.outputPath('retry-ready-pq-action-viewport-320.png') });
+  expect(await page.evaluate(() => window.__walletCalls.includes('sys_signSentryOperation'))).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

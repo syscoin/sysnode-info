@@ -156,3 +156,163 @@ test('a stale preparation response cannot restore review after a revocation edit
   expect(await screen.findByRole('alert')).toHaveTextContent('operation details changed');
   expect(service.signOperation).not.toHaveBeenCalled();
 });
+
+test('a history failure preserves capabilities and watched nodes and can be retried', async () => {
+  const service = makeService();
+  service.operations.mockRejectedValueOnce(new Error('History temporarily unavailable'));
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  expect(await screen.findByRole('button', { name: /My test node/ })).toBeEnabled();
+  expect(screen.getByText('testnet · Legacy BLS')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Add node' })).toBeEnabled();
+  expect(await screen.findByRole('alert')).toHaveTextContent('History temporarily unavailable');
+  service.operations.mockResolvedValue([{ id: 'restored', status: 'submission_unknown', network: 'testnet' }]);
+  fireEvent.click(screen.getByRole('button', { name: 'Retry loading' }));
+  expect(await screen.findByRole('button', { name: 'Check status' })).toBeEnabled();
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+});
+
+test('a watch-list failure does not hide a recoverable operation history', async () => {
+  const service = makeService();
+  service.nodes.mockRejectedValue(new Error('Watch list temporarily unavailable'));
+  service.operations.mockResolvedValue([{ id: 'saved', status: 'submission_unknown', network: 'testnet' }]);
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  expect(await screen.findByRole('button', { name: 'Retry identical transaction' })).toBeEnabled();
+  expect(screen.getByText('testnet · Legacy BLS')).toBeVisible();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Watch list temporarily unavailable');
+});
+
+test('non-registration management uses the selected watch network, not the default network', async () => {
+  const service = makeService();
+  service.nodes.mockResolvedValue([{ ...node, network: 'mainnet' }]);
+  await editRevocation(service);
+  expect(service.context).toHaveBeenCalledWith('mainnet', HASH);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(service.prepare).toHaveBeenCalledWith(expect.objectContaining({ operation: 'revoke', network: 'mainnet', proTxHash: HASH }));
+});
+
+test('slow capabilities never expose a legacy form and do not delay other resources', async () => {
+  const service = makeService();
+  let resolveCapabilities;
+  service.capabilities.mockImplementation(() => new Promise((resolve) => { resolveCapabilities = resolve; }));
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(screen.getByText('Registration and authority management'));
+  expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  expect(await screen.findByRole('button', { name: /My test node/ })).toBeEnabled();
+  await act(async () => resolveCapabilities({ version: 1, network: 'testnet', chain: { ...current.chain, era: 'pq-v4' }, operations: ['register'] }));
+  expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Owner PQ public key')).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Prepare operation' })).toBeEnabled();
+  expect(service.fundingIdentity).not.toHaveBeenCalled();
+});
+
+test.each([
+  { version: 1, network: 'testnet', operations: ['register'] },
+  { version: 1, network: 'testnet', chain: { ...current.chain, era: 'unknown-v5' }, operations: ['register'] },
+])('malformed or unknown capabilities fail closed and recover on retry: %p', async (caps) => {
+  const service = makeService();
+  service.capabilities.mockResolvedValueOnce(caps);
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(screen.getByText('Registration and authority management'));
+  expect(await screen.findByRole('alert')).toHaveTextContent('valid supported protocol');
+  expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Prepare operation' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry loading' }));
+  expect(await screen.findByLabelText('Operator BLS public key')).toHaveValue('');
+  expect(service.fundingIdentity).not.toHaveBeenCalled();
+});
+
+test('retry clears protocol-specific draft fields and ignores an obsolete capabilities response', async () => {
+  const service = makeService();
+  let resolveOldCapabilities;
+  service.capabilities.mockImplementationOnce(() => new Promise((resolve) => { resolveOldCapabilities = resolve; }));
+  service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: { ...current.chain, era: 'pq-v4' }, operations: ['register'] });
+  service.operations.mockRejectedValueOnce(new Error('Retry this history read'));
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(screen.getByText('Registration and authority management'));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Retry this history read');
+  fireEvent.click(screen.getByRole('button', { name: 'Retry loading' }));
+  expect(await screen.findByLabelText('Owner PQ public key')).toHaveValue('');
+  await act(async () => resolveOldCapabilities({ version: 1, network: 'testnet', chain: current.chain, operations: ['register'] }));
+  expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
+  expect(screen.getByText('testnet · Post-quantum')).toBeVisible();
+});
+
+test('a capabilities retry never carries a legacy operator field into a PQ registration', async () => {
+  const service = makeService();
+  service.walletCapabilities.mockResolvedValue({ operations: ['register'] });
+  service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: current.chain, operations: ['register'] });
+  service.operations.mockRejectedValueOnce(new Error('Retry this history read'));
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(screen.getByText('Registration and authority management'));
+  fireEvent.change(await screen.findByLabelText('Operator BLS public key'), { target: { value: 'b'.repeat(96) } });
+  service.capabilities.mockResolvedValue({ version: 1, network: 'testnet', chain: { ...current.chain, era: 'pq-v4' }, operations: ['register'] });
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry loading' }));
+  expect(await screen.findByLabelText('Owner PQ public key')).toHaveValue('');
+  for (const [labelText, value] of [['Collateral transaction ID', HASH], ['Collateral output index', '0'], ['Public service IP and port', '1.2.3.4:18369'], ['Owner address (separate from collateral)', 'owner-address'], ['Voting address (separate from collateral)', 'voting-address'], ['Payout address', 'payout-address'], ['Owner PQ public key', 'c'.repeat(64)], ['Voting PQ public key', 'd'.repeat(64)]]) {
+    fireEvent.change(screen.getByLabelText(labelText), { target: { value } });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare operation' }));
+  await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(service.prepare).toHaveBeenCalledWith(expect.objectContaining({ operation: 'register', changes: expect.objectContaining({ pqOwnerPublicKey: 'c'.repeat(64), pqVotingPublicKey: 'd'.repeat(64) }) }));
+  expect(service.prepare.mock.calls[0][0].changes).not.toHaveProperty('operatorPublicKey');
+});
+
+test('late bootstrap history cannot overwrite a newer submitted operation', async () => {
+  const service = makeService();
+  let resolveHistory;
+  service.operations.mockImplementationOnce(() => new Promise((resolve) => { resolveHistory = resolve; }));
+  service.operations.mockResolvedValue([{ id: 'op1', status: 'submitted', network: 'testnet' }]);
+  await editNEVM(service);
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare update' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Review and sign in Pali' }));
+  await screen.findByText('submitted');
+  await act(async () => resolveHistory([{ id: 'op1', status: 'prepared', network: 'testnet' }, { id: 'older', status: 'confirmed', network: 'testnet' }]));
+  expect(screen.queryByRole('button', { name: 'Resume review' })).not.toBeInTheDocument();
+  expect(screen.getByText('submitted')).toBeVisible();
+  expect(screen.getByText('confirmed')).toBeVisible();
+  expect(service.submit).toHaveBeenCalledTimes(1);
+});
+
+test('late bootstrap watches cannot erase a newly added node', async () => {
+  const service = makeService();
+  let resolveNodes;
+  service.nodes.mockImplementationOnce(() => new Promise((resolve) => { resolveNodes = resolve; }));
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Add node' })).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('ProTx hash'), { target: { value: HASH } });
+  fireEvent.click(screen.getByRole('button', { name: 'Add node' }));
+  await screen.findByRole('button', { name: /My test node/ });
+  await act(async () => resolveNodes([]));
+  expect(screen.getByRole('button', { name: /My test node/ })).toBeVisible();
+});
+
+test('a saved review remains read-only when capabilities cannot be verified', async () => {
+  const service = makeService();
+  const saved = { id: 'saved', status: 'prepared', network: 'testnet', proTxHash: HASH, prepared: (await service.prepare()).prepared };
+  service.capabilities.mockRejectedValue(new Error('Capabilities temporarily unavailable'));
+  service.operations.mockResolvedValue([saved]);
+  service.reconcile.mockResolvedValue(saved);
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume review' }));
+  const sign = await screen.findByRole('button', { name: 'Review and sign in Pali' });
+  expect(sign).toBeDisabled();
+  fireEvent.click(sign);
+  expect(service.signOperation).not.toHaveBeenCalled();
+  expect(service.signFees).not.toHaveBeenCalled();
+});
+
+test.each([
+  [{ code: 'history_temporarily_unavailable', status: 503 }, 'The service is temporarily unavailable. Try again.'],
+  [{ code: 'network_error', status: 0 }, 'Could not connect to the service. Check your connection and try again.'],
+  [{ code: 'unexpected_backend_code', status: 400 }, 'The request could not be completed. Try again.'],
+])('bootstrap error copy is readable instead of exposing an API identifier: %p', async (error, copy) => {
+  const service = makeService();
+  service.operations.mockRejectedValue(error);
+  render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(copy);
+  expect(alert).not.toHaveTextContent(error.code);
+});
