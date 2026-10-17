@@ -1,0 +1,77 @@
+[
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 0,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 1,
+    "timestamp": 1700000000,
+    "digest": "7fffa6d894cb683b076c893cd8c739e5775ede1b056d73ed7a2672a881b5c871",
+    "signatureHash": "71c8b581a872267aed736d051bde5e77e539c7d83c896c073b68cb94d8a6ff7f",
+    "voteHash": "71c8b581a872267aed736d051bde5e77e539c7d83c896c073b68cb94d8a6ff7f",
+    "voteSig": "IIiU1rdeltahxOVZjPiiEYOJ/QAqxj2KatA1BK1RfVUrAusiKYhQ7h9q75JdvugvUo1Dia1+rISpnX8TF97iM/A=",
+    "publicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+  },
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 1,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 2,
+    "timestamp": 4294967297,
+    "digest": "1ee8108fb7c11ad56c45eb92ac67fde3018f07de7541f4760f17547dedff5c6e",
+    "signatureHash": "6e5cffed7d54170f76f44175de078f01e3fd67ac92eb456cd51ac1b78f10e81e",
+    "voteHash": "f64e1c83a061f15c1ecfd39fd0f5a1548d90343d35a439ce191e5394468f2dad",
+    "voteSig": "H4shOAflkSrVB4162YAnHJAGvsN060oyzc8vcc+yBcmMAbL6U8wU1pBa+1rzFVGtbDHoCH61dgRy8YsOdsXSnFI=",
+    "publicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+  },
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 2147483647,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 3,
+    "timestamp": 9007199254740991,
+    "digest": "127bdd4417c9ecb83e230731a02114b0418c88a5f9baf44de15c6db7ae75d8d2",
+    "signatureHash": "d2d875aeb76d5ce14df4baf9a5888c41b01421a03107233eb8ecc91744dd7b12",
+    "voteHash": "c205357c01bdde3fc0b856efdc42a2e3409433b47a7d091b3a1c35bf395d8bdc",
+    "voteSig": "H18oAksxjFgeWSl4C3yF9uOqOz1Wn6fV7iNIi4ht1EiISxsTS1aSLHTQ0GedEXx9vZDQ4XYsWyzbfRMcuyQZ5Jc=",
+    "publicKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+  },
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 0,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 1,
+    "timestamp": 1700000000,
+    "digest": "7fffa6d894cb683b076c893cd8c739e5775ede1b056d73ed7a2672a881b5c871",
+    "signatureHash": "71c8b581a872267aed736d051bde5e77e539c7d83c896c073b68cb94d8a6ff7f",
+    "voteHash": "71c8b581a872267aed736d051bde5e77e539c7d83c896c073b68cb94d8a6ff7f",
+    "voteSig": "HIiU1rdeltahxOVZjPiiEYOJ/QAqxj2KatA1BK1RfVUrAusiKYhQ7h9q75JdvugvUo1Dia1+rISpnX8TF97iM/A=",
+    "publicKey": "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+    "compressed": false
+  },
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 1,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 2,
+    "timestamp": 4294967297,
+    "digest": "1ee8108fb7c11ad56c45eb92ac67fde3018f07de7541f4760f17547dedff5c6e",
+    "signatureHash": "6e5cffed7d54170f76f44175de078f01e3fd67ac92eb456cd51ac1b78f10e81e",
+    "voteHash": "f64e1c83a061f15c1ecfd39fd0f5a1548d90343d35a439ce191e5394468f2dad",
+    "voteSig": "G4shOAflkSrVB4162YAnHJAGvsN060oyzc8vcc+yBcmMAbL6U8wU1pBa+1rzFVGtbDHoCH61dgRy8YsOdsXSnFI=",
+    "publicKey": "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+    "compressed": false
+  },
+  {
+    "collateralHash": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    "collateralIndex": 2147483647,
+    "proposalHash": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+    "outcome": 3,
+    "timestamp": 9007199254740991,
+    "digest": "127bdd4417c9ecb83e230731a02114b0418c88a5f9baf44de15c6db7ae75d8d2",
+    "signatureHash": "d2d875aeb76d5ce14df4baf9a5888c41b01421a03107233eb8ecc91744dd7b12",
+    "voteHash": "c205357c01bdde3fc0b856efdc42a2e3409433b47a7d091b3a1c35bf395d8bdc",
+    "voteSig": "G18oAksxjFgeWSl4C3yF9uOqOz1Wn6fV7iNIi4ht1EiISxsTS1aSLHTQ0GedEXx9vZDQ4XYsWyzbfRMcuyQZ5Jc=",
+    "publicKey": "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+    "compressed": false
+  }
+]

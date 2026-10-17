@@ -25,3 +25,13 @@ test('linking a node uses the selected wallet network and never supplies secrets
   await createSentryService({}, wallet).linkNode('aa'.repeat(32), 'bb'.repeat(32));
   expect(wallet.mock.calls).toEqual([['sys_requestAccounts'], ['sys_linkSentryNode', [{ version: 1, proTxHash: 'aa'.repeat(32), genesisHash: 'bb'.repeat(32) }]]]);
 });
+test('typed voting uses the fixed context endpoint and only explicit wallet methods', async () => {
+  const wallet = jest.fn().mockResolvedValue({});
+  const client = { get: jest.fn().mockResolvedValue({ data: { nodes: [] } }) };
+  const service = createSentryService(client, wallet);
+  const request = { version: 1, proposalHash: 'aa'.repeat(32), nodes: [] };
+  await service.votingContext('testnet', request.proposalHash, ['bb'.repeat(32)]);
+  await service.connectWallet(); await service.signVote(request);
+  expect(client.get).toHaveBeenCalledWith('/api/sentry/v1/voting-context', { params: { network: 'testnet', proposalHash: request.proposalHash, proTxHashes: 'bb'.repeat(32) } });
+  expect(wallet.mock.calls).toEqual([['sys_requestAccounts'], ['sys_signSentryVote', [request]]]);
+});

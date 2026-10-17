@@ -3,6 +3,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import SentryManagement from './SentryManagement';
 import { MemoryRouter } from 'react-router-dom';
 
+jest.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test', email: 'test@example.invalid' }, isAuthenticated: true }) }));
+jest.mock('../context/VaultContext', () => ({ useVault: () => ({ isEmpty: true, isUnlocked: false }) }));
+
 const HASH = 'a'.repeat(64);
 const node = { network: 'testnet', proTxHash: HASH, label: 'My test node' };
 const current = { chain: { genesisHash: 'c'.repeat(64), era: 'legacy-v3' }, node: { proTxHash: HASH, operatorPublicKey: 'b'.repeat(96), service: '1.2.3.4:18369', nevmAddress: '' } };
@@ -163,7 +166,7 @@ test('a history failure preserves capabilities and watched nodes and can be retr
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
   expect(await screen.findByRole('button', { name: /My test node/ })).toBeEnabled();
   expect(screen.getByText('testnet · Legacy BLS')).toBeVisible();
-  expect(screen.getByRole('button', { name: 'Add node' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Import nodes' })).toBeEnabled();
   expect(await screen.findByRole('alert')).toHaveTextContent('History temporarily unavailable');
   service.operations.mockResolvedValue([{ id: 'restored', status: 'submission_unknown', network: 'testnet' }]);
   fireEvent.click(screen.getByRole('button', { name: 'Retry loading' }));
@@ -198,7 +201,7 @@ test('slow capabilities never expose a legacy form and do not delay other resour
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
   fireEvent.click(screen.getByText('Registration and authority management'));
   expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Import nodes' })).toBeDisabled();
   expect(await screen.findByRole('button', { name: /My test node/ })).toBeEnabled();
   await act(async () => resolveCapabilities({ version: 1, network: 'testnet', chain: { ...current.chain, era: 'pq-v4' }, operations: ['register'] }));
   expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
@@ -218,7 +221,7 @@ test.each([
   expect(await screen.findByRole('alert')).toHaveTextContent('valid supported protocol');
   expect(screen.queryByLabelText('Operator BLS public key')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Prepare operation' })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Add node' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Import nodes' })).toBeDisabled();
   fireEvent.click(screen.getByRole('button', { name: 'Retry loading' }));
   expect(await screen.findByLabelText('Operator BLS public key')).toHaveValue('');
   expect(service.fundingIdentity).not.toHaveBeenCalled();
@@ -280,10 +283,14 @@ test('late bootstrap watches cannot erase a newly added node', async () => {
   const service = makeService();
   let resolveNodes;
   service.nodes.mockImplementationOnce(() => new Promise((resolve) => { resolveNodes = resolve; }));
+  service.nodes.mockResolvedValue([]);
   render(<MemoryRouter><SentryManagement service={service} /></MemoryRouter>);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Add node' })).toBeEnabled());
-  fireEvent.change(screen.getByLabelText('ProTx hash'), { target: { value: HASH } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add node' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Import nodes' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Import nodes' }));
+  fireEvent.change(screen.getByLabelText('Public ProTx IDs, one per line'), { target: { value: HASH } });
+  fireEvent.click(screen.getByRole('button', { name: 'Check node IDs' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Watch selected nodes (1)' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Watch selected nodes (1)' }));
   await screen.findByRole('button', { name: /My test node/ });
   await act(async () => resolveNodes([]));
   expect(screen.getByRole('button', { name: /My test node/ })).toBeVisible();

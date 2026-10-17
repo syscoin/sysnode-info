@@ -10,10 +10,22 @@
 .sentry-management li { margin: 10px 0; }
 .sentry-node-list { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; }
 .sentry-node-list small { display: block; }
+.sentry-node-list button { max-width: 100%; overflow-wrap: anywhere; }
 .sentry-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .sentry-management .button { min-height: 44px; white-space: normal; }
 .sentry-management summary { cursor: pointer; min-height: 44px; }
 .sentry-management summary h2 { display: inline; }
 .sentry-management summary:focus-visible { outline: 3px solid #2463cf; outline-offset: 4px; }
 .sentry-management details[open] summary { margin-bottom: 20px; }
+.node-import { border-top: 1px solid #c9ced7; margin-top: 20px; padding-top: 20px; display: grid; gap: 16px; min-width: 0; }
+.node-import__heading, .node-import__row-heading, .node-import__modes { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; }
+.node-import__modes { justify-content: flex-start; }
+.node-import__modes button { min-height: 44px; padding: 10px 16px; background: #f2f5fa; border: 1px solid #8c98aa; border-radius: 8px; font: inherit; cursor: pointer; }
+.node-import__modes button[aria-pressed="true"] { color: #fff; background: #174f9c; border-color: #174f9c; }
+.node-import textarea { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: 150px; resize: vertical; border: 1px solid #8c98aa; border-radius: 8px; padding: 12px; font: inherit; }
+.node-import textarea:focus-visible, .node-import__modes button:focus-visible { outline: 3px solid #2463cf; outline-offset: 2px; }
+.node-import__rows, .node-import__discovered { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.node-import__rows li, .node-import__discovered li { min-width: 0; border: 1px solid #c9ced7; border-radius: 10px; padding: 14px; overflow-wrap: anywhere; }
+.node-import .node-import__selection { display: flex; align-items: flex-start; gap: 10px; font-weight: 500; }
+.node-import .node-import__selection input { width: 20px; min-width: 20px; height: 20px; min-height: 20px; margin-top: 2px; }
 @media (max-width: 480px) { .sentry-actions .button { width: 100%; } .sentry-management .auth-card { padding: 20px 16px; } }

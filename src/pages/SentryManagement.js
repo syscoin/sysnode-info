@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PageMeta from '../components/PageMeta';
+import NodeImport from '../components/NodeImport';
 import { getPali } from '../lib/paliProvider';
 import { normalizeProTxHash, serviceChanges, sentryService, SENTRY_OPERATIONS } from '../lib/sentryService';
 import './SentryManagement.css';
@@ -59,8 +60,6 @@ export default function SentryManagement({ service = sentryService }) {
   const [operations, setOperations] = useState([]);
   const [selected, setSelected] = useState(null);
   const [context, setContext] = useState(null);
-  const [nodeHash, setNodeHash] = useState('');
-  const [label, setLabel] = useState('');
   const [draft, setDraft] = useState(INITIAL);
   const [prepared, setPrepared] = useState(null);
   const [managementOperation, setManagementOperation] = useState('register');
@@ -83,6 +82,7 @@ export default function SentryManagement({ service = sentryService }) {
   const managementChange = (name, value) => { invalidateIntent(); setManagementFields((old) => ({ ...old, [name]: value })); };
   const updateOperations = (value) => { historyRevision.current += 1; setOperations(value); };
   const updateNodes = (value) => { watchesRevision.current += 1; setNodes(value); };
+  const importBusy = useCallback((value) => { locked.current = value; setBusy(value ? 'Importing nodes' : ''); }, []);
   const loadBootstrap = useCallback(() => {
     const token = ++bootstrapGeneration.current;
     const historyAtStart = historyRevision.current;
@@ -147,15 +147,6 @@ export default function SentryManagement({ service = sentryService }) {
     await perform('Loading node', async (assertCurrent) => {
       const value = await service.context(node.network, node.proTxHash); assertCurrent();
       setSelected(node); setContext(value); setDraft(INITIAL); setPrepared(null);
-    });
-  }
-  async function addNode(event) {
-    event.preventDefault();
-    await perform('Looking up node', async (assertCurrent) => {
-      if (!capabilities) throw new Error('invalid_capabilities');
-      const proTxHash = normalizeProTxHash(nodeHash);
-      const list = await service.watch({ network: capabilities.network, proTxHash, label: label.trim() }); assertCurrent();
-      updateNodes(list); setNodeHash(''); setLabel('');
     });
   }
   async function stopWatching(node) {
@@ -351,12 +342,8 @@ export default function SentryManagement({ service = sentryService }) {
           <button className="button button--primary" disabled={!!busy || !capabilities?.operations?.includes(managementOperation) || (managementOperation !== 'register' && !selected)}>Prepare operation</button>
         </form>}
       </details>
-      <div className="auth-card"><h2>Watch a registered node</h2>
-        <form onSubmit={addNode}>
-          <label>ProTx hash<input value={nodeHash} onChange={(e) => setNodeHash(e.target.value)} autoComplete="off" spellCheck="false" maxLength={64} required /></label>
-          <label>Label (optional)<input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={80} /></label>
-          <button className="button button--primary" disabled={!!busy || !capabilities}>Add node</button>
-        </form>
+      <div className="auth-card"><h2>Your nodes</h2>
+        <NodeImport capabilities={capabilities} watched={nodes} service={service} onImported={updateNodes} onBusyChange={importBusy} disabled={!!busy} />
         <ul className="sentry-node-list">{nodes.map((node) => <li key={`${node.network}:${node.proTxHash}`}><button className="button button--ghost" disabled={!!busy} onClick={() => select(node)}>{node.label || `${node.proTxHash.slice(0, 12)}…`} <small>{node.network}</small></button><button className="button button--ghost" disabled={!!busy} onClick={() => stopWatching(node)} aria-label="Remove watch record">Stop watching</button></li>)}</ul>
         <p className="auth-card__hint">Stopping a watch only removes the saved shortcut. It does not revoke or delete the on-chain node.</p>
         <p className="auth-card__hint">Preparing an operation shares the connected fee account’s public XPUB and change address with this service. Private keys stay in Pali.</p>

@@ -19,6 +19,7 @@ export function createSentryService(client = apiClient, walletRequest = paliRequ
     nodes: () => client.get(`${BASE}/nodes`).then(response),
     operations: () => client.get(`${BASE}/operations`).then(response),
     context: (network, proTxHash) => client.get(`${BASE}/context`, { params: { network, proTxHash } }).then(response),
+    votingContext: (network, proposalHash, proTxHashes) => client.get(`${BASE}/voting-context`, { params: { network, proposalHash, proTxHashes: proTxHashes.join(',') } }).then(response),
     watch: (node) => client.post(`${BASE}/nodes`, node).then(response),
     unwatch: (node) => client.delete(`${BASE}/nodes/${node.network}/${node.proTxHash}`).then(response),
     prepare: (body) => client.post(`${BASE}/operations`, body).then(response),
@@ -35,6 +36,8 @@ export function createSentryService(client = apiClient, walletRequest = paliRequ
       return { xpub, changeAddress };
     },
     walletCapabilities: () => walletRequest('sys_getSentryCapabilities'),
+    connectWallet: () => walletRequest('sys_requestAccounts'),
+    signVote: (request) => walletRequest('sys_signSentryVote', [request]),
     signOperation: (request) => walletRequest('sys_signSentryOperation', [request]),
     async linkNode(proTxHash, genesisHash) {
       await walletRequest('sys_requestAccounts');
