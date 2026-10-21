@@ -66,6 +66,22 @@ jobs:
         # (e.g. ESM/CJS interop regressions in new deps).
         run: npm run build
 
+      - name: Install browser for recovery-alert layout checks
+        if: matrix.node == '22'
+        run: npx playwright install --with-deps chromium
+
+      - name: Check recovery-alert browser flow and small windows
+        if: matrix.node == '22'
+        run: npm run test:recovery-browser
+
+      - name: Preserve recovery-alert screenshots and failure traces
+        if: always() && matrix.node == '22'
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-alert-browser
+          path: test-results/sentry/
+          if-no-files-found: ignore
+
   deploy:
     name: Deploy production
     needs: [test]

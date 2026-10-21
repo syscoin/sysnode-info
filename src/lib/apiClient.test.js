@@ -148,6 +148,34 @@ describe('createApiClient — no global Content-Type (Codex round 3 P2)', () => 
 });
 
 describe('createApiClient — 401 handling', () => {
+  test('wrong recovery-alert step-up password does not invalidate the session', async () => {
+    const onAuthLost = jest.fn();
+    const client = createApiClient({ onAuthLost });
+    const adapter = new MockAdapter(client);
+    adapter
+      .onDelete('/recovery/subscriptions/1')
+      .reply(401, { error: 'invalid_credentials' });
+    await expect(
+      client.delete('/recovery/subscriptions/1')
+    ).rejects.toMatchObject({ code: 'invalid_credentials' });
+    expect(onAuthLost).not.toHaveBeenCalled();
+    adapter.restore();
+  });
+
+  test('recovery-alert session expiry still invalidates the session', async () => {
+    const onAuthLost = jest.fn();
+    const client = createApiClient({ onAuthLost });
+    const adapter = new MockAdapter(client);
+    adapter
+      .onDelete('/recovery/subscriptions/1')
+      .reply(401, { error: 'unauthorized' });
+    await expect(
+      client.delete('/recovery/subscriptions/1')
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(onAuthLost).toHaveBeenCalledTimes(1);
+    adapter.restore();
+  });
+
   test('invokes onAuthLost for non-auth 401s', async () => {
     const onAuthLost = jest.fn();
     const client = createApiClient({
