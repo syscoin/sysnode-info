@@ -33,7 +33,17 @@ function renderLogin(
         <MemoryRouter initialEntries={[initialPath]}>
           <Switch>
             <Route path="/login" component={Login} />
-            <Route path="/account" render={() => <div>ACCOUNT PAGE</div>} />
+            <Route
+              path="/account"
+              render={({ location }) => (
+                <>
+                  <div>ACCOUNT PAGE</div>
+                  <output data-testid="account-route">
+                    {location.pathname + location.search + location.hash}
+                  </output>
+                </>
+              )}
+            />
           </Switch>
         </MemoryRouter>
       </VaultProvider>
@@ -176,6 +186,30 @@ test('sends the user to /account on successful login', async () => {
 
   await waitFor(() => expect(screen.getByText('ACCOUNT PAGE')).toBeInTheDocument());
   expect(service.login).toHaveBeenCalledWith('a@b.com', 'hunter22a');
+});
+
+test('returns to the exact recovery-alert deep link after signing in', async () => {
+  const user = { id: 1, email: 'a@b.com', emailVerified: true };
+  const service = mockService({
+    login: jest.fn().mockResolvedValue({ user, expiresAt: 1 }),
+    me: jest.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('unauth'), { status: 401 }))
+      .mockResolvedValue({ user }),
+  });
+  renderLogin(service, {
+    initialPath: {
+      pathname: '/login',
+      state: { from: '/account?view=security#recovery-alerts' },
+    },
+  });
+  await waitFor(() => expect(service.me).toHaveBeenCalledTimes(1));
+  await userEvent.type(screen.getByLabelText(/email/i), 'a@b.com');
+  await userEvent.type(screen.getByLabelText('Password'), 'hunter22a');
+  await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  await screen.findByText('ACCOUNT PAGE');
+  expect(screen.getByTestId('account-route')).toHaveTextContent(
+    '/account?view=security#recovery-alerts'
+  );
 });
 
 test('completes a pending TOTP login before navigating', async () => {

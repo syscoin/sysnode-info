@@ -35,7 +35,12 @@ export default function PrivateRoute({
             <Redirect
               to={{
                 pathname: '/login',
-                state: { from: routeProps.location.pathname },
+                state: {
+                  from:
+                    routeProps.location.pathname +
+                    routeProps.location.search +
+                    routeProps.location.hash,
+                },
               }}
             />
           );
