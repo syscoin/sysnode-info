@@ -1,6 +1,8 @@
 import React from 'react';
 
 export default function ExchangeGrid(props) {
+  if (!Array.isArray(props.exchanges) || props.exchanges.length === 0) return null;
+
   return (
     <div className="market-exchanges market-exchanges--compact">
       <div className="market-exchanges__header">

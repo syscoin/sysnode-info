@@ -78,3 +78,15 @@ test('technical version and protocol identifiers keep their ungrouped representa
   expect(screen.queryByText('320,000')).not.toBeInTheDocument();
   expect(screen.queryByText('70,016')).not.toBeInTheDocument();
 });
+
+test('Home keeps market data and navigation without an empty exchange promotion', async () => {
+  fetchNetworkStats.mockResolvedValue(validNetworkStats());
+  render(<MemoryRouter><Home /></MemoryRouter>);
+  await screen.findByText('800,000,000 SYS');
+  expect(screen.getByText('Syscoin Market')).toBeInTheDocument();
+  expect(screen.getByText('SYS Price')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'View Proposals' })).toHaveAttribute('href', '/governance');
+  expect(screen.queryByText(/Get your Syscoin|View all markets/)).not.toBeInTheDocument();
+  expect(document.querySelector('.market-exchanges')).toBeNull();
+  expect(document.querySelector('.panel--market')).toBeInTheDocument();
+});
