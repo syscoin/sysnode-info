@@ -6,6 +6,7 @@ import DataState from '../components/DataState';
 import DefinitionGrid from '../components/DefinitionGrid';
 import ExchangeGrid from '../components/ExchangeGrid';
 import NetworkGraphic from '../components/NetworkGraphic';
+import NetworkDataStatus from '../components/NetworkDataStatus';
 import PageMeta from '../components/PageMeta';
 import TrendChart from '../components/TrendChart';
 import SYS_EXCHANGES from '../data/exchanges';
@@ -17,8 +18,8 @@ import {
   formatNumber,
   formatPercent,
   formatToken,
-  parseNumber,
 } from '../lib/formatters';
+import { metricNumber, metricFormat, metricText } from '../lib/networkStats';
 
 const ACTION_CARDS = [
   {
@@ -42,68 +43,66 @@ const ACTION_CARDS = [
 ];
 
 export default function Home() {
-  const { loading, error, history, stats } = useNetworkData();
+  const { statsLoading, historyLoading, error, historyError, groups, history, stats } = useNetworkData();
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const priceStats = stats && stats.stats ? stats.stats.price_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
-  const enabledCount = parseNumber(networkStats && networkStats.enabled);
-  const totalCount = parseNumber(networkStats && networkStats.total);
+  const enabledCount = metricNumber(networkStats && networkStats.enabled);
+  const totalCount = metricNumber(networkStats && networkStats.total);
   const mapEntries = Object.entries(stats && stats.mapData ? stats.mapData : {}).sort(
     function sortCountries(a, b) {
       return Number(b[1].masternodes || 0) - Number(a[1].masternodes || 0);
     }
   );
   const topCountries = mapEntries.slice(0, 7);
-  const highlightCards = networkStats && superblockStats
-    ? [
+  const highlightCards = [
         {
           label: 'Enabled Sentry Nodes',
-          value: formatNumber(enabledCount),
-          hint: `${formatNumber(totalCount)} Total Sentry Nodes`,
+          value: metricFormat(enabledCount, formatNumber),
+          hint: `${metricFormat(totalCount, formatNumber)} Total Sentry Nodes`,
         },
         {
           label: 'Locked Supply',
-          value: formatPercent(networkStats.coins_percent_locked, 2),
-          hint: `${formatCompactNumber(parseNumber(networkStats.total_locked))} SYS Locked`,
+          value: metricFormat(networkStats?.coins_percent_locked, formatPercent, 2),
+          hint: networkStats ? `${metricFormat(networkStats.total_locked, formatCompactNumber)} SYS Locked` : 'Awaiting a valid network snapshot',
         },
         {
           label: 'Node ROI',
-          value: networkStats.roi,
-          hint: `${networkStats.roi_one} After One Year`,
+          value: metricText(networkStats?.roi),
+          hint: networkStats?.roi_one ? `${metricText(networkStats.roi_one)} After One Year` : 'Requires a valid reward calculation',
         },
         {
           label: 'Next Superblock',
-          value: formatDayMonth(superblockStats.superblock_date),
-          hint: superblockStats.next_superblock,
+          value: superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Unavailable',
+          hint: metricText(superblockStats?.next_superblock),
         },
-      ]
-    : [];
+      ];
   const marketItems =
-    priceStats && networkStats
+    priceStats
       ? [
           {
             label: 'SYS Price',
-            value: formatCurrency(parseNumber(priceStats.price_usd)),
+            value: metricFormat(priceStats.price_usd, formatCurrency),
           },
           {
             label: '24h Change',
-            value: formatPercent(priceStats.price_change, 2),
+            value: metricFormat(priceStats.price_change, formatPercent, 2),
           },
           {
             label: '24h Volume',
-            value: formatCurrency(parseNumber(priceStats.volume_usd)),
+            value: metricFormat(priceStats.volume_usd, formatCurrency),
           },
           {
             label: 'Market Cap',
-            value: formatCurrency(parseNumber(priceStats.market_cap_usd)),
+            value: metricFormat(priceStats.market_cap_usd, formatCurrency),
           },
           {
             label: 'Current Supply',
-            value: formatToken(networkStats.current_supply, 'SYS', 0),
+            value: metricFormat(networkStats?.current_supply ?? priceStats.circulating_supply, formatToken, 'SYS', 0),
           },
           {
             label: 'Locked Supply',
-            value: formatToken(networkStats.total_locked, 'SYS', 0),
+            value: metricFormat(networkStats?.total_locked, formatToken, 'SYS', 0),
           },
         ]
       : [];
@@ -137,17 +136,17 @@ export default function Home() {
               <div className="hero-chip">
                 <span>Collateral</span>
                 <strong>
-                  {networkStats ? formatToken(networkStats.collateral_req, 'SYS') : '100,000 SYS'}
+                  {networkStats ? metricFormat(networkStats.collateral_req, formatToken, 'SYS') : '100,000 SYS'}
                 </strong>
               </div>
               <div className="hero-chip">
                 <span>Sentry Node ROI</span>
-                <strong>{networkStats ? networkStats.roi : 'Loading...'}</strong>
+                <strong>{statsLoading && !stats ? 'Loading...' : metricText(networkStats?.roi)}</strong>
               </div>
               <div className="hero-chip">
                 <span>Next Superblock</span>
                 <strong>
-                  {superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Loading...'}
+                  {superblockStats ? formatDayMonth(superblockStats.superblock_date) : statsLoading && !stats ? 'Loading...' : 'Unavailable'}
                 </strong>
               </div>
             </div>
@@ -167,11 +166,12 @@ export default function Home() {
         <div className="site-wrap">
           <DataState
             error={error}
-            loading={loading && !stats}
+            loading={statsLoading && !stats}
             loadingMessage="Loading the latest network overview..."
           />
+          <NetworkDataStatus groups={groups} historyError={historyError} />
 
-          {stats ? (
+          {!statsLoading || stats ? (
             <div className="metric-grid metric-grid--overview">
               {highlightCards.map(function renderCard(card) {
                 return (
@@ -187,7 +187,7 @@ export default function Home() {
         </div>
       </section>
 
-      {stats ? (
+      {!historyLoading || stats ? (
         <section className="page-section page-section--tight">
           <div className="site-wrap dashboard-grid dashboard-grid--feature">
             <TrendChart
@@ -197,7 +197,7 @@ export default function Home() {
               historyData={history}
             />
 
-            <aside className="panel stack-panel">
+            {networkStats ? <aside className="panel stack-panel">
               <div className="panel__header">
                 <div>
                   <p className="eyebrow">Sentry Node Snapshot</p>
@@ -207,30 +207,30 @@ export default function Home() {
               <div className="stat-list">
                 <div className="stat-list__row">
                   <span>Enabled Sentry Nodes</span>
-                  <strong>{formatNumber(enabledCount)}</strong>
+                  <strong>{metricFormat(enabledCount, formatNumber)}</strong>
                 </div>
                 <div className="stat-list__row">
                   <span>TVL</span>
-                  <strong>{formatToken(networkStats.total_locked, 'SYS', 0)}</strong>
+                  <strong>{metricFormat(networkStats.total_locked, formatToken, 'SYS', 0)}</strong>
                 </div>
                 <div className="stat-list__row">
                   <span>Base ROI</span>
-                  <strong>{networkStats.roi}</strong>
+                  <strong>{metricText(networkStats.roi)}</strong>
                 </div>
                 <div className="stat-list__row">
                   <span>1 Year ROI</span>
-                  <strong>{networkStats.roi_one}</strong>
+                  <strong>{metricText(networkStats.roi_one)}</strong>
                 </div>
                 <div className="stat-list__row">
                   <span>2.5 Year ROI</span>
-                  <strong>{networkStats.roi_two}</strong>
+                  <strong>{metricText(networkStats.roi_two)}</strong>
                 </div>
                 <div className="stat-list__row">
                   <span>Next Superblock</span>
-                  <strong>{formatDayMonth(superblockStats.superblock_date)}</strong>
+                  <strong>{superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Unavailable'}</strong>
                 </div>
               </div>
-            </aside>
+            </aside> : null}
           </div>
         </section>
       ) : null}

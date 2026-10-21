@@ -209,6 +209,31 @@ describe('NewProposal wizard', () => {
     expect(screen.getByTestId('wizard-next')).toBeInTheDocument();
   });
 
+  test.each(['stale', 'unavailable'])('does not prepare from explicit %s statistics with a future anchor', async (status) => {
+    await renderWizard();
+    await screen.findByTestId('wizard-panel-basics');
+    validBasics();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('window-preview');
+    validPayment();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    const now = Date.now();
+    fetchNetworkStats.mockResolvedValueOnce({
+      stats_meta: { groups: { chain: { status, updated_at: now },
+        governance: { status, updated_at: now } } },
+      stats: { superblock_stats: { superblock_next_epoch_sec: currentStableNextSb } },
+    });
+    await act(async () => fireEvent.click(screen.getByTestId('wizard-prepare')));
+    expect(proposalService.prepare).not.toHaveBeenCalled();
+    expect(screen.getByTestId('wizard-prepare')).toBeDisabled();
+    expect(screen.getAllByRole('alert').some((element) => /could not confirm live superblock timing/i.test(element.textContent))).toBe(true);
+  });
+
+  test('legacy timing remains usable but explicitly lacks a source freshness timestamp', async () => {
+    await renderWizard();
+    expect(await screen.findByText(/server does not report a source freshness timestamp/)).toBeInTheDocument();
+  });
+
   test('Next stays on Basics and surfaces errors until Basics validates', async () => {
     await renderWizard();
     await screen.findByTestId('wizard-panel-basics');

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import DataState from '../components/DataState';
 import GovernanceActivity from '../components/GovernanceActivity';
 import GovernanceOpsHero from '../components/GovernanceOpsHero';
+import NetworkDataStatus from '../components/NetworkDataStatus';
 import PageMeta from '../components/PageMeta';
 import ProposalsCreatedPanel from '../components/ProposalsCreatedPanel';
 import VoteMethodModal from '../components/VoteMethodModal';
@@ -26,6 +27,7 @@ import {
   getProposalDurationMonths,
   parseNumber,
 } from '../lib/formatters';
+import { metricDate, metricFormat, metricNumber } from '../lib/networkStats';
 
 // Governance page.
 //
@@ -94,12 +96,12 @@ function ProposalRow({
   nowMs,
 }) {
   const [feedback, setFeedback] = useState('');
-  const supportPercent = enabledCount
+  const supportPercent = enabledCount > 0
     ? (Number(proposal.AbsoluteYesCount || 0) / enabledCount) * 100
-    : 0;
+    : null;
   const yesVotes = Number(proposal.YesCount || 0);
   const noVotes = Number(proposal.NoCount || 0);
-  const passing = supportPercent > 10;
+  const passing = supportPercent === null ? null : supportPercent > 10;
   const paymentAmount = parseNumber(proposal.payment_amount);
   const durationMonths = getProposalDurationMonths(
     proposal.start_epoch,
@@ -124,7 +126,7 @@ function ProposalRow({
   );
 
   const proposalTitle = proposal.title || proposal.name;
-  const statusLabel = passing ? 'Passing' : 'Not Enough Votes';
+  const statusLabel = passing === null ? 'Support unavailable' : passing ? 'Passing' : 'Not Enough Votes';
 
   async function copyCommand(direction) {
     try {
@@ -139,7 +141,7 @@ function ProposalRow({
 
   const rowClasses = [
     'proposal-row',
-    passing ? 'is-passing' : 'is-watch',
+    passing === null ? '' : passing ? 'is-passing' : 'is-watch',
     isHighlighted ? 'is-highlighted' : '',
   ]
     .filter(Boolean)
@@ -152,7 +154,7 @@ function ProposalRow({
       data-testid={isHighlighted ? 'proposal-row-highlighted' : undefined}
     >
       <div className="proposal-row__status">
-        <span className={passing ? 'status-chip is-positive' : 'status-chip is-warning'}>
+        <span className={passing === null ? 'status-chip' : passing ? 'status-chip is-positive' : 'status-chip is-warning'}>
           {statusLabel}
         </span>
         {cohort ? (
@@ -255,7 +257,7 @@ function ProposalRow({
 
       <div className="proposal-row__metric">
         <span className="proposal-row__metric-label">Support</span>
-        <strong>{formatPercent(supportPercent, 2)}</strong>
+        <strong>{metricFormat(supportPercent, formatPercent, 2)}</strong>
       </div>
 
       <div className="proposal-row__metric">
@@ -355,6 +357,8 @@ export default function Governance() {
     loading,
     proposals,
     stats,
+    groups,
+    proposalsLoaded,
     refresh: refreshGovernanceFeed,
   } = useGovernanceData();
   const { isAuthenticated } = useAuth();
@@ -385,7 +389,15 @@ export default function Governance() {
 
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
-  const enabledCount = parseNumber(networkStats && networkStats.enabled);
+  const hasFeed = proposalsLoaded === undefined ? Boolean(stats) : proposalsLoaded;
+  const nodeStatus = groups?.node?.status;
+  const governanceStatus = groups?.governance?.status;
+  const nodeFresh = !nodeStatus || nodeStatus === 'ready' || nodeStatus === 'unverified';
+  const governanceFresh = !governanceStatus || governanceStatus === 'ready' || governanceStatus === 'unverified';
+  const enabledCount = nodeFresh ? metricNumber(networkStats && networkStats.enabled) : null;
+  useEffect(() => {
+    if (!(enabledCount > 0)) setFilter('all');
+  }, [enabledCount]);
   const requestedBudget = proposals.reduce(function sumBudget(total, proposal) {
     return total + Number(proposal.payment_amount || 0);
   }, 0);
@@ -400,9 +412,9 @@ export default function Governance() {
       computeOverBudgetMap({
         proposals,
         enabledCount,
-        budget: superblockStats ? superblockStats.budget : 0,
+        budget: governanceFresh && superblockStats ? metricNumber(superblockStats.budget) : null,
       }),
-    [proposals, enabledCount, superblockStats]
+    [proposals, enabledCount, superblockStats, governanceFresh]
   );
 
   // Per-row selection chip depends on the estimated trigger-selection time AND
@@ -415,15 +427,15 @@ export default function Governance() {
   const closing = useMemo(
     () =>
       closingChip({
-        votingDeadline: superblockStats ? superblockStats.voting_deadline : 0,
+        votingDeadline: governanceFresh && superblockStats ? superblockStats.voting_deadline : null,
         nowMs,
       }),
-    [superblockStats, nowMs]
+    [superblockStats, nowMs, governanceFresh]
   );
   const visibleProposals = proposals.filter(function filterProposal(proposal) {
-    const supportPercent = enabledCount
+    const supportPercent = enabledCount > 0
       ? (Number(proposal.AbsoluteYesCount || 0) / enabledCount) * 100
-      : 0;
+      : null;
     const matchesQuery = !query
       ? true
       : `${proposal.name} ${proposal.title || ''}`
@@ -435,11 +447,11 @@ export default function Governance() {
     }
 
     if (filter === 'passing') {
-      return supportPercent > 10;
+      return supportPercent !== null && supportPercent > 10;
     }
 
     if (filter === 'watch') {
-      return supportPercent <= 10;
+      return supportPercent !== null && supportPercent <= 10;
     }
 
     return true;
@@ -570,40 +582,41 @@ export default function Governance() {
           <div className="panel governance-summary governance-summary--hero">
             <div className="governance-summary__item">
               <span>Current Proposals</span>
-              <strong>{formatNumber(proposals.length)}</strong>
+              <strong>{hasFeed ? formatNumber(proposals.length) : 'Unavailable'}</strong>
               <small>Vote Today!</small>
             </div>
             <div className="governance-summary__item">
               <span>Monthly Budget</span>
               <strong>
-                {superblockStats ? `${formatCompactNumber(superblockStats.budget)} SYS` : 'Loading...'}
+                {superblockStats?.budget !== null && superblockStats?.budget !== undefined
+                  ? `${metricFormat(superblockStats.budget, formatCompactNumber)} SYS` : 'Unavailable'}
               </strong>
               <small>Current Monthly Ceiling</small>
             </div>
             <div className="governance-summary__item">
               <span>Requested Budget</span>
-              <strong>{`${formatCompactNumber(requestedBudget)} SYS`}</strong>
+              <strong>{hasFeed ? `${formatCompactNumber(requestedBudget)} SYS` : 'Unavailable'}</strong>
               <small>Total Proposal Budget Ask</small>
             </div>
             <div className="governance-summary__item" title="Payout-trigger selection may begin around this time. This is not a deadline for submitting proposal votes.">
               <span>Estimated Selection Start</span>
               <strong>
-                {superblockStats ? formatDayMonth(superblockStats.voting_deadline) : 'Loading...'}
+                {metricDate(superblockStats?.voting_deadline, formatDayMonth)}
               </strong>
               <small>
-                {superblockStats
-                  ? `${formatUtcTime(superblockStats.voting_deadline)} (UTC)`
+                {superblockStats?.voting_deadline
+                  ? `${metricDate(superblockStats.voting_deadline, formatUtcTime)} (UTC)`
                   : 'Pending feed'}
               </small>
             </div>
             <div className="governance-summary__item">
               <span>Next Superblock</span>
               <strong>
-                {superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Loading...'}
+                {metricDate(superblockStats?.superblock_date, formatDayMonth)}
               </strong>
               <small>
-                {superblockStats
-                  ? `${formatUtcTime(superblockStats.superblock_date)} (UTC)`
+                {superblockStats?.superblock_date
+                  ? `${metricDate(superblockStats.superblock_date, formatUtcTime)} (UTC)`
                   : 'Pending feed'}
               </small>
             </div>
@@ -618,7 +631,8 @@ export default function Governance() {
             loading={loading && !stats}
             loadingMessage="Loading the live governance feed..."
           />
-          {!isAuthenticated && stats ? (
+          <NetworkDataStatus groups={groups} />
+          {!isAuthenticated && hasFeed ? (
             <div
               className="panel governance-cta"
               data-testid="governance-login-cta"
@@ -633,7 +647,7 @@ export default function Governance() {
             </div>
           ) : null}
           {isAuthenticated ? <ProposalsCreatedPanel /> : null}
-          {isAuthenticated && stats ? (
+          {isAuthenticated && hasFeed ? (
             <div className="gov-auth-rail">
               <GovernanceOpsHero
                 proposals={visibleProposals}
@@ -653,7 +667,7 @@ export default function Governance() {
         </div>
       </section>
 
-      {stats ? (
+      {hasFeed ? (
         <section className="page-section page-section--last">
           <div className="site-wrap panel panel--table">
             <div className="panel__header panel__header--table">
@@ -684,6 +698,7 @@ export default function Governance() {
                   </button>
                   <button
                     type="button"
+                    disabled={!(enabledCount > 0)}
                     className={
                       filter === 'passing'
                         ? 'filter-switcher__button is-active'
@@ -697,6 +712,7 @@ export default function Governance() {
                   </button>
                   <button
                     type="button"
+                    disabled={!(enabledCount > 0)}
                     className={
                       filter === 'watch'
                         ? 'filter-switcher__button is-active'

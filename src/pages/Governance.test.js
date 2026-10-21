@@ -164,6 +164,30 @@ beforeEach(() => {
   useGovernanceReceipts.mockReturnValue(makeReceipts());
 });
 
+test('unavailable statistics keep the proposal visible without false zero support or budget', () => {
+  useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+  useGovernanceData.mockReturnValue(baseData({ stats: null, proposalsLoaded: true,
+    groups: { node: { status: 'unavailable', updatedAt: null }, governance: { status: 'unavailable', updatedAt: null } } }));
+  renderPage();
+  expect(screen.getByText('Demo proposal')).toBeInTheDocument();
+  expect(screen.getByText('Support unavailable')).toBeInTheDocument();
+  expect(screen.queryByText('Not Enough Votes')).not.toBeInTheDocument();
+  expect(screen.queryByText('0.00%')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Passing', exact: true })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Copy yes vote command' })).toBeEnabled();
+  expect(screen.getByText('Monthly Budget').parentElement).toHaveTextContent('Unavailable');
+});
+
+test('a real zero enabled denominator is undefined support, not a failed proposal', () => {
+  useAuth.mockReturnValue({ isAuthenticated: false, user: null });
+  const data = baseData();
+  data.stats.stats.mn_stats.enabled = 0;
+  useGovernanceData.mockReturnValue(data);
+  renderPage();
+  expect(screen.getByText('Support unavailable')).toBeInTheDocument();
+  expect(screen.queryByText('Not Enough Votes')).not.toBeInTheDocument();
+});
+
 describe('Governance page — cohort affordances', () => {
   test('anonymous users see Yes/No copy buttons and a login CTA banner', () => {
     useAuth.mockReturnValue({ isAuthenticated: false, user: null });

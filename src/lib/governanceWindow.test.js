@@ -477,6 +477,34 @@ describe('computeProposalWindow', () => {
 describe('nextSuperblockEpochSecFromStats', () => {
   const NOW = 1_800_000_000;
 
+  function observed(status = 'ready', updatedAt = NOW * 1000) {
+    return {
+      stats_meta: { groups: { chain: { status, updated_at: updatedAt },
+        governance: { status, updated_at: updatedAt } } },
+      stats: { superblock_stats: { superblock_next_epoch_sec: NOW + 3600 } },
+    };
+  }
+
+  test('accepts explicit fresh ready chain and governance observations', () => {
+    expect(nextSuperblockEpochSecFromStats(observed(), NOW)).toBe(NOW + 3600);
+  });
+
+  test.each(['stale', 'unavailable'])('rejects a future anchor whose source reports %s', (status) => {
+    expect(nextSuperblockEpochSecFromStats(observed(status), NOW)).toBeNull();
+  });
+
+  test.each([null, 0, NOW * 1000 - 120001, NOW * 1000 + 60001])('rejects invalid or aged observation time %s', (time) => {
+    expect(nextSuperblockEpochSecFromStats(observed('ready', time), NOW)).toBeNull();
+  });
+
+  test('both source groups must be present and fresh when metadata is supplied', () => {
+    const payload = observed();
+    delete payload.stats_meta.groups.chain;
+    expect(nextSuperblockEpochSecFromStats(payload, NOW)).toBeNull();
+    payload.stats_meta = null;
+    expect(nextSuperblockEpochSecFromStats(payload, NOW)).toBeNull();
+  });
+
   test('returns the numeric field when strictly in the future', () => {
     expect(
       nextSuperblockEpochSecFromStats(

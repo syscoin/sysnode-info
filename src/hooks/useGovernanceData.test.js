@@ -31,6 +31,11 @@ function Probe() {
   return <output data-testid="proposals">{state.loading ? 'loading' : JSON.stringify(state.proposals.map((p) => p.Key))}</output>;
 }
 
+function SnapshotProbe() {
+  const state = useGovernanceData();
+  return <output data-testid="snapshot">{JSON.stringify(state)}</output>;
+}
+
 describe('governance feed eligibility', () => {
   beforeEach(() => {
     jest.spyOn(Date, 'now').mockReturnValue(NOW);
@@ -73,5 +78,18 @@ describe('governance feed eligibility', () => {
     ]);
     render(<Probe />);
     await waitFor(() => expect(screen.getByTestId('proposals').textContent).toBe(JSON.stringify(['a'.repeat(64), 'c'.repeat(64)])));
+  });
+
+  test('a statistics outage does not discard a valid independent proposal feed', async () => {
+    fetchNetworkStats.mockRejectedValue(new Error('503'));
+    fetchGovernanceFeed.mockResolvedValue([proposal()]);
+    render(<SnapshotProbe />);
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('snapshot').textContent).loading).toBe(false));
+    const state = JSON.parse(screen.getByTestId('snapshot').textContent);
+    expect(state.proposals).toHaveLength(1);
+    expect(state.proposalsLoaded).toBe(true);
+    expect(state.stats).toBeNull();
+    expect(state.loadedAt).toBeNull();
+    expect(state.error).toMatch(/statistics are unavailable/);
   });
 });

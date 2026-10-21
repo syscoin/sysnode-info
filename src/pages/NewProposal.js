@@ -197,6 +197,7 @@ export default function NewProposal() {
   // risks a window that doesn't cover the first superblock or
   // accidentally fits an extra one.
   const [nextSuperblockSec, setNextSuperblockSec] = useState(null);
+  const [statsFreshUntil, setStatsFreshUntil] = useState(null);
   const [statsError, setStatsError] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
   // Monotonic counter tracking the "latest issued /mnstats request".
@@ -230,6 +231,10 @@ export default function NewProposal() {
           setNextSuperblockSec(null);
           return;
         }
+        const groups = stats.stats_meta && stats.stats_meta.groups;
+        setStatsFreshUntil(groups
+          ? Math.min(Number(groups.chain.updated_at), Number(groups.governance.updated_at)) + 120000
+          : null);
         setNextSuperblockSec(anchor);
       })
       .catch((err) => {
@@ -288,7 +293,8 @@ export default function NewProposal() {
   // collapses to 1 ms and fires immediately).
   const nowSecForAnchor = Math.floor(Date.now() / 1000);
   const isAnchorLive =
-    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > nowSecForAnchor;
+    Number.isFinite(nextSuperblockSec) && nextSuperblockSec > nowSecForAnchor &&
+    (statsFreshUntil === null || Date.now() <= statsFreshUntil);
 
   const dirty = !formsEqual(form, baseline) && prepared == null;
 
@@ -968,6 +974,11 @@ export default function NewProposal() {
             <div className="auth-alert auth-alert--error" role="alert">
               Couldn't load draft: {loadError.code || 'unknown_error'}
             </div>
+          ) : null}
+          {isAnchorLive && statsFreshUntil === null ? (
+            <p className="notice notice--warning" role="status">
+              The server does not report a source freshness timestamp. Superblock timing is rechecked before preparation.
+            </p>
           ) : null}
 
           {currentStep === 'basics' ? (
