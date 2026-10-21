@@ -192,8 +192,13 @@ export function createApiClient({
         const isVerifyPassword = url.startsWith('/auth/verify-password');
         const isVerifyPasswordMismatch =
           isVerifyPassword && apiError.code === 'invalid_credentials';
+        const isRecoveryPasswordMismatch =
+          String(error.config && error.config.method).toUpperCase() ===
+            'DELETE' &&
+          /^\/api\/recovery\/subscriptions\/[^/?]+$/.test(url) &&
+          apiError.code === 'invalid_credentials';
         if (
-          !isAuthEndpoint ||
+          (!isAuthEndpoint && !isRecoveryPasswordMismatch) ||
           (isVerifyPassword && !isVerifyPasswordMismatch)
         ) {
           try {

@@ -1,0 +1,180 @@
+.recovery-alerts {
+  scroll-margin-top: 100px;
+  min-width: 0;
+}
+.recovery-alerts h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.recovery-alerts h2 svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  flex: 0 0 auto;
+}
+.recovery-alerts h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+}
+.recovery-alerts .auth-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.recovery-alerts .auth-alert {
+  overflow-wrap: anywhere;
+}
+.recovery-email {
+  overflow-wrap: anywhere;
+}
+.recovery-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+.recovery-subscriptions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.recovery-subscription,
+.recovery-remove {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--panel-outline);
+  border-radius: 16px;
+  padding: 18px;
+  min-width: 0;
+}
+.recovery-subscription__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.recovery-subscription__heading h3 {
+  overflow-wrap: anywhere;
+  flex: 1 1 130px;
+}
+.recovery-subscription .status-chip {
+  font-size: 0.72rem;
+}
+.recovery-address {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.recovery-address code {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  min-width: 0;
+}
+.recovery-copy {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border: 1px solid var(--panel-outline);
+  color: var(--muted);
+  background: transparent;
+  border-radius: 7px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.74rem;
+}
+.recovery-copy:hover,
+.recovery-copy:focus-visible {
+  background: var(--accent-soft);
+  color: var(--text);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.recovery-operation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left: 3px solid var(--accent);
+  padding: 8px 0 8px 12px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.recovery-empty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--panel-outline);
+  border-radius: 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+.recovery-enroll {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.recovery-network {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.recovery-link-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.6;
+  padding: 10px 0;
+  color: var(--text);
+}
+.recovery-link-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+.recovery-link-details[open] summary {
+  margin-bottom: 12px;
+}
+.recovery-disable,
+.recovery-refresh {
+  align-self: flex-start;
+  text-align: left;
+  line-height: 1.6;
+}
+.recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.recovery-actions .button {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.recovery-alerts .button {
+  white-space: normal;
+  min-width: 0;
+}
+.recovery-account-select {
+  font-size: 0.75rem;
+}
+@media (max-width: 400px) {
+  .recovery-subscription,
+  .recovery-remove {
+    padding: 14px;
+  }
+  .recovery-address {
+    flex-wrap: wrap;
+  }
+  .recovery-address code {
+    flex-basis: 100%;
+  }
+}

@@ -10,7 +10,17 @@ function mount(service, initialPath) {
     <AuthProvider authService={service}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Switch>
-          <Route path="/login" render={() => <div>LOGIN</div>} />
+          <Route
+            path="/login"
+            render={({ location }) => (
+              <>
+                <div>LOGIN</div>
+                <output data-testid="return-route">
+                  {location.state && location.state.from}
+                </output>
+              </>
+            )}
+          />
           <PrivateRoute path="/account" render={() => <div>ACCOUNT</div>} />
         </Switch>
       </MemoryRouter>
@@ -57,4 +67,15 @@ test('shows a neutral placeholder while booting', () => {
   };
   mount(service, '/account');
   expect(screen.getByText(/checking your session/i)).toBeInTheDocument();
+});
+
+test('keeps the recovery-alert deep link through an anonymous redirect', async () => {
+  const service = {
+    me: jest.fn().mockRejectedValue(Object.assign(new Error('unauth'), { status: 401 })),
+  };
+  mount(service, '/account?view=security#recovery-alerts');
+  await screen.findByText('LOGIN');
+  expect(screen.getByTestId('return-route')).toHaveTextContent(
+    '/account?view=security#recovery-alerts'
+  );
 });

@@ -39,6 +39,7 @@ https://sysnode.info/gov/*   -> backend
 https://sysnode.info/mnstats -> backend
 https://sysnode.info/mncount -> backend
 https://sysnode.info/govlist -> backend
+https://sysnode.info/api/recovery/* -> backend
 ```
 
 The backend aggregates data from a Syscoin Core node, Sentry Node RPC responses, market APIs, and supporting network datasets. For a fork or private production deployment, keep the same-origin shape and point the reverse proxy at that deployment's backend. This keeps the CSP `connect-src` policy, host-only cookies, and CSRF model in lockstep.
@@ -50,6 +51,25 @@ REACT_APP_API_BASE=https://your-backend.example npm start
 ```
 
 The value is read at build time by both `src/lib/apiClient.js` (authenticated surface) and `src/lib/api.js` (anonymous surface — superblock timing, governance feed, masternode stats) outside production. Without it, development requests use `http://localhost:3001`; production requests use same-origin relative paths. Keeping the API under the SPA origin preserves host-only `Secure; SameSite=Lax` cookies and lets the SPA mirror the CSRF cookie into `X-CSRF-Token` without cross-site credentialed fetches.
+
+## Recovery email alerts
+
+Open **Account → Recovery alerts**, connect a deployed smart account on a
+supported network, and sign the enrollment message in the wallet. Alerts go to
+the signed-in user's verified email; private keys never leave the wallet.
+The backend verifies the account's ERC-1271 signature and monitors independently
+of this page being open. The initial supported chain is zkTanenbaum (57057).
+
+Check the displayed monitoring status and on-chain execution time. Delivery is
+best effort; a delayed monitor is not evidence that an account is safe. Email
+links open the review page, never authorize cancellation or a transaction.
+Disabling an alert subscription requires the current Sysnode password and TOTP
+when configured; it does not disable the on-chain guardian policy.
+
+The public `/api/recovery/` prefix uses the existing `/api/` reverse proxy.
+Backends also accept `/recovery/` when that proxy strips `/api`, while local
+development can use `/api/recovery/` directly. Keep both on the same origin as
+the frontend and do not replace the credentialed cookie/CSRF boundary.
 
 ## Getting Started
 

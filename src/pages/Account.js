@@ -8,6 +8,7 @@ import TwoFactorCard from '../components/TwoFactorCard';
 import NotificationPreferencesCard from '../components/NotificationPreferencesCard';
 import DeleteAccountCard from '../components/DeleteAccountCard';
 import GovernanceActivityLink from '../components/GovernanceActivityLink';
+import RecoveryAlertsCard from '../components/RecoveryAlertsCard';
 import { useAuth } from '../context/AuthContext';
 
 export default function Account() {
@@ -42,7 +43,7 @@ export default function Account() {
     <>
       <PageMeta
         title="Account"
-        description="Manage your Sysnode account and Sentry Node keys."
+        description="Manage your Sysnode account, smart-account recovery alerts and Sentry Node keys."
       />
       <section className="page-hero auth-hero">
         <div className="site-wrap">
@@ -99,6 +100,8 @@ export default function Account() {
           <VaultStatusCard user={user} />
 
           <GovernanceActivityLink />
+
+          <RecoveryAlertsCard />
 
           {/*
            * Settings-style disclosure: heavier forms (Change password,

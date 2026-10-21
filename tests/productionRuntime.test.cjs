@@ -91,3 +91,57 @@ test('axios ignores an inherited parseReviver when decoding JSON responses', asy
     else delete Object.prototype.parseReviver;
   }
 });
+
+for (const arrayHeaders of [true, false]) {
+  test(`redirects strip credential headers across origins (${arrayHeaders ? 'array' : 'metacharacter'} headers)`, async () => {
+    const http = require('node:http');
+    const follow = require('follow-redirects').http;
+    const target = http.createServer((req, res) => {
+      req.resume();
+      res.end(JSON.stringify(req.headers));
+    });
+    const source = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(302, { Location: `http://127.0.0.1:${target.address().port}/capture` });
+      res.end();
+    });
+    try {
+      target.listen(0, '127.0.0.1');
+      await once(target, 'listening');
+      source.listen(0, '127.0.0.1');
+      await once(source, 'listening');
+      const headerObject = {
+        Authorization: 'synthetic-authorization',
+        Cookie: 'synthetic-session',
+        'Proxy-Authorization': 'synthetic-proxy',
+        'X-Api^Key': 'synthetic-custom-one',
+        'X-Token|Secret': 'synthetic-custom-two',
+        'X-Public': 'harmless',
+      };
+      const headers = arrayHeaders ? Object.entries(headerObject).flat() : headerObject;
+      const received = await new Promise((resolve, reject) => {
+        const req = follow.request({
+          hostname: '127.0.0.1', port: source.address().port, path: '/', headers,
+          sensitiveHeaders: ['X-Api^Key', 'X-Token|Secret'],
+        }, (res) => {
+          const chunks = [];
+          res.on('data', (chunk) => chunks.push(chunk));
+          res.on('end', () => {
+            try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch (error) { reject(error); }
+          });
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      assert.equal(received.authorization, undefined);
+      assert.equal(received.cookie, undefined);
+      assert.equal(received['proxy-authorization'], undefined);
+      assert.equal(received['x-api^key'], undefined);
+      assert.equal(received['x-token|secret'], undefined);
+      assert.equal(received['x-public'], 'harmless');
+    } finally {
+      await Promise.all([source, target].map((server) => new Promise((resolve) => server.close(resolve))));
+    }
+  });
+}
