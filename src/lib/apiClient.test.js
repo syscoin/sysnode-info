@@ -153,10 +153,10 @@ describe('createApiClient — 401 handling', () => {
     const client = createApiClient({ onAuthLost });
     const adapter = new MockAdapter(client);
     adapter
-      .onDelete('/recovery/subscriptions/1')
+      .onDelete('/api/recovery/subscriptions/1')
       .reply(401, { error: 'invalid_credentials' });
     await expect(
-      client.delete('/recovery/subscriptions/1')
+      client.delete('/api/recovery/subscriptions/1')
     ).rejects.toMatchObject({ code: 'invalid_credentials' });
     expect(onAuthLost).not.toHaveBeenCalled();
     adapter.restore();
@@ -167,10 +167,10 @@ describe('createApiClient — 401 handling', () => {
     const client = createApiClient({ onAuthLost });
     const adapter = new MockAdapter(client);
     adapter
-      .onDelete('/recovery/subscriptions/1')
+      .onDelete('/api/recovery/subscriptions/1')
       .reply(401, { error: 'unauthorized' });
     await expect(
-      client.delete('/recovery/subscriptions/1')
+      client.delete('/api/recovery/subscriptions/1')
     ).rejects.toMatchObject({ code: 'unauthorized' });
     expect(onAuthLost).toHaveBeenCalledTimes(1);
     adapter.restore();

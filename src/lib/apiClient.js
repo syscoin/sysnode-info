@@ -195,7 +195,7 @@ export function createApiClient({
         const isRecoveryPasswordMismatch =
           String(error.config && error.config.method).toUpperCase() ===
             'DELETE' &&
-          /^\/recovery\/subscriptions\/[^/?]+$/.test(url) &&
+          /^\/api\/recovery\/subscriptions\/[^/?]+$/.test(url) &&
           apiError.code === 'invalid_credentials';
         if (
           (!isAuthEndpoint && !isRecoveryPasswordMismatch) ||

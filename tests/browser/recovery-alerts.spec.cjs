@@ -79,18 +79,18 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
   await page.route('**/vault', (route) =>
     route.fulfill({ json: { empty: true } })
   );
-  await page.route('**/recovery/**', async (route) => {
+  await page.route('**/api/recovery/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === '/recovery/chains')
+    if (path === '/api/recovery/chains')
       return route.fulfill({ json: { chains: [CHAIN] } });
     if (
-      path === '/recovery/subscriptions' &&
+      path === '/api/recovery/subscriptions' &&
       route.request().method() === 'GET'
     )
       return route.fulfill({ json: { subscriptions } });
     const body = route.request().postDataJSON();
     writes.push({ path, body });
-    if (path === '/recovery/challenges')
+    if (path === '/api/recovery/challenges')
       return route.fulfill({
         json: {
           id: 'nonce',
@@ -100,7 +100,7 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
           expiresAt: Date.now() + 300000,
         },
       });
-    if (path === '/recovery/subscriptions') {
+    if (path === '/api/recovery/subscriptions') {
       expect(body).toEqual({
         challengeId: 'nonce',
         signature,
@@ -117,7 +117,7 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
       subscriptions = [subscription];
       return route.fulfill({ json: { subscription } });
     }
-    if (path === '/recovery/subscriptions/1')
+    if (path === '/api/recovery/subscriptions/1')
       return route.fulfill({
         status: 401,
         json: { error: 'invalid_credentials' },

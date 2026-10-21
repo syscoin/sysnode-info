@@ -51,17 +51,17 @@ test('uses authenticated API methods and never sends wallet keys or an RPC URL',
   await service.subscribe('nonce', SIGNATURE, 'Savings');
   await service.remove(1, { oldAuthHash: 'hash', code: '123456' });
   expect(client.get.mock.calls).toEqual([
-    ['/recovery/chains'],
-    ['/recovery/subscriptions'],
+    ['/api/recovery/chains'],
+    ['/api/recovery/subscriptions'],
   ]);
   expect(client.post.mock.calls).toEqual([
-    ['/recovery/challenges', { chainId: CHAIN, account: ACCOUNT }],
+    ['/api/recovery/challenges', { chainId: CHAIN, account: ACCOUNT }],
     [
-      '/recovery/subscriptions',
+      '/api/recovery/subscriptions',
       { challengeId: 'nonce', signature: SIGNATURE, label: 'Savings' },
     ],
   ]);
-  expect(client.delete).toHaveBeenCalledWith('/recovery/subscriptions/1', {
+  expect(client.delete).toHaveBeenCalledWith('/api/recovery/subscriptions/1', {
     data: { oldAuthHash: 'hash', code: '123456' },
   });
 });

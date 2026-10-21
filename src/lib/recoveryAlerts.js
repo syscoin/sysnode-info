@@ -3,25 +3,25 @@ import { apiClient } from './apiClient';
 export function createRecoveryAlertsService(client = apiClient) {
   return {
     async chains() {
-      return (await client.get('/recovery/chains')).data.chains;
+      return (await client.get('/api/recovery/chains')).data.chains;
     },
     async subscriptions() {
-      return (await client.get('/recovery/subscriptions')).data.subscriptions;
+      return (await client.get('/api/recovery/subscriptions')).data.subscriptions;
     },
     async challenge(chainId, account) {
-      return (await client.post('/recovery/challenges', { chainId, account }))
+      return (await client.post('/api/recovery/challenges', { chainId, account }))
         .data;
     },
     async subscribe(challengeId, signature, label) {
       const body = { challengeId, signature };
       if (label) body.label = label;
-      return (await client.post('/recovery/subscriptions', body)).data
+      return (await client.post('/api/recovery/subscriptions', body)).data
         .subscription;
     },
     async remove(id, credentials) {
       return (
         await client.delete(
-          `/recovery/subscriptions/${encodeURIComponent(id)}`,
+          `/api/recovery/subscriptions/${encodeURIComponent(id)}`,
           {
             data: credentials,
           }
