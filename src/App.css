@@ -736,6 +736,13 @@
 
 .chart-canvas {
   height: 360px;
+  min-width: 0;
+}
+
+.panel--chart,
+.breakdown-panel {
+  /* Canvas has an intrinsic 300px width; let its grid track shrink on phones. */
+  min-width: 0;
 }
 
 .range-switcher,
@@ -1434,6 +1441,21 @@
   border-color: rgba(243, 179, 86, 0.34);
   background: linear-gradient(180deg, rgba(255, 248, 237, 0.96) 0%, rgba(255, 245, 226, 0.98) 100%);
   color: #855b15;
+}
+
+.network-data-status {
+  display: grid;
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+
+.network-data-status .notice {
+  margin: 0;
+}
+
+.metric-card strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .state-block {

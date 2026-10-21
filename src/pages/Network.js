@@ -4,6 +4,7 @@ import BreakdownChart from '../components/BreakdownChart';
 import CountryList from '../components/CountryList';
 import DataState from '../components/DataState';
 import DefinitionGrid from '../components/DefinitionGrid';
+import NetworkDataStatus from '../components/NetworkDataStatus';
 import PageMeta from '../components/PageMeta';
 import TrendChart from '../components/TrendChart';
 import useNetworkData from '../hooks/useNetworkData';
@@ -14,8 +15,8 @@ import {
   formatNumber,
   formatPercent,
   formatToken,
-  parseNumber,
 } from '../lib/formatters';
+import { metricNumber, metricFormat, metricText, metricDate } from '../lib/networkStats';
 
 function IncomeTierCard(props) {
   return (
@@ -46,7 +47,7 @@ function IncomeTierCard(props) {
 }
 
 export default function Network() {
-  const { loading, error, history, stats } = useNetworkData();
+  const { statsLoading, historyLoading, error, historyError, groups, history, stats } = useNetworkData();
   const networkStats = stats && stats.stats ? stats.stats.mn_stats : null;
   const incomeStats = stats && stats.stats ? stats.stats.income_stats : null;
   const oneYearIncome =
@@ -56,53 +57,52 @@ export default function Network() {
   const priceStats = stats && stats.stats ? stats.stats.price_stats : null;
   const blockchainStats = stats && stats.stats ? stats.stats.blockchain_stats : null;
   const superblockStats = stats && stats.stats ? stats.stats.superblock_stats : null;
-  const enabledCount = parseNumber(networkStats && networkStats.enabled);
-  const bannedCount = parseNumber(networkStats && networkStats.pose_banned);
-  const lockedSupply = parseNumber(networkStats && networkStats.total_locked);
-  const currentSupply = parseNumber(networkStats && networkStats.current_supply);
-  const remainingSupply = Math.max(currentSupply - lockedSupply, 0);
+  const enabledCount = metricNumber(networkStats && networkStats.enabled);
+  const bannedCount = metricNumber(networkStats && networkStats.pose_banned);
+  const lockedSupply = metricNumber(networkStats && networkStats.total_locked);
+  const currentSupply = metricNumber(networkStats && networkStats.current_supply);
+  const remainingSupply = currentSupply !== null && lockedSupply !== null
+    ? Math.max(currentSupply - lockedSupply, 0) : null;
   const topCountries = Object.entries(stats && stats.mapData ? stats.mapData : {})
     .sort(function sortCountries(a, b) {
       return Number(b[1].masternodes || 0) - Number(a[1].masternodes || 0);
     })
     .slice(0, 8);
 
-  const priceBtcValue = parseNumber(priceStats && priceStats.price_btc);
-  const readablePriceBtc = priceBtcValue > 0 ? `${priceBtcValue.toFixed(8)} BTC` : 'Unavailable';
-  const networkHeroCards = networkStats
-    ? [
+  const priceBtcValue = metricNumber(priceStats && priceStats.price_btc);
+  const readablePriceBtc = priceBtcValue !== null && priceBtcValue >= 0 ? `${priceBtcValue.toFixed(8)} BTC` : 'Unavailable';
+  const networkHeroCards = [
         {
           label: 'Total Nodes',
-          value: formatNumber(parseNumber(networkStats.total)),
+          value: metricFormat(networkStats?.total, formatNumber),
         },
         {
           label: 'Enabled Nodes',
-          value: formatNumber(enabledCount),
+          value: metricFormat(enabledCount, formatNumber),
         },
         {
           label: 'Locked Supply',
-          value: formatPercent(networkStats.coins_percent_locked, 2),
+          value: metricFormat(networkStats?.coins_percent_locked, formatPercent, 2),
         },
         {
           label: 'ROI',
-          value: `${networkStats.roi}-${networkStats.roi_two}`,
+          value: networkStats?.roi && networkStats?.roi_two ? `${networkStats.roi}-${networkStats.roi_two}` : 'Unavailable',
         },
         {
           label: 'Payout Frequency',
-          value: networkStats.payout_frequency,
+          value: metricText(networkStats?.payout_frequency),
         },
         {
           label: 'Next Superblock',
-          value: superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Loading...',
+          value: superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Unavailable',
         },
-      ]
-    : [];
+      ];
   const marketItems =
-    priceStats && networkStats
+    priceStats
       ? [
           {
             label: 'SYS price',
-            value: formatCurrency(parseNumber(priceStats.price_usd)),
+            value: metricFormat(priceStats.price_usd, formatCurrency),
           },
           {
             label: 'SYS / BTC',
@@ -110,19 +110,19 @@ export default function Network() {
           },
           {
             label: '24h Volume',
-            value: formatCurrency(parseNumber(priceStats.volume_usd)),
+            value: metricFormat(priceStats.volume_usd, formatCurrency),
           },
           {
             label: 'Market Cap',
-            value: formatCurrency(parseNumber(priceStats.market_cap_usd)),
+            value: metricFormat(priceStats.market_cap_usd, formatCurrency),
           },
           {
             label: '24h Change',
-            value: formatPercent(priceStats.price_change, 2),
+            value: metricFormat(priceStats.price_change, formatPercent, 2),
           },
           {
             label: 'Circulating Supply',
-            value: formatToken(priceStats.circulating_supply, 'SYS', 0),
+            value: metricFormat(priceStats.circulating_supply, formatToken, 'SYS', 0),
           },
         ]
       : [];
@@ -130,27 +130,27 @@ export default function Network() {
     ? [
         {
           label: 'Current Block Height',
-          value: formatNumber(parseNumber(blockchainStats.connections)),
+          value: metricFormat(blockchainStats.connections, formatNumber),
         },
         {
           label: 'Average Block Time',
-          value: blockchainStats.avg_block,
+          value: metricText(blockchainStats.avg_block),
         },
         {
           label: 'Version',
-          value: blockchainStats.version,
+          value: metricFormat(blockchainStats.version, String),
         },
         {
           label: 'Sub-version',
-          value: blockchainStats.sub_version,
+          value: metricText(blockchainStats.sub_version),
         },
         {
           label: 'Protocol',
-          value: blockchainStats.protocol,
+          value: metricFormat(blockchainStats.protocol, String),
         },
         {
           label: 'Genesis Block',
-          value: formatLongDate(blockchainStats.genesis),
+          value: metricDate(blockchainStats.genesis, formatLongDate),
         },
       ]
     : [];
@@ -177,7 +177,7 @@ export default function Network() {
               return (
                 <div key={card.label} className="summary-card">
                   <span>{card.label}</span>
-                  <strong>{card.value}</strong>
+                  <strong>{statsLoading && !stats ? 'Loading...' : card.value}</strong>
                 </div>
               );
             })}
@@ -189,13 +189,14 @@ export default function Network() {
         <div className="site-wrap">
           <DataState
             error={error}
-            loading={loading && !stats}
+            loading={statsLoading && !stats}
             loadingMessage="Loading the live dashboard..."
           />
+          <NetworkDataStatus groups={groups} historyError={historyError} />
         </div>
       </section>
 
-      {stats ? (
+      {!historyLoading || stats ? (
         <section className="page-section page-section--tight">
           <div className="site-wrap dashboard-grid dashboard-grid--feature">
             <TrendChart
@@ -205,7 +206,7 @@ export default function Network() {
               historyData={history}
             />
 
-            <aside className="panel stack-panel">
+            {networkStats ? <aside className="panel stack-panel">
               <div className="panel__header">
                 <div>
                   <p className="eyebrow">Sentry Node Stats</p>
@@ -215,45 +216,45 @@ export default function Network() {
               <div className="metric-stack">
                 <div className="metric-stack__item">
                   <span>Base ROI</span>
-                  <strong>{networkStats.roi}</strong>
+                  <strong>{metricText(networkStats.roi)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>1 Year Seniority ROI</span>
-                  <strong>{networkStats.roi_one}</strong>
+                  <strong>{metricText(networkStats.roi_one)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>2.5 Year Seniority ROI</span>
-                  <strong>{networkStats.roi_two}</strong>
+                  <strong>{metricText(networkStats.roi_two)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>Payout Frequency</span>
-                  <strong>{networkStats.payout_frequency}</strong>
+                  <strong>{metricText(networkStats.payout_frequency)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>Locked Supply</span>
-                  <strong>{formatPercent(networkStats.coins_percent_locked, 2)}</strong>
+                  <strong>{metricFormat(networkStats.coins_percent_locked, formatPercent, 2)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>Sentry Node Price</span>
-                  <strong>{formatCurrency(parseNumber(networkStats.masternode_price_usd))}</strong>
+                  <strong>{metricFormat(networkStats.masternode_price_usd, formatCurrency)}</strong>
                 </div>
                 <div className="metric-stack__item">
                   <span>Next Superblock</span>
-                  <strong>{formatDayMonth(superblockStats.superblock_date)}</strong>
+                  <strong>{superblockStats ? formatDayMonth(superblockStats.superblock_date) : 'Unavailable'}</strong>
                 </div>
               </div>
-            </aside>
+            </aside> : null}
           </div>
         </section>
       ) : null}
 
-      {stats ? (
+      {networkStats ? (
         <section className="page-section">
           <div className="site-wrap dashboard-grid dashboard-grid--split">
             <BreakdownChart
               eyebrow="Syscoin Sentry Node Status"
               title="Node status mix"
-              centerValue={formatNumber(enabledCount)}
+              centerValue={metricFormat(enabledCount, formatNumber)}
               centerLabel="enabled nodes"
               items={[
                 {
@@ -271,10 +272,10 @@ export default function Network() {
               ]}
             />
 
-            <BreakdownChart
+            {currentSupply !== null && lockedSupply !== null ? <BreakdownChart
               eyebrow="Syscoin Sentry Node TVL"
               title="Locked supply mix"
-              centerValue={formatPercent(networkStats.coins_percent_locked, 2)}
+              centerValue={metricFormat(networkStats.coins_percent_locked, formatPercent, 2)}
               centerLabel="of current supply locked"
               items={[
                 {
@@ -290,12 +291,15 @@ export default function Network() {
                   color: '#b8d5ff',
                 },
               ]}
-            />
+            /> : <section className="panel"><p className="eyebrow">Syscoin Sentry Node TVL</p>
+              <p>Supply proportions are unavailable until a current supply observation is available.</p>
+              <p>Locked collateral: {metricFormat(lockedSupply, formatToken, 'SYS', 0)}</p>
+            </section>}
           </div>
         </section>
       ) : null}
 
-      {stats ? (
+      {networkStats ? (
         <section className="page-section">
           <div className="site-wrap">
             <div className="section-heading">
@@ -306,33 +310,33 @@ export default function Network() {
             <div className="tier-grid">
               <IncomeTierCard
                 label="New Sentry Node"
-                roi={networkStats.roi}
-                yearlyUsd={incomeStats.usd.yearly}
-                yearlySys={incomeStats.sys.yearly}
-                monthlyUsd={incomeStats.usd.monthly}
-                monthlySys={incomeStats.sys.monthly}
-                dailyUsd={incomeStats.usd.daily}
-                dailySys={incomeStats.sys.daily}
+                roi={metricText(networkStats.roi)}
+                yearlyUsd={metricText(incomeStats?.usd?.yearly)}
+                yearlySys={metricText(incomeStats?.sys?.yearly)}
+                monthlyUsd={metricText(incomeStats?.usd?.monthly)}
+                monthlySys={metricText(incomeStats?.sys?.monthly)}
+                dailyUsd={metricText(incomeStats?.usd?.daily)}
+                dailySys={metricText(incomeStats?.sys?.daily)}
               />
               <IncomeTierCard
                 label="1 Year Seniority"
-                roi={networkStats.roi_one}
-                yearlyUsd={oneYearIncome.usd.yearly}
-                yearlySys={oneYearIncome.sys.yearly}
-                monthlyUsd={oneYearIncome.usd.monthly}
-                monthlySys={oneYearIncome.sys.monthly}
-                dailyUsd={oneYearIncome.usd.daily}
-                dailySys={oneYearIncome.sys.daily}
+                roi={metricText(networkStats.roi_one)}
+                yearlyUsd={metricText(oneYearIncome?.usd?.yearly)}
+                yearlySys={metricText(oneYearIncome?.sys?.yearly)}
+                monthlyUsd={metricText(oneYearIncome?.usd?.monthly)}
+                monthlySys={metricText(oneYearIncome?.sys?.monthly)}
+                dailyUsd={metricText(oneYearIncome?.usd?.daily)}
+                dailySys={metricText(oneYearIncome?.sys?.daily)}
               />
               <IncomeTierCard
                 label="2.5 Year Seniority"
-                roi={networkStats.roi_two}
-                yearlyUsd={longTermIncome.usd.yearly}
-                yearlySys={longTermIncome.sys.yearly}
-                monthlyUsd={longTermIncome.usd.monthly}
-                monthlySys={longTermIncome.sys.monthly}
-                dailyUsd={longTermIncome.usd.daily}
-                dailySys={longTermIncome.sys.daily}
+                roi={metricText(networkStats.roi_two)}
+                yearlyUsd={metricText(longTermIncome?.usd?.yearly)}
+                yearlySys={metricText(longTermIncome?.sys?.yearly)}
+                monthlyUsd={metricText(longTermIncome?.usd?.monthly)}
+                monthlySys={metricText(longTermIncome?.sys?.monthly)}
+                dailyUsd={metricText(longTermIncome?.usd?.daily)}
+                dailySys={metricText(longTermIncome?.sys?.daily)}
               />
             </div>
           </div>

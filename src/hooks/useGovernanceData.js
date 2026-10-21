@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { fetchGovernanceFeed, fetchNetworkStats } from '../lib/api';
 import { isSupportedGovernanceProposal } from '../lib/governanceEligibility';
+import { normalizeNetworkStats } from '../lib/networkStats';
+import { useBackgroundPoll } from './useBackgroundPoll';
 
 // Governance feed + network stats, loaded once on mount and refetchable
 // on demand via the returned `refresh` callback.
@@ -40,12 +42,15 @@ export default function useGovernanceData() {
     loadedAt: null,
     loading: true,
     proposals: [],
+    proposalsLoaded: false,
     stats: null,
+    groups: {},
   });
   const mountedRef = useRef(true);
   const latestRequestIdRef = useRef(0);
 
   const load = useCallback(async function load() {
+    if (!mountedRef.current) return;
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
     // Keep the previous proposals/stats visible while the refetch
@@ -53,16 +58,20 @@ export default function useGovernanceData() {
     // cause jarring layout shifts. Mark `loading` so UI surfaces
     // can show a spinner overlay.
     setState(function markLoading(prev) {
+      if (!mountedRef.current || latestRequestIdRef.current !== requestId) return prev;
       return { ...prev, loading: true, error: '' };
     });
     try {
-      const response = await Promise.all([
+      const response = await Promise.allSettled([
         fetchNetworkStats(),
         fetchGovernanceFeed(),
       ]);
       if (!mountedRef.current) return;
       if (latestRequestIdRef.current !== requestId) return;
-      const rawProposals = Array.isArray(response[1]) ? response[1] : [];
+      const feedSucceeded = response[1].status === 'fulfilled' && Array.isArray(response[1].value);
+      const normalized = response[0].status === 'fulfilled'
+        ? normalizeNetworkStats(response[0].value) : null;
+      const rawProposals = feedSucceeded ? response[1].value : [];
       const nowMs = Date.now();
       const proposals = rawProposals
         .filter(function keepProposal(proposal) {
@@ -73,23 +82,29 @@ export default function useGovernanceData() {
             Number(b.AbsoluteYesCount || 0) - Number(a.AbsoluteYesCount || 0)
           );
         });
-      setState({
-        error: '',
-        loadedAt: new Date(),
+      setState((previous) => {
+        if (!mountedRef.current || latestRequestIdRef.current !== requestId) return previous;
+        return {
+        error: [!normalized?.stats ? 'Live network statistics are unavailable right now.' : '',
+          !feedSucceeded ? 'Unable to refresh the governance proposal feed.' : ''].filter(Boolean).join(' '),
+        loadedAt: normalized?.stats ? normalized.loadedAt : previous.loadedAt,
         loading: false,
-        proposals,
-        stats: response[0],
+        proposals: feedSucceeded ? proposals : previous.proposals,
+        proposalsLoaded: feedSucceeded || previous.proposalsLoaded,
+        stats: normalized?.stats || previous.stats,
+        groups: normalized?.stats ? normalized.groups : Object.fromEntries(
+          Object.entries(previous.groups).map(([name, group]) => [name,
+            group.status === 'unavailable' ? group : { ...group, status: 'stale' }]))
+        };
       });
     } catch (err) {
       if (!mountedRef.current) return;
       if (latestRequestIdRef.current !== requestId) return;
-      setState({
-        error: 'Unable to load governance data right now.',
-        loadedAt: new Date(),
-        loading: false,
-        proposals: [],
-        stats: null,
-      });
+      setState((previous) => !mountedRef.current || latestRequestIdRef.current !== requestId ? previous : ({
+          ...previous,
+          error: 'Unable to load governance data right now.',
+          loading: false,
+        }));
     }
   }, []);
 
@@ -103,6 +118,8 @@ export default function useGovernanceData() {
     },
     [load]
   );
+
+  useBackgroundPoll(load, { enabled: true, intervalMs: 60000 });
 
   return { ...state, refresh: load };
 }

@@ -70,9 +70,9 @@ jobs:
         if: matrix.node == '22'
         run: npx playwright install --with-deps chromium
 
-      - name: Check recovery-alert browser flow and small windows
+      - name: Check recovery and dashboard browser flows and small windows
         if: matrix.node == '22'
-        run: npm run test:recovery-browser
+        run: npx playwright test --config playwright.config.cjs tests/browser/recovery-alerts.spec.cjs tests/browser/network-availability.spec.cjs
 
       - name: Preserve recovery-alert screenshots and failure traces
         if: always() && matrix.node == '22'

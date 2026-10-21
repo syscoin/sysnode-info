@@ -1,3 +1,5 @@
+import { hasFreshStatsGroups } from './networkStats';
+
 // Governance proposal window math.
 //
 // Syscoin governance proposals pay out on superblocks. Core gates
@@ -310,6 +312,7 @@ export function nextSuperblockEpochSecFromStats(stats, nowSec) {
     );
   }
   if (!stats || typeof stats !== 'object') return null;
+  if (!hasFreshStatsGroups(stats, ['chain', 'governance'], now * 1000)) return null;
   const root = stats.stats && typeof stats.stats === 'object' ? stats.stats : stats;
   const sb = root.superblock_stats;
   if (!sb || typeof sb !== 'object') return null;
