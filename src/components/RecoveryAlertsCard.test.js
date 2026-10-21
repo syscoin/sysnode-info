@@ -7,11 +7,12 @@ import { AuthProvider } from '../context/AuthContext';
 
 const ACCOUNT = `0x${'12'.repeat(20)}`;
 const CHAIN_ID = 57057;
-const CHAIN = { chainId: CHAIN_ID, name: 'zkTanenbaum', testnet: true };
+const CHAIN = { chainId: CHAIN_ID, name: 'zkTanenbaum', testnet: true, recoveryModule: `0x${'45'.repeat(20)}` };
 const SIGNATURE = `0x${'ab'.repeat(24000)}`;
 const SUBSCRIPTION = {
   id: 1,
   chainId: CHAIN_ID,
+  recoveryModule: CHAIN.recoveryModule,
   account: ACCOUNT,
   label: 'Savings',
   monitoring: { status: 'catching_up', lastCheckedAt: 1792600000000 },
@@ -271,6 +272,35 @@ test('a successful disable removes the active card even when refresh fails', asy
   expect(screen.queryByText('Savings')).not.toBeInTheDocument();
   expect(screen.queryByText('Monitoring active')).not.toBeInTheDocument();
   expect(screen.getByText(/No smart accounts linked yet/)).toBeInTheDocument();
+});
+
+test('a failed status refresh preserves history but no longer claims active monitoring', async () => {
+  const { service } = setup({ subscriptions: [{
+    ...SUBSCRIPTION,
+    monitoring: { status: 'active', lastCheckedAt: Date.now() },
+  }] });
+  await screen.findByText('Monitoring active');
+  service.subscriptions.mockRejectedValue({ code: 'network_error' });
+  await click(screen.getByRole('button', { name: 'Refresh status' }));
+  await screen.findByText('Monitoring delayed');
+  expect(screen.queryByText('Monitoring active')).not.toBeInTheDocument();
+  expect(screen.getByText('Savings')).toBeInTheDocument();
+});
+
+test('an old module subscription does not block enrolling the current module', async () => {
+  setup({ subscriptions: [{ ...SUBSCRIPTION, recoveryModule: `0x${'67'.repeat(20)}` }] });
+  await screen.findByText('Savings');
+  await click(screen.getByRole('button', { name: 'Connect wallet' }));
+  expect(await screen.findByRole('button', { name: 'Enable recovery alerts' })).toBeEnabled();
+});
+
+test('an old active snapshot is not displayed as current monitoring', async () => {
+  setup({ subscriptions: [{
+    ...SUBSCRIPTION,
+    monitoring: { status: 'active', lastCheckedAt: Date.now() - 120000 },
+  }] });
+  expect(await screen.findByText('Monitoring delayed')).toBeInTheDocument();
+  expect(screen.queryByText('Monitoring active')).not.toBeInTheDocument();
 });
 
 test('a slow status refresh cannot restore a subscription after it was disabled', async () => {

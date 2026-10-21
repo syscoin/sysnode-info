@@ -204,8 +204,13 @@ export default function RecoveryAlertsCard({
         mounted.current &&
         userRef.current === id &&
         fetchGeneration.current === request
-      )
+      ) {
+        setSubscriptions((current) => current.map((subscription) => ({
+          ...subscription,
+          monitoring: { ...subscription.monitoring, status: 'degraded' },
+        })));
         handleError(err);
+      }
     } finally {
       if (
         mounted.current &&
@@ -237,10 +242,15 @@ export default function RecoveryAlertsCard({
 
   useEffect(() => {
     if (!open || !loaded) return undefined;
-    const timer = setInterval(() => {
+    const refreshVisible = () => {
       if (document.visibilityState !== 'hidden' && !busy.current) load();
-    }, 30000);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(refreshVisible, 30000);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
   }, [open, loaded, load]);
 
   useEffect(() => {
@@ -392,6 +402,8 @@ export default function RecoveryAlertsCard({
     subscriptions.some(
       (item) =>
         item.chainId === selection.chainId &&
+        chain &&
+        item.recoveryModule?.toLowerCase() === chain.recoveryModule?.toLowerCase() &&
         item.account.toLowerCase() === account.toLowerCase()
     );
   const phaseLabel = {
@@ -463,7 +475,11 @@ export default function RecoveryAlertsCard({
                 (item) => item.chainId === subscription.chainId
               );
               const monitor = monitoringCopy(
-                subscription.monitoring && subscription.monitoring.status
+                subscription.monitoring?.status === 'active' &&
+                (!subscription.monitoring.lastCheckedAt ||
+                  Date.now() - subscription.monitoring.lastCheckedAt > 60000)
+                  ? 'degraded'
+                  : subscription.monitoring?.status
               );
               return (
                 <article
@@ -516,7 +532,7 @@ export default function RecoveryAlertsCard({
                           : 'Original execution time'}{' '}
                         {datetime(operation.executableAt)}
                       </span>
-                      {operation.expiresAt && (
+                      {Number(operation.expiresAt) > 0 && (
                         <span>
                           {['pending', 'ready', 'scheduled'].includes(
                             operation.status
