@@ -258,6 +258,21 @@ test('stale 2FA identity responds to server step-up requirement, without losing 
   expect(service.subscriptions).toHaveBeenCalledTimes(1);
 });
 
+test('a successful disable removes the active card even when refresh fails', async () => {
+  const { service } = setup({ subscriptions: [SUBSCRIPTION] });
+  await screen.findByText('Savings');
+  await click(screen.getByRole('button', { name: 'Disable these alerts…' }));
+  fireEvent.change(screen.getByLabelText('Current Sysnode password'), {
+    target: { value: 'password' },
+  });
+  service.subscriptions.mockRejectedValue({ code: 'network_error' });
+  await click(screen.getByRole('button', { name: 'Disable alerts' }));
+  await screen.findByText(/This does not cancel any on-chain recovery/);
+  expect(screen.queryByText('Savings')).not.toBeInTheDocument();
+  expect(screen.queryByText('Monitoring active')).not.toBeInTheDocument();
+  expect(screen.getByText(/No smart accounts linked yet/)).toBeInTheDocument();
+});
+
 test('a slow status refresh cannot restore a subscription after it was disabled', async () => {
   const { service } = setup({ subscriptions: [SUBSCRIPTION] });
   await screen.findByText('Savings');

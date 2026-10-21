@@ -362,6 +362,11 @@ export default function RecoveryAlertsCard({
         ...(code ? { code } : {}),
       });
       if (!mounted.current || userRef.current !== id) return;
+      // The acknowledged mutation is authoritative even if a following status
+      // refresh fails. Never leave a disabled watch labelled as active.
+      setSubscriptions((current) =>
+        current.filter((subscription) => subscription.id !== removing.id)
+      );
       setRemoving(null);
       setPassword('');
       setCode('');
