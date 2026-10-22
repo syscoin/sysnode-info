@@ -28,6 +28,25 @@
 .recovery-alerts .auth-alert {
   overflow-wrap: anywhere;
 }
+.recovery-feedback,
+.recovery-focus-target {
+  scroll-margin-top: 90px;
+  scroll-margin-bottom: 20px;
+}
+.recovery-feedback:focus-visible,
+.recovery-focus-target:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.recovery-verification {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.recovery-verification p {
+  margin: 0;
+}
 .recovery-email {
   overflow-wrap: anywhere;
 }
@@ -143,6 +162,23 @@
 }
 .recovery-link-details[open] summary {
   margin-bottom: 12px;
+}
+.recovery-review {
+  border-top: 1px solid var(--panel-outline);
+  padding-top: 12px;
+}
+.recovery-review ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+.recovery-review li + li {
+  margin-top: 8px;
+}
+.recovery-history .recovery-operation + .recovery-operation {
+  margin-top: 12px;
 }
 .recovery-disable,
 .recovery-refresh {

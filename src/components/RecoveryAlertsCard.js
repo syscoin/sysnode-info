@@ -110,13 +110,51 @@ function AccountAddress({ address }) {
   );
 }
 
+const TERMINAL_RECOVERIES = new Set(['expired', 'canceled', 'invalidated']);
+
+function RecoveryOperation({ operation }) {
+  const pending = ['pending', 'ready', 'scheduled'].includes(operation.status);
+  return (
+    <div className="recovery-operation">
+      <strong>
+        {{
+          scheduled: 'Recovery pending',
+          pending: 'Recovery pending',
+          ready: 'Recovery can be executed',
+          expired: 'Recovery expired',
+          executed: 'Recovery executed',
+          canceled: 'Recovery canceled or invalidated',
+          invalidated: 'Recovery no longer pending',
+          orphaned: 'Recovery observation no longer canonical',
+          unknown: 'Recovery status unavailable',
+        }[operation.status] || 'Recovery observed'}
+      </strong>
+      <span>
+        {pending ? 'Can execute from' : 'Original execution time'}{' '}
+        {datetime(operation.executableAt)}
+      </span>
+      {Number(operation.expiresAt) > 0 && (
+        <span>
+          {pending ? 'Expires' : 'Original expiry'}{' '}
+          {datetime(operation.expiresAt)}
+        </span>
+      )}
+      {pending && (
+        <span className="recovery-note">
+          Passing the deadline does not mean it has executed.
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function RecoveryAlertsCard({
   service = recoveryAlertsService,
   authService = defaultAuthService,
   defaultOpen = false,
   discover = discoverWallets,
 }) {
-  const { user, handleAuthLost } = useAuth();
+  const { user, handleAuthLost, refresh } = useAuth();
   const userId = user && user.id;
   const [open, setOpen] = useState(
     defaultOpen ||
@@ -134,20 +172,50 @@ export default function RecoveryAlertsCard({
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState('');
   const [error, setError] = useState(null);
+  const [errorScope, setErrorScope] = useState('general');
+  const [errorFocus, setErrorFocus] = useState(0);
   const [notice, setNotice] = useState(null);
   const [removing, setRemoving] = useState(null);
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [needTotp, setNeedTotp] = useState(false);
+  const [verificationChecked, setVerificationChecked] = useState(false);
   const generation = useRef(0);
   const fetchGeneration = useRef(0);
   const userRef = useRef(userId);
   userRef.current = userId;
   const mounted = useRef(true);
   const busy = useRef(false);
+  const errorRef = useRef(null);
+  const removalHeadingRef = useRef(null);
   const wallet = wallets.find((item) => item.id === walletId);
   const walletRef = useRef(wallet);
   walletRef.current = wallet;
+
+  // Only an explicit failed action requests focus. Background refreshes and
+  // typing must never move the viewport or steal keyboard focus.
+  useEffect(() => {
+    if (!errorFocus || !errorRef.current) return;
+    // A user may collapse the enrollment details while the wallet is open.
+    // Reveal this action's error before focusing; never do this for polling.
+    const disclosure = errorRef.current.closest('details');
+    if (disclosure) disclosure.open = true;
+    errorRef.current.focus({ preventScroll: true });
+    // Instant explicitly bypasses the site's smooth-scroll preference, including
+    // when the user has requested reduced motion.
+    errorRef.current.scrollIntoView?.({
+      block: 'nearest',
+      behavior: 'instant',
+    });
+  }, [errorFocus]);
+  useEffect(() => {
+    if (!removing || !removalHeadingRef.current) return;
+    removalHeadingRef.current.focus({ preventScroll: true });
+    removalHeadingRef.current.scrollIntoView?.({
+      block: 'nearest',
+      behavior: 'instant',
+    });
+  }, [removing]);
 
   useEffect(() => {
     mounted.current = true;
@@ -168,15 +236,63 @@ export default function RecoveryAlertsCard({
   );
 
   const handleError = useCallback(
-    (err) => {
+    (err, scope = 'general', focus = false) => {
       if (err && err.code === 'unauthorized') {
         handleAuthLost();
         return;
       }
+      setErrorScope(scope);
       setError(errorText(err));
+      if (focus) {
+        setErrorFocus((current) => current + 1);
+      }
     },
     [handleAuthLost]
   );
+
+  function renderError(scope) {
+    return error && errorScope === scope ? (
+      <div
+        ref={errorRef}
+        className="auth-alert auth-alert--error recovery-feedback"
+        role="alert"
+        tabIndex={-1}
+      >
+        {error}
+      </div>
+    ) : null;
+  }
+
+  async function checkVerification() {
+    if (busy.current) return;
+    busy.current = true;
+    setPhase('checking-email');
+    setError(null);
+    setNotice(null);
+    const id = userId;
+    try {
+      const updated = await refresh();
+      if (
+        !mounted.current ||
+        userRef.current !== id ||
+        !updated ||
+        updated.id !== id
+      )
+        return;
+      setVerificationChecked(!updated.emailVerified);
+      setNotice(
+        updated.emailVerified
+          ? 'Email verified. You can now link your smart account.'
+          : null
+      );
+    } catch (err) {
+      if (mounted.current && userRef.current === id)
+        handleError(err, 'enroll', true);
+    } finally {
+      busy.current = false;
+      if (mounted.current) setPhase('');
+    }
+  }
 
   const load = useCallback(async () => {
     const id = userRef.current;
@@ -205,10 +321,12 @@ export default function RecoveryAlertsCard({
         userRef.current === id &&
         fetchGeneration.current === request
       ) {
-        setSubscriptions((current) => current.map((subscription) => ({
-          ...subscription,
-          monitoring: { ...subscription.monitoring, status: 'degraded' },
-        })));
+        setSubscriptions((current) =>
+          current.map((subscription) => ({
+            ...subscription,
+            monitoring: { ...subscription.monitoring, status: 'degraded' },
+          }))
+        );
         handleError(err);
       }
     } finally {
@@ -235,6 +353,7 @@ export default function RecoveryAlertsCard({
     setPassword('');
     setCode('');
     setNeedTotp(false);
+    setVerificationChecked(false);
     setLabel('');
     setLoading(false);
     if (open && userId != null) load();
@@ -264,6 +383,7 @@ export default function RecoveryAlertsCard({
       setSelection(null);
       setAccount('');
       setNotice(null);
+      setErrorScope('general');
       setError(ERROR_COPY.wallet_changed);
     };
     provider.on?.('accountsChanged', changed);
@@ -304,7 +424,7 @@ export default function RecoveryAlertsCard({
         walletRef.current?.provider === provider &&
         userRef.current === id
       )
-        handleError(err);
+        handleError(err, 'enroll', true);
     } finally {
       busy.current = false;
       if (mounted.current) setPhase('');
@@ -344,7 +464,8 @@ export default function RecoveryAlertsCard({
       setLabel('');
       await load();
     } catch (err) {
-      if (mounted.current && userRef.current === id) handleError(err);
+      if (mounted.current && userRef.current === id)
+        handleError(err, 'enroll', true);
     } finally {
       busy.current = false;
       if (mounted.current) setPhase('');
@@ -387,7 +508,7 @@ export default function RecoveryAlertsCard({
     } catch (err) {
       if (mounted.current && userRef.current === id) {
         if (err && err.code === 'totp_required') setNeedTotp(true);
-        handleError(err);
+        handleError(err, 'remove', true);
       }
     } finally {
       busy.current = false;
@@ -403,7 +524,8 @@ export default function RecoveryAlertsCard({
       (item) =>
         item.chainId === selection.chainId &&
         chain &&
-        item.recoveryModule?.toLowerCase() === chain.recoveryModule?.toLowerCase() &&
+        item.recoveryModule?.toLowerCase() ===
+          chain.recoveryModule?.toLowerCase() &&
         item.account.toLowerCase() === account.toLowerCase()
     );
   const phaseLabel = {
@@ -412,6 +534,7 @@ export default function RecoveryAlertsCard({
     signing: 'Confirm in wallet…',
     saving: 'Saving alerts…',
     removing: 'Disabling alerts…',
+    'checking-email': 'Checking verification…',
   }[phase];
 
   return (
@@ -437,6 +560,7 @@ export default function RecoveryAlertsCard({
           className="auth-card__disclosure-toggle"
           aria-expanded={open}
           aria-controls="recovery-alerts-body"
+          disabled={!!phase}
           aria-label={
             open ? 'Collapse recovery alerts' : 'Expand recovery alerts'
           }
@@ -458,11 +582,7 @@ export default function RecoveryAlertsCard({
             Alerts may be delayed and cannot cancel recovery. Keep access to
             your wallet.
           </p>
-          {error && (
-            <div className="auth-alert auth-alert--error" role="alert">
-              {error}
-            </div>
-          )}
+          {renderError('general')}
           {notice && (
             <div className="auth-alert auth-alert--success" role="status">
               {notice}
@@ -476,10 +596,22 @@ export default function RecoveryAlertsCard({
               );
               const monitor = monitoringCopy(
                 subscription.monitoring?.status === 'active' &&
-                (!subscription.monitoring.lastCheckedAt ||
-                  Date.now() - subscription.monitoring.lastCheckedAt > 60000)
+                  (!subscription.monitoring.lastCheckedAt ||
+                    Date.now() - subscription.monitoring.lastCheckedAt > 60000)
                   ? 'degraded'
                   : subscription.monitoring?.status
+              );
+              const currentOperations = (subscription.pending || []).filter(
+                (operation) => !TERMINAL_RECOVERIES.has(operation.status)
+              );
+              const pastOperations = (subscription.pending || []).filter(
+                (operation) => TERMINAL_RECOVERIES.has(operation.status)
+              );
+              const hasPendingRecovery = currentOperations.some((operation) =>
+                ['pending', 'ready', 'scheduled'].includes(operation.status)
+              );
+              const hasExecutedRecovery = currentOperations.some(
+                (operation) => operation.status === 'executed'
               );
               return (
                 <article
@@ -506,48 +638,68 @@ export default function RecoveryAlertsCard({
                       true
                     )}
                   </p>
-                  {(subscription.pending || []).map((operation) => (
-                    <div
+                  {currentOperations.map((operation) => (
+                    <RecoveryOperation
                       key={operation.operationId}
-                      className="recovery-operation"
-                    >
-                      <strong>
-                        {{
-                          scheduled: 'Recovery pending',
-                          pending: 'Recovery pending',
-                          ready: 'Recovery can be executed',
-                          expired: 'Recovery expired',
-                          executed: 'Recovery executed',
-                          canceled: 'Recovery canceled or invalidated',
-                          invalidated: 'Recovery no longer pending',
-                          orphaned: 'Recovery observation no longer canonical',
-                          unknown: 'Recovery status unavailable',
-                        }[operation.status] || 'Recovery observed'}
-                      </strong>
-                      <span>
-                        {['pending', 'ready', 'scheduled'].includes(
-                          operation.status
-                        )
-                          ? 'Can execute from'
-                          : 'Original execution time'}{' '}
-                        {datetime(operation.executableAt)}
-                      </span>
-                      {Number(operation.expiresAt) > 0 && (
-                        <span>
-                          {['pending', 'ready', 'scheduled'].includes(
-                            operation.status
-                          )
-                            ? 'Expires'
-                            : 'Original expiry'}{' '}
-                          {datetime(operation.expiresAt)}
-                        </span>
-                      )}
-                      <span className="recovery-note">
-                        Review this operation in your wallet. Passing the
-                        deadline does not mean it has executed.
-                      </span>
-                    </div>
+                      operation={operation}
+                    />
                   ))}
+                  {currentOperations.length > 0 && (
+                    <div className="recovery-review">
+                      <p className="recovery-note">
+                        {hasPendingRecovery
+                          ? 'If you did not request recovery, review it in your wallet now. Disabling emails below does not stop recovery.'
+                          : hasExecutedRecovery
+                          ? 'Recovery has executed. Review this account’s current approval methods and activity in Pali. Disabling emails cannot undo it.'
+                          : 'The recovery state needs review. Check this account’s current status and approval methods in Pali.'}
+                      </p>
+                      <details className="recovery-link-details">
+                        <summary>How to review in Pali</summary>
+                        <ol>
+                          <li>
+                            Open Pali and select this account on{' '}
+                            {network
+                              ? network.name
+                              : `chain ${subscription.chainId}`}
+                            .
+                          </li>
+                          <li>
+                            Open <strong>Smart account</strong>, then choose{' '}
+                            <strong>Manage</strong> beside{' '}
+                            <strong>Recovery guardian</strong>.
+                          </li>
+                          {hasPendingRecovery && (
+                            <li>
+                              If recovery is unexpected, use{' '}
+                              <strong>Disable guardian recovery</strong>. This
+                              needs your current approval method and a network
+                              fee.
+                            </li>
+                          )}
+                        </ol>
+                        <a
+                          href="https://docs.paliwallet.com/docs/users/recovery-and-backups"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Read the recovery guide
+                        </a>
+                      </details>
+                    </div>
+                  )}
+                  {pastOperations.length > 0 && (
+                    <details className="recovery-link-details recovery-history">
+                      <summary>
+                        Past recovery activity ({pastOperations.length})
+                      </summary>
+                      {pastOperations.map((operation) => (
+                        <RecoveryOperation
+                          key={operation.operationId}
+                          operation={operation}
+                        />
+                      ))}
+                    </details>
+                  )}
                   <button
                     type="button"
                     className="auth-linklike recovery-disable"
@@ -574,7 +726,11 @@ export default function RecoveryAlertsCard({
           </div>
           {removing ? (
             <form className="recovery-remove" onSubmit={remove}>
-              <h3>
+              <h3
+                ref={removalHeadingRef}
+                tabIndex={-1}
+                className="recovery-focus-target"
+              >
                 Disable alerts for {removing.label || 'this smart account'}?
               </h3>
               <AccountAddress address={removing.account} />
@@ -586,6 +742,7 @@ export default function RecoveryAlertsCard({
                 This stops its emails only. Any pending recovery remains
                 on-chain. Confirm with your Sysnode password.
               </p>
+              {renderError('remove')}
               <div className="auth-field">
                 <label className="auth-label" htmlFor="recovery-password">
                   Current Sysnode password
@@ -660,30 +817,58 @@ export default function RecoveryAlertsCard({
                   An off-chain signature links this account address to your
                   Sysnode email. No private keys or funds are sent.
                 </p>
+                {renderError('enroll')}
+                {user && !user.emailVerified && (
+                  <div className="auth-alert auth-alert--warning recovery-verification">
+                    <p>
+                      {verificationChecked
+                        ? 'Your email is not verified yet.'
+                        : 'Verify your email before linking a smart account.'}{' '}
+                      Open the verification link sent to{' '}
+                      <strong>{user.email}</strong>, then check again here.
+                    </p>
+                    <button
+                      type="button"
+                      className="auth-linklike"
+                      disabled={!!phase}
+                      onClick={checkVerification}
+                    >
+                      {phase === 'checking-email'
+                        ? phaseLabel
+                        : 'Check verification status'}
+                    </button>
+                  </div>
+                )}
                 {wallets.length > 0 ? (
                   <>
-                    <div className="auth-field">
-                      <label className="auth-label" htmlFor="recovery-wallet">
-                        Wallet
-                      </label>
-                      <select
-                        id="recovery-wallet"
-                        className="auth-input"
-                        value={walletId}
-                        onChange={(event) => {
-                          generation.current += 1;
-                          setWalletId(event.target.value);
-                          setError(null);
-                        }}
-                        disabled={!!phase}
-                      >
-                        {wallets.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    {wallets.length > 1 ? (
+                      <div className="auth-field">
+                        <label className="auth-label" htmlFor="recovery-wallet">
+                          Wallet
+                        </label>
+                        <select
+                          id="recovery-wallet"
+                          className="auth-input"
+                          value={walletId}
+                          onChange={(event) => {
+                            generation.current += 1;
+                            setWalletId(event.target.value);
+                            setError(null);
+                          }}
+                          disabled={!!phase}
+                        >
+                          {wallets.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <p className="recovery-network">
+                        Wallet: {wallets[0].name}
+                      </p>
+                    )}
                     <button
                       type="button"
                       className="button button--ghost"
@@ -732,28 +917,35 @@ export default function RecoveryAlertsCard({
                       {chain && chain.name}
                       {chain && chain.testnet ? ' · Testnet' : ''}
                     </p>
-                    <div className="auth-field">
-                      <label className="auth-label" htmlFor="recovery-account">
-                        Smart account
-                      </label>
-                      <select
-                        id="recovery-account"
-                        className="auth-input recovery-account-select"
-                        value={account}
-                        disabled={!!phase}
-                        onChange={(event) => {
-                          generation.current += 1;
-                          setAccount(event.target.value);
-                          setNotice(null);
-                        }}
-                      >
-                        {selection.accounts.map((address) => (
-                          <option key={address} value={address}>
-                            {address}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    {selection.accounts.length > 1 ? (
+                      <div className="auth-field">
+                        <label
+                          className="auth-label"
+                          htmlFor="recovery-account"
+                        >
+                          Smart account
+                        </label>
+                        <select
+                          id="recovery-account"
+                          className="auth-input recovery-account-select"
+                          value={account}
+                          disabled={!!phase}
+                          onChange={(event) => {
+                            generation.current += 1;
+                            setAccount(event.target.value);
+                            setNotice(null);
+                          }}
+                        >
+                          {selection.accounts.map((address) => (
+                            <option key={address} value={address}>
+                              {address}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <p className="auth-label">Smart account</p>
+                    )}
                     <AccountAddress address={account} />
                     <div className="auth-field">
                       <label className="auth-label" htmlFor="recovery-label">
