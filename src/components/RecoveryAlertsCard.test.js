@@ -426,6 +426,40 @@ test('an unverified recheck keeps the explanation and does not claim verificatio
   expect(screen.getByRole('button', { name: 'Connect wallet' })).toBeDisabled();
 });
 
+test.each([
+  { status: 503, code: 'http_error' },
+  { status: 0, code: 'network_error' },
+])(
+  'verification $status failure keeps the real authenticated card with focused retryable error',
+  async (failure) => {
+    const { authService, provider } = setup({ emailVerified: false });
+    await screen.findByRole('button', { name: 'Check verification status' });
+    authService.me.mockRejectedValueOnce(failure);
+    await click(
+      screen.getByRole('button', { name: 'Check verification status' })
+    );
+    const error = await screen.findByRole('alert');
+    expect(error).toHaveFocus();
+    expect(error).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Check verification status' })
+    ).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Connect wallet' })
+    ).toBeDisabled();
+    authService.me.mockResolvedValueOnce({
+      user: { id: 1, email: 'qa@example.test', emailVerified: true },
+    });
+    await click(
+      screen.getByRole('button', { name: 'Check verification status' })
+    );
+    expect(
+      screen.getByRole('button', { name: 'Connect wallet' })
+    ).toBeEnabled();
+    expect(provider.request).not.toHaveBeenCalled();
+  }
+);
+
 test('only nonurgent terminal history collapses, while pending deadlines and unknown states remain visible', async () => {
   setup({
     subscriptions: [

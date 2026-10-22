@@ -56,6 +56,7 @@ async function fixtures(
     : [];
   const writes = [];
   let verified = emailVerified;
+  let verificationFailure = null;
   await page.addInitScript(
     ({ ACCOUNT, signature, deferSignature }) => {
       const listeners = new Map();
@@ -88,8 +89,17 @@ async function fixtures(
     },
     { ACCOUNT, signature, deferSignature }
   );
-  await page.route('**/auth/me', (route) =>
-    route.fulfill({
+  await page.route('**/auth/me', (route) => {
+    if (verificationFailure !== null) {
+      const failure = verificationFailure;
+      verificationFailure = null;
+      if (failure === 'network') return route.abort('failed');
+      return route.fulfill({
+        status: failure,
+        json: { error: failure === 401 ? 'unauthorized' : 'http_error' },
+      });
+    }
+    return route.fulfill({
       json: {
         user: {
           id: 1,
@@ -100,8 +110,8 @@ async function fixtures(
           totpEnabled: true,
         },
       },
-    })
-  );
+    });
+  });
   await page.route('**/vault', (route) =>
     route.fulfill({ json: { empty: true } })
   );
@@ -156,6 +166,9 @@ async function fixtures(
     writes,
     verifyEmail: () => {
       verified = true;
+    },
+    failVerification: (failure) => {
+      verificationFailure = failure;
     },
   };
 }
@@ -240,6 +253,46 @@ test('a signature rejection reveals a collapsed enrollment and focuses its error
   await expect(page.getByRole('alert')).toBeFocused();
   expect(fixture.writes).toHaveLength(1);
 });
+
+for (const failure of [503, 'network', 401]) {
+  test(`verification ${failure} uses the real auth guard and preserves only transient sessions`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 500 });
+    const fixture = await fixtures(page, { emailVerified: false });
+    await page.goto('/account#recovery-alerts');
+    await expect(
+      page.getByRole('button', { name: 'Check verification status' })
+    ).toBeVisible();
+    fixture.failVerification(failure);
+    await page
+      .getByRole('button', { name: 'Check verification status' })
+      .click();
+    if (failure === 401) {
+      await expect(page).toHaveURL(/\/login/);
+      await expect(page.locator('#recovery-alerts')).toHaveCount(0);
+    } else {
+      await expect(page).toHaveURL(/\/account#recovery-alerts/);
+      await expect(page.getByRole('alert')).toBeFocused();
+      await expect(
+        page.getByRole('button', { name: 'Check verification status' })
+      ).toBeEnabled();
+      await noHorizontalOverflow(page);
+      await page.screenshot({
+        path: testInfo.outputPath(`recovery-verification-error-${failure}.png`),
+      });
+      fixture.verifyEmail();
+      await page
+        .getByRole('button', { name: 'Check verification status' })
+        .click();
+      await expect(
+        page.getByRole('button', { name: 'Connect wallet', exact: true })
+      ).toBeEnabled();
+    }
+    expect(fixture.writes).toHaveLength(0);
+    expect(await page.evaluate(() => window.__walletCalls)).toEqual([]);
+  });
+}
 
 test('small-window pending recovery and disable confirmation remain readable with correct account and network', async ({
   page,

@@ -271,7 +271,7 @@ export default function RecoveryAlertsCard({
     setNotice(null);
     const id = userId;
     try {
-      const updated = await refresh();
+      const updated = await refresh({ preserveSessionOnTransientError: true });
       if (
         !mounted.current ||
         userRef.current !== id ||

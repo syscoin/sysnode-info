@@ -59,6 +59,196 @@ function makeService(overrides = {}) {
   };
 }
 
+function captureAuth(service) {
+  let current;
+  function Probe() {
+    current = useAuth();
+    return <span>{current.status}</span>;
+  }
+  render(
+    <AuthProvider authService={service}>
+      <Probe />
+    </AuthProvider>
+  );
+  return () => current;
+}
+
+test.each([
+  { code: 'network_error', status: 0 },
+  { code: 'http_error', status: 503 },
+  { code: 'http_error', status: 408 },
+  { code: 'http_error', status: 429 },
+])(
+  'opt-in profile refresh preserves authenticated state on $code/$status and permits a retry',
+  async (failure) => {
+    const oldUser = { id: 1, email: 'user@example.test', emailVerified: false };
+    const service = makeService({
+      me: jest.fn().mockResolvedValue({ user: oldUser }),
+    });
+    const auth = captureAuth(service);
+    await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+    service.me.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await expect(
+        auth().refresh({ preserveSessionOnTransientError: true })
+      ).rejects.toBe(failure);
+    });
+    expect(auth().isAuthenticated).toBe(true);
+    expect(auth().user).toEqual(oldUser);
+    service.me.mockResolvedValueOnce({
+      user: { ...oldUser, emailVerified: true },
+    });
+    await act(async () => {
+      await auth().refresh({ preserveSessionOnTransientError: true });
+    });
+    expect(auth().user.emailVerified).toBe(true);
+  }
+);
+
+test.each([
+  { code: 'unauthorized', status: 401 },
+  { code: 'forbidden', status: 403 },
+  { code: 'network_error', status: 401 },
+  { code: 'network_error', status: 403 },
+  { code: 'network_error', status: 400 },
+  { code: 'unauthorized', status: 503 },
+])(
+  'opt-in profile refresh still clears real auth or non-transient failure $code/$status',
+  async (failure) => {
+    const service = makeService({
+      me: jest
+        .fn()
+        .mockResolvedValue({ user: { id: 1, email: 'user@example.test' } }),
+    });
+    const auth = captureAuth(service);
+    await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+    service.me.mockRejectedValueOnce(failure);
+    await act(async () => {
+      await auth()
+        .refresh({ preserveSessionOnTransientError: true })
+        .catch(() => {});
+    });
+    expect(auth().status).toBe('anonymous');
+    expect(auth().user).toBeNull();
+  }
+);
+
+test('default refresh still clears authenticated state on a transient error', async () => {
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({ user: { id: 1 } }),
+  });
+  const auth = captureAuth(service);
+  await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+  service.me.mockRejectedValueOnce({ status: 503 });
+  await act(async () => {
+    await auth()
+      .refresh()
+      .catch(() => {});
+  });
+  expect(auth().status).toBe('anonymous');
+});
+
+test.each([1, 2])(
+  'opt-in refresh ignores an old response after newer login session for user%d',
+  async (nextId) => {
+    const oldUser = { id: 1, email: 'old@example.test', emailVerified: false };
+    const nextUser = {
+      id: nextId,
+      email: 'new@example.test',
+      emailVerified: true,
+    };
+    const service = makeService({
+      me: jest.fn().mockResolvedValue({ user: oldUser }),
+      login: jest.fn().mockResolvedValue({ user: nextUser }),
+    });
+    const auth = captureAuth(service);
+    await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+    let finish;
+    service.me.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    let pending;
+    await act(async () => {
+      pending = auth().refresh({ preserveSessionOnTransientError: true });
+    });
+    service.me.mockResolvedValueOnce({ user: nextUser });
+    await act(async () => {
+      await auth().login({ email: 'new@example.test', password: 'pw' });
+    });
+    await act(async () => {
+      finish({ user: oldUser });
+      expect(await pending).toBeNull();
+    });
+    expect(auth().user).toEqual(nextUser);
+  }
+);
+
+test('opt-in refresh cannot restore a user during or after logout', async () => {
+  const oldUser = { id: 1, email: 'old@example.test' };
+  let finishLogout;
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({ user: oldUser }),
+    logout: jest.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishLogout = resolve;
+        })
+    ),
+  });
+  const auth = captureAuth(service);
+  await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+  let finishRefresh;
+  service.me.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishRefresh = resolve;
+      })
+  );
+  let pending;
+  let logout;
+  await act(async () => {
+    pending = auth().refresh({ preserveSessionOnTransientError: true });
+    logout = auth().logout();
+  });
+  await act(async () => {
+    finishRefresh({ user: oldUser });
+    expect(await pending).toBeNull();
+  });
+  expect(service.me).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    expect(
+      await auth().refresh({ preserveSessionOnTransientError: true })
+    ).toBeNull();
+  });
+  expect(service.me).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    finishLogout();
+    await logout;
+  });
+  expect(auth().user).toBeNull();
+});
+
+test('a stale opt-in 401 cannot sign out a newer successful login', async () => {
+  const nextUser = { id: 2, email: 'new@example.test', emailVerified: true };
+  const service = makeService({
+    me: jest.fn().mockResolvedValue({ user: { id: 1 } }),
+    login: jest.fn().mockResolvedValue({ user: nextUser }),
+  });
+  const auth = captureAuth(service);
+  await waitFor(() => expect(auth().isAuthenticated).toBe(true));
+  let rejectRefresh;
+  service.me.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRefresh = reject; }));
+  let pending;
+  await act(async () => { pending = auth().refresh({ preserveSessionOnTransientError: true }); });
+  service.me.mockResolvedValueOnce({ user: nextUser });
+  await act(async () => { await auth().login({ email: 'new@example.test', password: 'pw' }); });
+  await act(async () => { rejectRefresh({ status: 401, code: 'unauthorized' }); expect(await pending).toBeNull(); });
+  expect(auth().user).toEqual(nextUser);
+});
+
 test('starts in booting, transitions to anonymous when /me returns 401', async () => {
   const service = makeService();
   render(
