@@ -136,25 +136,63 @@ export function AuthProvider({ children, authService = defaultAuthService }) {
     fn();
   }, []);
 
-  const refresh = useCallback(async () => {
-    const myGen = nextGen();
-    try {
-      const { user: u } = await authService.me();
-      safeSet(() => {
-        setUser(u);
-        commitStatus(AUTHENTICATED);
-      }, myGen);
-      return u;
-    } catch (err) {
-      safeSet(() => {
-        setUser(null);
-        commitStatus(ANONYMOUS);
-      }, myGen);
-      // 401 is expected (no session) — don't re-throw that.
-      if (err.status === 401) return null;
-      throw err;
-    }
-  }, [authService, safeSet, nextGen, commitStatus]);
+  const refresh = useCallback(
+    async ({ preserveSessionOnTransientError = false } = {}) => {
+      const preserve = preserveSessionOnTransientError === true;
+      // Profile-only checks must not compete with a sign-out already in flight.
+      if (preserve && logoutPendingRef.current) return null;
+      const wasAuthenticated = statusRef.current === AUTHENTICATED;
+      const myGen = nextGen();
+      try {
+        const { user: u } = await authService.me();
+        if (
+          preserve &&
+          (!mountedRef.current ||
+            myGen !== genRef.current ||
+            logoutPendingRef.current)
+        )
+          return null;
+        safeSet(() => {
+          setUser(u);
+          commitStatus(AUTHENTICATED);
+        }, myGen);
+        return u;
+      } catch (err) {
+        if (
+          preserve &&
+          (!mountedRef.current ||
+            myGen !== genRef.current ||
+            logoutPendingRef.current)
+        )
+          return null;
+        const status = Number(err && err.status);
+        const expired =
+          err && (status === 401 || status === 403 || err.code === 'unauthorized');
+        const transient =
+          !expired &&
+          err &&
+          ((err.code === 'network_error' &&
+            (status === 0 || !Number.isFinite(status))) ||
+            status === 408 ||
+            status === 429 ||
+            (status >= 500 && status <= 599));
+        // Opt-in only: a failed read does not prove an established session ended.
+        // Bootstrap, ordinary refreshes and all non-transient/auth failures keep
+        // their original fail-closed behavior. The caller still receives the
+        // transient error so it can show a focused, retryable explanation.
+        if (!(preserve && wasAuthenticated && transient)) {
+          safeSet(() => {
+            setUser(null);
+            commitStatus(ANONYMOUS);
+          }, myGen);
+        }
+        // 401 is expected (no session) — don't re-throw that.
+        if (err.status === 401) return null;
+        throw err;
+      }
+    },
+    [authService, safeSet, nextGen, commitStatus]
+  );
 
   useEffect(() => {
     refresh().catch(() => {

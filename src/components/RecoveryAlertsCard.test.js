@@ -7,7 +7,12 @@ import { AuthProvider } from '../context/AuthContext';
 
 const ACCOUNT = `0x${'12'.repeat(20)}`;
 const CHAIN_ID = 57057;
-const CHAIN = { chainId: CHAIN_ID, name: 'zkTanenbaum', testnet: true, recoveryModule: `0x${'45'.repeat(20)}` };
+const CHAIN = {
+  chainId: CHAIN_ID,
+  name: 'zkTanenbaum',
+  testnet: true,
+  recoveryModule: `0x${'45'.repeat(20)}`,
+};
 const SIGNATURE = `0x${'ab'.repeat(24000)}`;
 const SUBSCRIPTION = {
   id: 1,
@@ -33,6 +38,9 @@ function setup({
   open = true,
   hasWallet = true,
   totp = false,
+  emailVerified = true,
+  accounts = [ACCOUNT],
+  walletNames = ['Pali'],
   service: overrides = {},
 } = {}) {
   const handlers = {};
@@ -42,7 +50,7 @@ function setup({
         ? `0x${CHAIN_ID.toString(16)}`
         : method === 'personal_sign'
         ? SIGNATURE
-        : [ACCOUNT]
+        : accounts
     ),
     on: jest.fn((name, fn) => {
       handlers[name] = fn;
@@ -50,7 +58,15 @@ function setup({
     removeListener: jest.fn(),
   };
   const discover = jest.fn((cb) => {
-    cb(hasWallet ? [{ id: 'pali', name: 'Pali', provider }] : []);
+    cb(
+      hasWallet
+        ? walletNames.map((name, index) => ({
+            id: `wallet-${index}`,
+            name,
+            provider: index === 0 ? provider : { ...provider },
+          }))
+        : []
+    );
     return () => {};
   });
   const service = {
@@ -71,7 +87,7 @@ function setup({
       user: {
         id: 1,
         email: 'qa@example.test',
-        emailVerified: true,
+        emailVerified,
         totpEnabled: totp,
       },
     }),
@@ -275,10 +291,14 @@ test('a successful disable removes the active card even when refresh fails', asy
 });
 
 test('a failed status refresh preserves history but no longer claims active monitoring', async () => {
-  const { service } = setup({ subscriptions: [{
-    ...SUBSCRIPTION,
-    monitoring: { status: 'active', lastCheckedAt: Date.now() },
-  }] });
+  const { service } = setup({
+    subscriptions: [
+      {
+        ...SUBSCRIPTION,
+        monitoring: { status: 'active', lastCheckedAt: Date.now() },
+      },
+    ],
+  });
   await screen.findByText('Monitoring active');
   service.subscriptions.mockRejectedValue({ code: 'network_error' });
   await click(screen.getByRole('button', { name: 'Refresh status' }));
@@ -288,17 +308,27 @@ test('a failed status refresh preserves history but no longer claims active moni
 });
 
 test('an old module subscription does not block enrolling the current module', async () => {
-  setup({ subscriptions: [{ ...SUBSCRIPTION, recoveryModule: `0x${'67'.repeat(20)}` }] });
+  setup({
+    subscriptions: [
+      { ...SUBSCRIPTION, recoveryModule: `0x${'67'.repeat(20)}` },
+    ],
+  });
   await screen.findByText('Savings');
   await click(screen.getByRole('button', { name: 'Connect wallet' }));
-  expect(await screen.findByRole('button', { name: 'Enable recovery alerts' })).toBeEnabled();
+  expect(
+    await screen.findByRole('button', { name: 'Enable recovery alerts' })
+  ).toBeEnabled();
 });
 
 test('an old active snapshot is not displayed as current monitoring', async () => {
-  setup({ subscriptions: [{
-    ...SUBSCRIPTION,
-    monitoring: { status: 'active', lastCheckedAt: Date.now() - 120000 },
-  }] });
+  setup({
+    subscriptions: [
+      {
+        ...SUBSCRIPTION,
+        monitoring: { status: 'active', lastCheckedAt: Date.now() - 120000 },
+      },
+    ],
+  });
   expect(await screen.findByText('Monitoring delayed')).toBeInTheDocument();
   expect(screen.queryByText('Monitoring active')).not.toBeInTheDocument();
 });
@@ -340,4 +370,279 @@ test('no wallet and load failure show retryable honest states', async () => {
     screen.getByText(/Open this page in a browser with Pali/)
   ).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Refresh status' })).toBeEnabled();
+});
+
+test('a single wallet and account keep identity visible without redundant pickers', async () => {
+  setup();
+  await screen.findByText(/No smart accounts linked yet/);
+  await screen.findByText('Wallet: Pali');
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+  await click(screen.getByRole('button', { name: 'Connect wallet' }));
+  await screen.findByText('Smart account');
+  expect(screen.getByText(ACCOUNT)).toBeVisible();
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+});
+
+test('multiple wallets and accounts remain explicitly selectable', async () => {
+  const second = `0x${'34'.repeat(20)}`;
+  setup({ walletNames: ['Pali', 'Other wallet'], accounts: [ACCOUNT, second] });
+  await screen.findByText(/No smart accounts linked yet/);
+  expect(await screen.findByLabelText('Wallet')).toBeEnabled();
+  await click(screen.getByRole('button', { name: 'Connect wallet' }));
+  const account = await screen.findByLabelText('Smart account');
+  fireEvent.change(account, { target: { value: second } });
+  expect(account).toHaveValue(second);
+  expect(
+    screen.getByRole('button', { name: `Copy account address ${second}` })
+  ).toBeInTheDocument();
+});
+
+test('unverified email explains the gate and checks the existing account without signing', async () => {
+  const { authService, provider, service } = setup({ emailVerified: false });
+  await screen.findByText(/Verify your email before linking/);
+  expect(screen.getByRole('button', { name: 'Connect wallet' })).toBeDisabled();
+  authService.me.mockResolvedValue({
+    user: { id: 1, email: 'qa@example.test', emailVerified: true },
+  });
+  await click(
+    screen.getByRole('button', { name: 'Check verification status' })
+  );
+  expect(
+    await screen.findByRole('button', { name: 'Connect wallet' })
+  ).toBeEnabled();
+  expect(screen.getByText(/Email verified. You can now link/)).toBeVisible();
+  expect(provider.request).not.toHaveBeenCalled();
+  expect(service.challenge).not.toHaveBeenCalled();
+});
+
+test('an unverified recheck keeps the explanation and does not claim verification', async () => {
+  setup({ emailVerified: false });
+  await click(
+    await screen.findByRole('button', { name: 'Check verification status' })
+  );
+  expect(
+    await screen.findByText(/Your email is not verified yet/)
+  ).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Connect wallet' })).toBeDisabled();
+});
+
+test.each([
+  { status: 503, code: 'http_error' },
+  { status: 0, code: 'network_error' },
+])(
+  'verification $status failure keeps the real authenticated card with focused retryable error',
+  async (failure) => {
+    const { authService, provider } = setup({ emailVerified: false });
+    await screen.findByRole('button', { name: 'Check verification status' });
+    authService.me.mockRejectedValueOnce(failure);
+    await click(
+      screen.getByRole('button', { name: 'Check verification status' })
+    );
+    const error = await screen.findByRole('alert');
+    expect(error).toHaveFocus();
+    expect(error).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Check verification status' })
+    ).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Connect wallet' })
+    ).toBeDisabled();
+    authService.me.mockResolvedValueOnce({
+      user: { id: 1, email: 'qa@example.test', emailVerified: true },
+    });
+    await click(
+      screen.getByRole('button', { name: 'Check verification status' })
+    );
+    expect(
+      screen.getByRole('button', { name: 'Connect wallet' })
+    ).toBeEnabled();
+    expect(provider.request).not.toHaveBeenCalled();
+  }
+);
+
+test('only nonurgent terminal history collapses, while pending deadlines and unknown states remain visible', async () => {
+  setup({
+    subscriptions: [
+      {
+        ...SUBSCRIPTION,
+        pending: [
+          {
+            operationId: 'pending',
+            status: 'pending',
+            executableAt: 1792700000,
+          },
+          {
+            operationId: 'canceled',
+            status: 'canceled',
+            executableAt: 1792600000,
+          },
+          {
+            operationId: 'unknown',
+            status: 'unknown',
+            executableAt: 1792500000,
+          },
+        ],
+      },
+    ],
+  });
+  expect(await screen.findByText('Recovery pending')).toBeVisible();
+  expect(screen.getByText(/Can execute from/)).toBeVisible();
+  expect(screen.getByText('Recovery status unavailable')).toBeVisible();
+  const past = screen.getByText('Recovery canceled or invalidated');
+  expect(past).not.toBeVisible();
+  await click(screen.getByText('Past recovery activity (1)'));
+  expect(past).toBeVisible();
+  await click(screen.getByText('How to review in Pali'));
+  expect(screen.getByText('Disable guardian recovery')).toBeVisible();
+  expect(
+    screen.getByRole('link', { name: 'Read the recovery guide' })
+  ).toHaveAttribute(
+    'href',
+    'https://docs.paliwallet.com/docs/users/recovery-and-backups'
+  );
+});
+
+test('executed recovery stays visible and never offers pending-recovery cancellation instructions', async () => {
+  setup({
+    subscriptions: [
+      {
+        ...SUBSCRIPTION,
+        pending: [
+          {
+            operationId: 'executed',
+            status: 'executed',
+            executableAt: 1792700000,
+          },
+          {
+            operationId: 'canceled',
+            status: 'canceled',
+            executableAt: 1792600000,
+          },
+        ],
+      },
+    ],
+  });
+  expect(await screen.findByText('Recovery executed')).toBeVisible();
+  expect(
+    screen.getByText(/Recovery has executed. Review this account/)
+  ).toBeVisible();
+  expect(
+    screen.getByText('Recovery canceled or invalidated')
+  ).not.toBeVisible();
+  await click(screen.getByText('How to review in Pali'));
+  expect(
+    screen.queryByText('Disable guardian recovery')
+  ).not.toBeInTheDocument();
+  expect(screen.getByText(/Disabling emails cannot undo it/)).toBeVisible();
+});
+
+test.each(['enroll', 'remove'])(
+  'a failed %s action focuses its local error without animated scrolling',
+  async (operation) => {
+    const original = HTMLElement.prototype.scrollIntoView;
+    const scroll = jest.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      const { provider } = setup({
+        subscriptions: operation === 'remove' ? [SUBSCRIPTION] : [],
+        service: {
+          remove: jest.fn().mockRejectedValue({ code: 'invalid_credentials' }),
+        },
+      });
+      await screen.findByRole('button', { name: 'Refresh status' });
+      if (operation === 'remove') {
+        await click(
+          await screen.findByRole('button', { name: 'Disable these alerts…' })
+        );
+        await type(
+          screen.getByLabelText('Current Sysnode password'),
+          'wrong-password'
+        );
+        scroll.mockClear();
+        await click(
+          screen.getByRole('button', { name: 'Disable alerts', exact: true })
+        );
+      } else {
+        await screen.findByText(/No smart accounts linked yet/);
+        await click(
+          await screen.findByRole('button', { name: 'Connect wallet' })
+        );
+        provider.request.mockImplementation(async ({ method }) => {
+          if (method === 'personal_sign') throw { code: 4001 };
+          return method === 'eth_chainId'
+            ? `0x${CHAIN_ID.toString(16)}`
+            : [ACCOUNT];
+        });
+        await click(
+          await screen.findByRole('button', { name: 'Enable recovery alerts' })
+        );
+      }
+      const error = await screen.findByRole('alert');
+      expect(error).toHaveFocus();
+      expect(error.closest('form')).toHaveClass(
+        operation === 'remove' ? 'recovery-remove' : 'recovery-enroll'
+      );
+      expect(scroll).toHaveBeenLastCalledWith({
+        block: 'nearest',
+        behavior: 'instant',
+      });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  }
+);
+
+test('background status failure and typing never steal focus or scroll', async () => {
+  const original = HTMLElement.prototype.scrollIntoView;
+  const scroll = jest.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  try {
+    const { service } = setup();
+    await screen.findByText(/No smart accounts linked yet/);
+    await click(await screen.findByRole('button', { name: 'Connect wallet' }));
+    const label = screen.getByLabelText('Account label (optional)');
+    label.focus();
+    await type(label, 'My savings');
+    service.subscriptions.mockRejectedValue({ code: 'network_error' });
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /could not reach Sysnode/
+    );
+    expect(label).toHaveFocus();
+    expect(scroll).not.toHaveBeenCalled();
+  } finally {
+    HTMLElement.prototype.scrollIntoView = original;
+  }
+});
+
+test('a rejected pending signature reopens enrollment details before focusing its error', async () => {
+  const { provider, service } = setup();
+  await screen.findByText(/No smart accounts linked yet/);
+  await click(screen.getByRole('button', { name: 'Connect wallet' }));
+  let rejectSignature;
+  provider.request.mockImplementation(async ({ method }) => {
+    if (method === 'personal_sign')
+      return new Promise((_resolve, reject) => {
+        rejectSignature = reject;
+      });
+    return method === 'eth_chainId' ? `0x${CHAIN_ID.toString(16)}` : [ACCOUNT];
+  });
+  await click(screen.getByRole('button', { name: 'Enable recovery alerts' }));
+  await waitFor(() => expect(rejectSignature).toBeDefined());
+  expect(
+    screen.getByRole('button', { name: 'Collapse recovery alerts' })
+  ).toBeDisabled();
+  const disclosure = screen
+    .getByText('Link a smart account')
+    .closest('details');
+  disclosure.open = false;
+  await act(async () => {
+    rejectSignature({ code: 4001 });
+  });
+  const error = await screen.findByRole('alert');
+  expect(error).toBeVisible();
+  expect(error).toHaveFocus();
+  expect(service.subscribe).not.toHaveBeenCalled();
 });

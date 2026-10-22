@@ -9,7 +9,17 @@ const CHAIN = {
 };
 const signature = `0x${'ab'.repeat(24000)}`;
 
-async function fixtures(page, { monitored = false, degraded = false } = {}) {
+async function fixtures(
+  page,
+  {
+    monitored = false,
+    degraded = false,
+    emailVerified = true,
+    subscribeError = null,
+    withHistory = false,
+    deferSignature = false,
+  } = {}
+) {
   let subscriptions = monitored
     ? [
         {
@@ -31,13 +41,24 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
               expiresAt: Math.floor(Date.now() / 1000) + 864000,
               status: 'pending',
             },
+            ...(withHistory
+              ? [
+                  {
+                    operationId: `0x${'bc'.repeat(32)}`,
+                    executableAt: Math.floor(Date.now() / 1000) - 3600,
+                    status: 'canceled',
+                  },
+                ]
+              : []),
           ],
         },
       ]
     : [];
   const writes = [];
+  let verified = emailVerified;
+  let verificationFailure = null;
   await page.addInitScript(
-    ({ ACCOUNT, signature }) => {
+    ({ ACCOUNT, signature, deferSignature }) => {
       const listeners = new Map();
       window.__walletCalls = [];
       const provider = {
@@ -54,28 +75,43 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
           if (method === 'eth_chainId') return '0xdee1';
           if (method === 'eth_accounts' || method === 'eth_requestAccounts')
             return [ACCOUNT];
-          if (method === 'personal_sign') return signature;
+          if (method === 'personal_sign') {
+            if (deferSignature)
+              return new Promise((_resolve, reject) => {
+                window.__rejectRecoverySignature = () => reject({ code: 4001 });
+              });
+            return signature;
+          }
           throw new Error(`Unexpected wallet method: ${method}`);
         },
       };
       window.ethereum = provider;
     },
-    { ACCOUNT, signature }
+    { ACCOUNT, signature, deferSignature }
   );
-  await page.route('**/auth/me', (route) =>
-    route.fulfill({
+  await page.route('**/auth/me', (route) => {
+    if (verificationFailure !== null) {
+      const failure = verificationFailure;
+      verificationFailure = null;
+      if (failure === 'network') return route.abort('failed');
+      return route.fulfill({
+        status: failure,
+        json: { error: failure === 401 ? 'unauthorized' : 'http_error' },
+      });
+    }
+    return route.fulfill({
       json: {
         user: {
           id: 1,
           email: 'recovery.alerts.qa@example.test',
-          emailVerified: true,
+          emailVerified: verified,
           saltV: 'ab'.repeat(32),
           notificationPrefs: {},
           totpEnabled: true,
         },
       },
-    })
-  );
+    });
+  });
   await page.route('**/vault', (route) =>
     route.fulfill({ json: { empty: true } })
   );
@@ -106,6 +142,8 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
         signature,
         label: 'Savings',
       });
+      if (subscribeError)
+        return route.fulfill({ status: 400, json: { error: subscribeError } });
       const subscription = {
         id: 1,
         account: ACCOUNT,
@@ -124,7 +162,15 @@ async function fixtures(page, { monitored = false, degraded = false } = {}) {
       });
     throw new Error(`Unexpected API: ${path}`);
   });
-  return { writes };
+  return {
+    writes,
+    verifyEmail: () => {
+      verified = true;
+    },
+    failVerification: (failure) => {
+      verificationFailure = failure;
+    },
+  };
 }
 
 async function noHorizontalOverflow(page) {
@@ -153,6 +199,7 @@ test('320px recovery enrollment uses standard wallet signing and shows catch-up 
   await page
     .getByRole('button', { name: 'Connect wallet', exact: true })
     .click();
+  await expect(page.getByRole('combobox')).toHaveCount(0);
   await page.getByLabel('Account label (optional)').fill('Savings');
   await page
     .getByRole('button', { name: 'Enable recovery alerts', exact: true })
@@ -172,13 +219,80 @@ test('320px recovery enrollment uses standard wallet signing and shows catch-up 
     false
   );
   await noHorizontalOverflow(page);
-  await page
-    .locator('#recovery-alerts')
-    .screenshot({
-      path: testInfo.outputPath('recovery-enrollment-320.png'),
-      style: '.site-header { visibility: hidden !important; }',
-    });
+  await page.locator('#recovery-alerts').screenshot({
+    path: testInfo.outputPath('recovery-enrollment-320.png'),
+    style: '.site-header { visibility: hidden !important; }',
+  });
 });
+
+test('a signature rejection reveals a collapsed enrollment and focuses its error', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 500 });
+  const fixture = await fixtures(page, { deferSignature: true });
+  await page.goto('/account#recovery-alerts');
+  await page
+    .getByRole('button', { name: 'Connect wallet', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Enable recovery alerts', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Confirm in wallet…' })
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Collapse recovery alerts' })
+  ).toBeDisabled();
+  await page.getByText('Link a smart account', { exact: true }).click();
+  await expect(page.locator('.recovery-enroll')).toBeHidden();
+  await page.evaluate(() => window.__rejectRecoverySignature());
+  await expect(page.getByRole('alert')).toHaveText(
+    /signature request was canceled/
+  );
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('alert')).toBeFocused();
+  expect(fixture.writes).toHaveLength(1);
+});
+
+for (const failure of [503, 'network', 401]) {
+  test(`verification ${failure} uses the real auth guard and preserves only transient sessions`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 500 });
+    const fixture = await fixtures(page, { emailVerified: false });
+    await page.goto('/account#recovery-alerts');
+    await expect(
+      page.getByRole('button', { name: 'Check verification status' })
+    ).toBeVisible();
+    fixture.failVerification(failure);
+    await page
+      .getByRole('button', { name: 'Check verification status' })
+      .click();
+    if (failure === 401) {
+      await expect(page).toHaveURL(/\/login/);
+      await expect(page.locator('#recovery-alerts')).toHaveCount(0);
+    } else {
+      await expect(page).toHaveURL(/\/account#recovery-alerts/);
+      await expect(page.getByRole('alert')).toBeFocused();
+      await expect(
+        page.getByRole('button', { name: 'Check verification status' })
+      ).toBeEnabled();
+      await noHorizontalOverflow(page);
+      await page.screenshot({
+        path: testInfo.outputPath(`recovery-verification-error-${failure}.png`),
+      });
+      fixture.verifyEmail();
+      await page
+        .getByRole('button', { name: 'Check verification status' })
+        .click();
+      await expect(
+        page.getByRole('button', { name: 'Connect wallet', exact: true })
+      ).toBeEnabled();
+    }
+    expect(fixture.writes).toHaveLength(0);
+    expect(await page.evaluate(() => window.__walletCalls)).toEqual([]);
+  });
+}
 
 test('small-window pending recovery and disable confirmation remain readable with correct account and network', async ({
   page,
@@ -192,12 +306,10 @@ test('small-window pending recovery and disable confirmation remain readable wit
   await expect(
     page.getByText('Recovery pending', { exact: true })
   ).toBeVisible();
-  await page
-    .locator('#recovery-alerts')
-    .screenshot({
-      path: testInfo.outputPath('recovery-pending-360.png'),
-      style: '.site-header { visibility: hidden !important; }',
-    });
+  await page.locator('#recovery-alerts').screenshot({
+    path: testInfo.outputPath('recovery-pending-360.png'),
+    style: '.site-header { visibility: hidden !important; }',
+  });
   await page.getByRole('button', { name: 'Disable these alerts…' }).click();
   await expect(
     page.getByRole('heading', {
@@ -212,14 +324,126 @@ test('small-window pending recovery and disable confirmation remain readable wit
   await expect(page.getByRole('alert')).toHaveText(
     /current Sysnode password is incorrect/
   );
+  await expect(page.getByRole('alert')).toBeFocused();
   expect(fixture.writes.at(-1).body.code).toBe('123456');
   await noHorizontalOverflow(page);
-  await page
-    .locator('.recovery-remove')
-    .screenshot({
-      path: testInfo.outputPath('recovery-disable-360.png'),
-      style: '.site-header { visibility: hidden !important; }',
-    });
+  await page.locator('.recovery-remove').screenshot({
+    path: testInfo.outputPath('recovery-disable-360.png'),
+    style: '.site-header { visibility: hidden !important; }',
+  });
   await page.getByRole('button', { name: 'Keep alerts' }).click();
   await expect(page.getByLabel('Current Sysnode password')).toHaveCount(0);
 });
+
+for (const width of [320, 390]) {
+  test(`${width}px disable errors stay beside the password confirmation and in view`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 500 });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const fixture = await fixtures(page, { monitored: true });
+    await page.goto('/account#recovery-alerts');
+    await page.getByRole('button', { name: 'Disable these alerts…' }).click();
+    await page.getByLabel('Current Sysnode password').fill('wrong-password');
+    await page.getByLabel('Authenticator code').fill('123456');
+    await page
+      .getByRole('button', { name: 'Disable alerts', exact: true })
+      .click();
+    const error = page.getByRole('alert');
+    await expect(error).toHaveText(/current Sysnode password is incorrect/);
+    await expect(error).toBeFocused();
+    await expect
+      .poll(async () => {
+        const bounds = await error.boundingBox();
+        return bounds.y >= 70 && bounds.y + bounds.height <= 500;
+      })
+      .toBe(true);
+    expect(fixture.writes).toHaveLength(1);
+    expect(fixture.writes[0].path).toBe('/api/recovery/subscriptions/1');
+    await noHorizontalOverflow(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`recovery-disable-error-${width}.png`),
+    });
+    await page.locator('.recovery-remove').screenshot({
+      path: testInfo.outputPath(`recovery-disable-${width}.png`),
+      style: '.site-header { visibility: hidden !important; }',
+    });
+  });
+
+  test(`${width}px enrollment failure stays in view below long recovery status`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 500 });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const fixture = await fixtures(page, {
+      monitored: true,
+      withHistory: true,
+      subscribeError: 'invalid_signature',
+    });
+    await page.goto('/account#recovery-alerts');
+    await expect(
+      page.getByText('Recovery pending', { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText('Recovery canceled or invalidated')
+    ).toBeHidden();
+    await page.getByText('How to review in Pali', { exact: true }).click();
+    await expect(
+      page.getByText('Disable guardian recovery', { exact: true })
+    ).toBeVisible();
+    await page.locator('#recovery-alerts').screenshot({
+      path: testInfo.outputPath(`recovery-pending-${width}.png`),
+      style: '.site-header { visibility: hidden !important; }',
+    });
+    await page.getByText('Link another smart account', { exact: true }).click();
+    await page
+      .getByRole('button', { name: 'Connect wallet', exact: true })
+      .click();
+    await page.getByLabel('Account label (optional)').fill('Savings');
+    await page
+      .getByRole('button', { name: 'Enable recovery alerts', exact: true })
+      .click();
+    const error = page.getByRole('alert');
+    await expect(error).toHaveText(/could not verify this signature/);
+    await expect(error).toBeFocused();
+    await expect
+      .poll(async () => {
+        const bounds = await error.boundingBox();
+        return bounds.y >= 70 && bounds.y + bounds.height <= 500;
+      })
+      .toBe(true);
+    expect(fixture.writes).toHaveLength(2);
+    await noHorizontalOverflow(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`recovery-enrollment-error-${width}.png`),
+    });
+  });
+
+  test(`${width}px unverified email has a read-only next step and no wallet request`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 500 });
+    const fixture = await fixtures(page, { emailVerified: false });
+    await page.goto('/account#recovery-alerts');
+    await expect(
+      page.getByRole('button', { name: 'Connect wallet', exact: true })
+    ).toBeDisabled();
+    await expect(
+      page.getByText(/Verify your email before linking/)
+    ).toBeVisible();
+    await noHorizontalOverflow(page);
+    await page.locator('#recovery-alerts').screenshot({
+      path: testInfo.outputPath(`recovery-unverified-${width}.png`),
+      style: '.site-header { visibility: hidden !important; }',
+    });
+    fixture.verifyEmail();
+    await page
+      .getByRole('button', { name: 'Check verification status' })
+      .click();
+    await expect(
+      page.getByRole('button', { name: 'Connect wallet', exact: true })
+    ).toBeEnabled();
+    expect(fixture.writes).toHaveLength(0);
+    expect(await page.evaluate(() => window.__walletCalls)).toEqual([]);
+  });
+}
