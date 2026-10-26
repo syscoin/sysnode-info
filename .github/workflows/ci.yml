@@ -20,9 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # package.json engines is ">=20 <24"; cover both active LTS
-        # lines so a bump in either doesn't silently break CI.
-        node: ['20', '22']
+        # Match the patched runtime used for development and deployment.
+        node: ['26.12.1']
 
     env:
       CI: 'true'
@@ -67,15 +66,15 @@ jobs:
         run: npm run build
 
       - name: Install browser for recovery-alert layout checks
-        if: matrix.node == '22'
+        if: matrix.node == '26.12.1'
         run: npx playwright install --with-deps chromium
 
       - name: Check recovery and dashboard browser flows and small windows
-        if: matrix.node == '22'
+        if: matrix.node == '26.12.1'
         run: npx playwright test --config playwright.config.cjs tests/browser/recovery-alerts.spec.cjs tests/browser/network-availability.spec.cjs
 
       - name: Preserve recovery-alert screenshots and failure traces
-        if: always() && matrix.node == '22'
+        if: always() && matrix.node == '26.12.1'
         uses: actions/upload-artifact@v4
         with:
           name: recovery-alert-browser
@@ -96,7 +95,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26.12.1'
       - name: Request exact-commit deployment
         run: node scripts/request-deploy.cjs frontend
         env:
