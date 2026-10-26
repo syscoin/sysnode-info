@@ -195,3 +195,8 @@ This frontend should not contain private keys, RPC credentials, server secrets, 
 
 If you discover a security issue, please avoid opening a public issue with exploit details. Contact the maintainers privately first so it can be reviewed responsibly.
 
+
+## Development runtime
+
+Use Node.js 26.12.1 or a newer patched 26.x release. The exact development and CI version is recorded in `.nvmrc`; run `nvm install && nvm use` before installing dependencies.
+
